@@ -211,7 +211,7 @@ pub fn load_imports(
     while let Some(file) = pending.pop() {
         let parse = parser::parse_source(map.file(file), None);
         let applied = preprocess::apply(&parse.file);
-        let importer = map.file(file).name().to_owned();
+        let importer = map.file(file).path().to_path_buf();
         let wanted: Vec<PathBuf> = applied
             .program
             .items

@@ -2977,3 +2977,164 @@ fn a_field_declaration_is_marked_as_one() {
     assert_eq!(kind, "property");
     assert!(modifiers.is_empty(), "a use is not a declaration");
 }
+
+// ---------------------------------------------------------------------------
+// K8 — the editor's program is the open documents plus what they import
+// ---------------------------------------------------------------------------
+
+/// A scratch directory holding `main.k816`, `lib.k816` and `hw.k816`.
+fn imported_workspace(test: &str) -> (std::path::PathBuf, Workspace) {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(test);
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    std::fs::write(
+        dir.join("lib.k816"),
+        "import \"hw.k816\"\n\nfunc helper @a8 @i8 {\n    a = PORT\n}\n",
+    )
+    .expect("write lib");
+    std::fs::write(dir.join("hw.k816"), "extern var abs PORT\n").expect("write hw");
+
+    let mut workspace = Workspace::new();
+    let main = dir.join("main.k816");
+    std::fs::write(
+        &main,
+        "import \"lib.k816\"\n\nfunc main @a8 @i8 {\n    call helper\n}\n",
+    )
+    .expect("write main");
+    workspace.update(format!("file://{}", main.display()), {
+        std::fs::read_to_string(&main).expect("read main")
+    });
+    (dir, workspace)
+}
+
+/// One open document, and the editor sees the whole program.
+///
+/// The difference K makes to the editor: a name a document imports resolves
+/// whether or not the file defining it has ever been opened, so the server
+/// answers the question a build answers rather than a subset of it. `helper`
+/// is in `lib.k816` and `PORT` two imports further on, and neither is open.
+#[test]
+fn an_open_document_sees_what_it_imports_without_those_files_being_opened() {
+    let (_, mut workspace) = imported_workspace("lsp-import-closure");
+    let analysis = workspace.analyze();
+    assert!(
+        analysis.linkage.diagnostics().is_empty(),
+        "{:?}",
+        analysis.linkage.diagnostics()
+    );
+    // Three units from one document: the entry, what it imports, and what
+    // *that* imports — the whole closure is read, because a contract two
+    // imports away decides bytes here.
+    assert_eq!(analysis.units.len(), 3);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+}
+
+/// Opening a file the workspace already read keeps its identity.
+///
+/// A `FileId` is a position in the map, and every span already taken from an
+/// imported file points into it. Re-adding the file on `didOpen` would give
+/// it a second identity, leaving the first one's spans pointing at a file
+/// nothing analyzes any more.
+#[test]
+fn opening_an_imported_file_keeps_its_identity() {
+    let (dir, mut workspace) = imported_workspace("lsp-import-promote");
+    workspace.analyze();
+    let lib_uri = format!("file://{}", dir.join("lib.k816").display());
+    let before = k816::workspace::find_file(workspace.map(), &lib_uri)
+        .or_else(|| {
+            k816::workspace::find_file(workspace.map(), &dir.join("lib.k816").to_string_lossy())
+        })
+        .expect("the imported file is in the map");
+
+    workspace.update(
+        &lib_uri,
+        std::fs::read_to_string(dir.join("lib.k816")).expect("read lib"),
+    );
+    assert_eq!(
+        workspace.file(&lib_uri),
+        Some(before),
+        "the identity survived the open"
+    );
+
+    // And an unsaved edit to the now-open buffer wins over the disk, which
+    // is what an editor is for.
+    workspace.update(
+        &lib_uri,
+        "import \"hw.k816\"\n\nfunc helper @a8 @i8 {\n    a = MISSING\n}\n",
+    );
+    let analysis = workspace.analyze();
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.0 == "K816-E0101"),
+        "the buffer is the truth: {:?}",
+        analysis.diagnostics
+    );
+}
+
+/// A problem in a file nobody opened is still a problem of the program, and
+/// is reportable.
+#[test]
+fn a_diagnostic_in_an_imported_file_can_be_told_to_the_client() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("lsp-import-diagnostic");
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    std::fs::write(
+        dir.join("broken.k816"),
+        "func helper @a8 @i8 {\n    a = MISSING\n}\n",
+    )
+    .expect("write the broken import");
+    let main = dir.join("main.k816");
+    std::fs::write(
+        &main,
+        "import \"broken.k816\"\n\nfunc main @a8 @i8 {\n    call helper\n}\n",
+    )
+    .expect("write main");
+
+    let mut workspace = Workspace::new();
+    let uri = format!("file://{}", main.display());
+    workspace.update(&uri, std::fs::read_to_string(&main).expect("read main"));
+    let analysis = workspace.analyze();
+    let reported: Vec<&k816::diagnostic::Diagnostic> = analysis
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.0 == "K816-E0101")
+        .collect();
+    assert_eq!(reported.len(), 1, "{:?}", analysis.diagnostics);
+    // And the client can be told where: an imported file is named by a path,
+    // and a path a client can act on is a `file://` URI.
+    let where_it_is = k816::lsp::convert::uri(workspace.map(), reported[0].primary.span.file)
+        .expect("an imported file has a URI");
+    assert!(
+        where_it_is.as_str().starts_with("file:///")
+            && where_it_is.as_str().ends_with("broken.k816"),
+        "{where_it_is:?}"
+    );
+}
+
+/// Hover on an `extern` says it is a promise, not a body somewhere.
+#[test]
+fn hover_on_an_extern_says_another_object_provides_it() {
+    let source = "extern func _puts\n\nfunc main @a8 @i8 {\n    call _puts\n}\n";
+    let mut workspace = Workspace::new();
+    let uri = "file:///hover-extern.k816";
+    workspace.update(uri, source);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+
+    let use_site = source.rfind("_puts").expect("the call") as u32 + 1;
+    let hover = k816::lsp::hover::hover(&analysis, file, use_site).expect("a hover");
+    assert!(
+        hover.markdown.contains("Declared `extern`"),
+        "{}",
+        hover.markdown
+    );
+    assert!(
+        hover.markdown.contains("nothing checked it"),
+        "the promise is named as one: {}",
+        hover.markdown
+    );
+}

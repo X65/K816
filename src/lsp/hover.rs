@@ -85,7 +85,23 @@ fn symbol_hover(analysis: &Analysis, context: &Context<'_>) -> Option<Hover> {
 
     let mut out = format!("`{}` — {}\n", symbol.name, symbol.kind.describe());
     if symbol.imported {
-        out.push_str("\nDefined by another unit of this workspace.\n");
+        // Which of the two it is, because they are different answers: one
+        // sends the reader to a body in this program, and the other says
+        // there is no body here to go to.
+        out.push_str(
+            match analysis
+                .linkage
+                .definition(&symbol.name)
+                .map(|found| found.origin)
+            {
+                Some(crate::linkage::Origin::Declared) => {
+                    "\nDeclared `extern`: another object provides it, and ld65 \
+                     resolves it. The contract above is what the declaration \
+                     promises, and nothing checked it.\n"
+                }
+                _ => "\nDefined by another unit of this program.\n",
+            },
+        );
     }
 
     match symbol.kind {

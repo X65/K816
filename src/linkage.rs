@@ -282,7 +282,7 @@ impl Linkage {
         source: &crate::source::SourceFile,
         program: &AstFile,
     ) {
-        let (file, importer) = (source.id(), source.name());
+        let (file, importer) = (source.id(), source.path().to_path_buf());
         let edges: Vec<ImportEdge> = program
             .items
             .iter()
@@ -291,7 +291,7 @@ impl Linkage {
                 _ => None,
             })
             .map(|import| {
-                let resolved = crate::imports::resolve(importer, &import.file.path);
+                let resolved = crate::imports::resolve(&importer, &import.file.path);
                 ImportEdge {
                     span: import.file.span,
                     target: map.locate(&crate::imports::identity(&resolved)),
@@ -310,8 +310,9 @@ impl Linkage {
                     Label::new(edge.span, "no such unit"),
                 )
                 .with_note(format!(
-                    "K816 looked for `{}`, relative to the directory of `{importer}`",
-                    edge.resolved.display()
+                    "K816 looked for `{}`, relative to the directory of `{}`",
+                    edge.resolved.display(),
+                    map.file(file).name()
                 ))
                 .with_docs("doc/syntax-reference.md#imports"),
             );

@@ -349,12 +349,17 @@ Support](https://marketplace.visualstudio.com/items?itemName=X65-Project.vscode-
 extension was written against an older server that had all four, so their
 absence is a difference to expect rather than a fault to report.
 
-The program the server analyzes is the set of documents the editor has open,
-and that is a property rather than a limitation waiting on a file. A build
-takes its unit set from one `cl65` command line, and there is no project file
-anywhere for the editor to read instead — so a name another unit defines
-resolves while that unit is open, and open the units of a program and the
-editor sees the program a build sees.
+**The program the server analyzes is the open documents plus what they
+import**, transitively, read from disk. So a name another unit defines
+resolves whether or not that unit has been opened, and the server answers the
+question a build answers rather than a subset of it — because it reads the
+same `import` lines. A problem in a file nobody opened is reported against
+that file.
+
+An open buffer always wins its own text: it may not be saved yet, and it is
+what the author is looking at. Opening a file the server had already read
+keeps the identity it had, so nothing that pointed into it moves. There is
+still no project file, and there is nothing for one to say.
 
 ## License
 

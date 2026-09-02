@@ -73,6 +73,16 @@ pub struct Workspace {
     /// Every open document's text, and the identity each span points into.
     map: SourceMap,
     documents: BTreeMap<String, Document>,
+    /// The files an open document `import`s, read from disk, by identity.
+    ///
+    /// A program is the open documents **plus what they import**, so an
+    /// editor answers the questions a build answers rather than a subset of
+    /// them: a name a document imports resolves whether or not the file that
+    /// defines it has been opened. Kept beside the documents rather than
+    /// among them because the two are dropped by different rules — a
+    /// document goes when the editor closes it, and an import goes when
+    /// nothing reaches it any more.
+    imported: BTreeMap<std::path::PathBuf, FileId>,
     options: Options,
     /// How many times [`Self::analyze`] has run; see [`Self::analyses`].
     analyses: u64,
@@ -131,7 +141,21 @@ impl Workspace {
                 document.tree = None;
             }
             None => {
-                let file = self.map.add_file(name.clone(), text);
+                let path = document_path(&name);
+                // A file this workspace already read because something
+                // imported it, now opened: it keeps the identity it has, so
+                // every span already taken from it stays valid and every
+                // `import` edge still points at it. Only where it came from
+                // changes.
+                let file = match self.map.locate(&crate::imports::identity(&path)) {
+                    Some(file) => {
+                        self.imported.retain(|_, id| *id != file);
+                        self.map.adopt(file);
+                        self.map.replace_file(file, text);
+                        file
+                    }
+                    None => self.map.add_file_at(name.clone(), &path, text),
+                };
                 self.documents.insert(name, Document { file, tree: None });
             }
         }
@@ -201,12 +225,19 @@ impl Workspace {
 
         self.map = SourceMap::new();
         for (name, text) in surviving {
-            let file = self.map.add_file(name.clone(), text);
+            let path = document_path(&name);
+            let file = self.map.add_file_at(name.clone(), &path, text);
             self.documents
                 .get_mut(&name)
                 .expect("collected from this map")
                 .file = file;
         }
+        // The imports are not carried over: which files the remaining
+        // documents reach is a question their own `import` lines answer, and
+        // the loader answers it again on the next analysis. An import that
+        // only the closed document reached is dropped by not being asked
+        // for.
+        self.imported.clear();
     }
 
     /// How many analyses this workspace has run.
@@ -226,6 +257,7 @@ impl Workspace {
     /// carries point into [`Self::map`].
     pub fn analyze(&mut self) -> Analysis {
         self.analyses += 1;
+        self.load_imports();
         let Self {
             map,
             documents,
@@ -249,6 +281,42 @@ impl Workspace {
             None => crate::parser::parse_source(source, None),
         })
     }
+    /// Reads what the open documents import, and re-reads what it already has.
+    ///
+    /// Run before every analysis rather than on `didOpen`, because the
+    /// files it reads are ones no editor is telling this server about: they
+    /// change on disk under a `git checkout` or another editor's save, and
+    /// an analysis over a stale copy would answer a question about a
+    /// program that is not there.
+    ///
+    /// An open *document* always wins its own text — its buffer is the
+    /// truth and may not be saved yet — which is why the promotion in
+    /// `update` matters: once a file is a document, the loader finds it
+    /// already in the map and does not read over it.
+    fn load_imports(&mut self) {
+        for (path, file) in &self.imported {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && self.map.file(*file).text() != text
+            {
+                self.map.replace_file(*file, text);
+            }
+        }
+        for file in crate::load_imports(&mut self.map, &mut |path| std::fs::read_to_string(path)) {
+            self.imported
+                .insert(self.map.file(file).path().to_path_buf(), file);
+        }
+    }
+}
+
+/// The path a document's name denotes on disk.
+///
+/// An editor names a document by URI and everything else by path, and which
+/// file an `import` reaches has to be the same answer either way — so a
+/// `file://` URI is converted here, once, rather than being joined as though
+/// `file:` were a directory.
+fn document_path(name: &str) -> std::path::PathBuf {
+    name.strip_prefix("file://")
+        .map_or_else(|| std::path::PathBuf::from(name), std::path::PathBuf::from)
 }
 
 /// The [`FileId`] of the document named `name` inside `map`.

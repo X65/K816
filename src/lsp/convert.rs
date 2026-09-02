@@ -110,13 +110,32 @@ pub fn range_to_span(source: &SourceFile, range: Range) -> Span {
     Span::new(source.id(), start.min(end), start.max(end))
 }
 
-/// The URI of a file, which is the name the document was opened under.
+/// The URI of a file: the name the document was opened under, or the path an
+/// `import` reached it by.
 ///
-/// `None` for a name that is not a URI at all — a workspace built from paths
+/// The second is what makes a diagnostic in an unopened file reportable at
+/// all. An import is named by a path, and a client cannot be told about a
+/// path — so an absolute one becomes a `file://` URI here rather than being
+/// dropped, which is the difference between "the header you never opened has
+/// an error" and silence.
+///
+/// `None` for a name that is neither: a workspace built from relative paths
 /// by a test, for instance. A file the client cannot be told about is one it
 /// never told the server about.
 pub fn uri(map: &SourceMap, file: FileId) -> Option<Uri> {
-    map.file(file).name().parse().ok()
+    let name = map.file(file).name();
+    // A *scheme* is what makes it a URI. `Uri` parses a bare path happily,
+    // as a relative reference with no scheme and no authority, and a client
+    // handed one of those cannot open anything.
+    if let Ok(uri) = name.parse::<Uri>()
+        && uri.scheme().is_some()
+    {
+        return Some(uri);
+    }
+    let path = std::path::Path::new(name);
+    path.is_absolute()
+        .then(|| format!("file://{}", path.display()).parse().ok())
+        .flatten()
 }
 
 /// A protocol location for a span: its file's URI and its UTF-16 range.

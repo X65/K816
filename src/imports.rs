@@ -56,12 +56,15 @@
 
 use std::path::{Component, Path, PathBuf};
 
-/// The file `written` names, read from a source whose own name is `importer`.
-pub fn resolve(importer: &str, written: &str) -> PathBuf {
-    Path::new(importer)
-        .parent()
-        .unwrap_or(Path::new(""))
-        .join(written)
+/// The file `written` names, read from a source whose own path is
+/// `importer`.
+///
+/// The importing file's *path*, not its name. An editor names a document by
+/// URI, and joining `unit-b.k816` onto `file:///unit-a.k816` as though
+/// `file:` were a directory answers a different question from the one the
+/// build answers about the same two files.
+pub fn resolve(importer: &Path, written: &str) -> PathBuf {
+    importer.parent().unwrap_or(Path::new("")).join(written)
 }
 
 /// The comparison key for `path`: which file it is, rather than what it is
@@ -113,16 +116,19 @@ mod tests {
     #[test]
     fn a_path_resolves_against_the_importing_files_directory() {
         assert_eq!(
-            resolve("sub/dir/unit.k816", "lib.k816"),
+            resolve(Path::new("sub/dir/unit.k816"), "lib.k816"),
             Path::new("sub/dir/lib.k816")
         );
         assert_eq!(
-            resolve("sub/dir/unit.k816", "../shared/defs.k65"),
+            resolve(Path::new("sub/dir/unit.k816"), "../shared/defs.k65"),
             Path::new("sub/dir/../shared/defs.k65")
         );
         // A source with no directory of its own resolves against the working
         // directory, which is what joining onto an empty prefix does.
-        assert_eq!(resolve("unit.k816", "lib.k816"), Path::new("lib.k816"));
+        assert_eq!(
+            resolve(Path::new("unit.k816"), "lib.k816"),
+            Path::new("lib.k816")
+        );
     }
 
     #[test]

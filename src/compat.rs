@@ -521,6 +521,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-address-encoding", K816Extension, Rejects),
     row("k816-stack-relative", K816Extension, Rejects),
     row("k816-indexed-offset", K816Extension, Rejects),
+    row("k65-global-namespace", IntentionallyChanged, Quiet),
     row("optimizer-branch-to-next-label", BackendDifferent, Quiet),
     row("optimizer-duplicate-return", BackendDifferent, Quiet),
 ];

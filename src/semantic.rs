@@ -732,6 +732,7 @@ impl Analysis {
                         FunctionKind::Func,
                     );
                 }
+                // K6/K7 declare an `extern` here; K1 only parses it.
                 ItemKind::Var(_)
                 | ItemKind::Const(_)
                 | ItemKind::Segment(_)
@@ -740,6 +741,8 @@ impl Analysis {
                 | ItemKind::Preprocessor(_)
                 | ItemKind::Reserved(_)
                 | ItemKind::ModuleWidth(_)
+                | ItemKind::Import(_)
+                | ItemKind::Extern(_)
                 | ItemKind::Error => {}
             }
         }
@@ -1071,6 +1074,10 @@ impl Analysis {
                             .map(|flow| crate::lower::declared_state(&flow.outputs)),
                     });
                 }
+                // K6/K7 declare an `extern` here; K1 only parses it. An
+                // `import` declares nothing at all — which units this one
+                // sees is `Linkage`'s question, not analysis's.
+                ItemKind::Import(_) | ItemKind::Extern(_) => {}
                 ItemKind::Error => {}
             }
         }

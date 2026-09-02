@@ -30,6 +30,19 @@
 (data_label
   name: (identifier) @name) @definition.variable
 
+; An `extern` declares a unit-level symbol like any other; what it does not
+; have is a body here.  A code index still wants the name, because the
+; declaration is where an editor sends anyone who asks where the symbol
+; comes from.
+(extern_func
+  name: (identifier) @name) @definition.function
+
+(extern_var
+  name: (identifier) @name) @definition.variable
+
+(extern_const
+  name: (identifier) @name) @definition.constant
+
 ; A unit-level label: `name:` without a leading dot.
 (label
   name: (identifier) @name) @definition.variable

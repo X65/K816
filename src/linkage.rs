@@ -641,6 +641,8 @@ fn called_names(items: &[Item]) -> BTreeSet<String> {
             | ItemKind::Binary(_)
             | ItemKind::Reserved(_)
             | ItemKind::ModuleWidth(_)
+            | ItemKind::Import(_)
+            | ItemKind::Extern(_)
             | ItemKind::Error => {}
         }
     }

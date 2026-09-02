@@ -1,0 +1,9 @@
+// The entry unit.  It names both of the units it may see, and sees exactly
+// those: `import` is a directed edge, not a pool.
+import "hw.k816"
+import "lib.k816"
+
+func main @a8 @i8 {
+    call plot
+    return
+}

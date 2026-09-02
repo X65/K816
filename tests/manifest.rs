@@ -139,6 +139,22 @@ const AUDIT: &[Row] = &[
         case: "Constant groups with enum-like auto-increment",
     },
     Row {
+        group: "`import \"file.k816\"` (top level)",
+        // The path names a file that does not exist, and at this stage
+        // nothing opens it: K1 parses the item and K4 loads it. When the
+        // loader lands, this row's `Expect` becomes the refusal a missing
+        // import earns.
+        source: "import \"lib.k816\"\n",
+        expect: Expect::Compiles,
+        case: "Import declarations name a unit by path",
+    },
+    Row {
+        group: "`extern [far] func` / `extern var` / `extern const` (top level)",
+        source: "extern func _puts\nextern var dp ptr\nextern const ROWS\n",
+        expect: Expect::Compiles,
+        case: "Extern function declarations carry far-ness and both contract halves",
+    },
+    Row {
         group: "Fixed-address `var NAME = $addr`",
         source: "var SCREEN = $0400\n",
         expect: Expect::Compiles,

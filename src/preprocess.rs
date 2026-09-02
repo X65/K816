@@ -183,6 +183,8 @@ fn item_has_directive(item: &Item) -> bool {
         | ItemKind::Binary(_)
         | ItemKind::Reserved(_)
         | ItemKind::ModuleWidth(_)
+        | ItemKind::Import(_)
+        | ItemKind::Extern(_)
         | ItemKind::Error => false,
     }
 }
@@ -406,12 +408,17 @@ impl Preprocess {
                 self.brackets_of_item(item);
                 item.kind.clone()
             }
+            // K7 declares an `extern const` here, so that a condition
+            // reading one says "no compile-time value" rather than
+            // "undeclared" — the same reason a `var` is declared above.
             ItemKind::Segment(_)
             | ItemKind::EvalBlock(_)
             | ItemKind::Preprocessor(_)
             | ItemKind::Binary(_)
             | ItemKind::Reserved(_)
             | ItemKind::ModuleWidth(_)
+            | ItemKind::Import(_)
+            | ItemKind::Extern(_)
             | ItemKind::Error => {
                 self.brackets_of_item(item);
                 item.kind.clone()

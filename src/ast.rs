@@ -64,6 +64,11 @@ pub enum ItemKind {
     Reserved(ReservedConstruct),
     /// A file-top `@a8` — the module's default width for that axis.
     ModuleWidth(WidthAnnotation),
+    /// `import "lib.k816"` — names a unit this one may see.
+    Import(ImportDeclaration),
+    /// `extern func` / `extern var` / `extern const` — a symbol another
+    /// object provides.
+    Extern(ExternDeclaration),
     Func(Function),
     /// Malformed top-level construct; the span covers the unparsable region.
     Error,
@@ -1195,6 +1200,79 @@ pub struct BinaryInclusion {
     /// working directory, which is what joining onto an empty prefix does.
     pub resolved: std::path::PathBuf,
     pub span: Span,
+}
+
+/// `import "lib.k816"` — the unit set, stated in the source.
+///
+/// The payload is `binary`'s, because the question is the same one: which
+/// file does this string name, relative to the source that wrote it. What
+/// differs is who answers it — ca65 resolves a `binary` path against its own
+/// search list, so `path` is handed on verbatim, while an `import` is
+/// resolved by K816 itself and only `resolved` is ever opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportDeclaration {
+    pub file: BinaryInclusion,
+}
+
+/// `extern func _puts @a8 -> @a16` — a symbol no K816 unit defines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternDeclaration {
+    pub kind: ExternKind,
+    /// The `extern` keyword, so a diagnostic about the declaration as a
+    /// whole has something shorter than the line to point at.
+    pub keyword_span: Span,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExternKind {
+    Func(ExternFunction),
+    Var(ExternVar),
+    /// `extern const NAME` — a value ld65 resolves. It has no expression,
+    /// which is the whole difference from a `const`.
+    Const(Name),
+}
+
+/// A code section another object provides.
+///
+/// The width annotations are the *declared* contract, and unlike a
+/// `Function`'s they are never checked against a body, because there is none
+/// here to check (`plans/10-modules-and-ffi.md` decision 5). `exit` is a
+/// width vector rather than a `CallContract`: an extern may not name output
+/// registers or flags, since those exist to be verified.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternFunction {
+    pub name: Name,
+    /// `extern far func` — reached by JSL, returning with RTL.
+    pub is_far: bool,
+    pub width: Vec<WidthAnnotation>,
+    pub exit: Option<ExternExit>,
+}
+
+/// The `-> @a8 @i16` half of an extern function's declaration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternExit {
+    pub width: Vec<WidthAnnotation>,
+    pub span: Span,
+}
+
+/// The name an `extern` declares, whichever form it took.
+pub fn extern_name(kind: &ExternKind) -> &Name {
+    match kind {
+        ExternKind::Func(function) => &function.name,
+        ExternKind::Var(variable) => &variable.name,
+        ExternKind::Const(name) => name,
+    }
+}
+
+/// Storage another object provides. No address, no span, no count, no
+/// initializer: K816 emits nothing for it, so there is nothing to describe
+/// but the name and how wide its address is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternVar {
+    pub name: Name,
+    pub storage: Option<StorageClass>,
+    pub width: Option<TypeWidth>,
 }
 
 /// A construct that belongs to the original K65 language, is recognized as

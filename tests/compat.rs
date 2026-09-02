@@ -1135,6 +1135,11 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
          arithop-isc instr-stack-flags flag-tokens",
     ),
     ("ItemKind", "ModuleWidth", "k816-width-annotations"),
+    ("ItemKind", "Import", "k816-import"),
+    ("ItemKind", "Extern", "k816-extern"),
+    ("ExternKind", "Func", "k816-extern"),
+    ("ExternKind", "Var", "k816-extern"),
+    ("ExternKind", "Const", "k816-extern"),
     (
         "ItemKind",
         "Func",
@@ -1518,6 +1523,10 @@ const AST_FIELDS: &[(&str, &str, &str)] = &[
         "topelem-const k816-const-auto-increment",
     ),
     ("Function", "is_far", "k816-far-function"),
+    ("ExternFunction", "is_far", "k816-extern k816-far-function"),
+    ("ExternFunction", "exit", "k816-extern"),
+    ("ExternVar", "storage", "k816-extern k816-address-encoding"),
+    ("ExternVar", "width", "k816-extern k816-typed-view"),
     ("Function", "contract", "k816-call-contracts"),
     ("CallContract", "inputs", "k816-call-contracts"),
     ("CallContract", "outputs", "k816-call-contracts"),
@@ -1909,7 +1918,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
 
     assert_eq!(
         marked.len(),
-        27,
+        29,
         "the manifest marks {} rows for the flag; if that is deliberate, move the \
          number here so the count stays a statement someone made",
         marked.len()

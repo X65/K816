@@ -1,0 +1,50 @@
+row       k816-import
+config    atarixl.cfg
+compare   diagnostics
+strict    yes
+units     hw.k816 lib.k816 main.k816
+expect    hw.k816 K816-E0160
+expect    hw.k816 K816-E0160
+expect    hw.k816 K816-E0160
+expect    hw.k816 K816-E0160
+expect    hw.k816 K816-E0160
+expect    lib.k816 K816-E0160
+expect    lib.k816 K816-E0160
+expect    lib.k816 K816-E0160
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+
+**The two constructs sub-plan K adds, and the flag that refuses them.**
+`--strict-k65` exists to check that a source is portable K65, and neither an
+`import` nor an `extern` has any K65 spelling at all: the original's linker
+resolved every name globally across a project's sources, so a K65 file
+declares nothing about where a name comes from and could not have declared
+anything about a symbol another *language* provides.  So both are
+`K816-extension` rows and the flag rejects them, one diagnostic per
+declaration.
+
+The shape is the one the constructs are for.  `hw.k816` is an **interface
+unit**: nothing but `extern` declarations, imported by both of the others, so
+that the declarations exist once.  `lib.k816` imports it and nothing else.
+`main.k816` imports both, and what it may see is exactly what it named —
+`plot` from `lib.k816` and the four externs from `hw.k816`.  Note what is
+*not* here: no unit is named on a command line, and no unit sees another
+because they were compiled together.
+
+An extern's own width annotations are not separately
+`k816-width-annotations`.  One mark per declaration, at the `extern` keyword:
+an extern has no K65 spelling with or without them, so a second diagnostic on
+the same line would say nothing the first did not.
+
+`compare diagnostics` rather than bytes, and deliberately so: what the fixture
+is evidence for is the *flag*, and the flag stops the pipeline before
+lowering.  The byte-level claims live where the semantics do — the goldens
+under `tests/golden/` for what an importing pair emits, and
+`tests/emit_ca65.rs` for the `.import` lines an extern produces.
+
+`hw.k816`'s externs are declared and not used, for the reason
+`k816/extern-ffi` gives at length: an `extern` declares no symbol until the
+task that makes it declare one, and a fixture that carried the resulting
+`K816-E0101`s would be describing the scaffolding rather than the feature.

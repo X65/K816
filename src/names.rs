@@ -101,6 +101,13 @@ fn item_names(item: &Item, visit: &mut impl FnMut(&Name, NameRole)) {
         ItemKind::Binary(declaration) => visit(&declaration.name, NameRole::Declaration),
         ItemKind::Reserved(reserved) => reserved_names(reserved, visit),
         ItemKind::ModuleWidth(_) => {}
+        // A path is not a name. Nothing renames a file, and an editor that
+        // offered to would be wrong about what the string means.
+        ItemKind::Import(_) => {}
+        ItemKind::Extern(declaration) => visit(
+            crate::ast::extern_name(&declaration.kind),
+            NameRole::Declaration,
+        ),
         ItemKind::Func(function) => {
             visit(&function.name, NameRole::Declaration);
             if let Some(contract) = &function.contract {

@@ -1,0 +1,6 @@
+// A K816 unit reached by `import`, not by a command-line flag.
+import "hw.k816"
+
+func plot @a8 @i8 {
+    return
+}

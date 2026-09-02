@@ -55,6 +55,7 @@
 [
   "var" "const" "segment" "abstract" "binary" "evalfunc" "data" "eval"
   "evaluator" "charset" "align" "address" "nocross" "code" "image" "bank"
+  "import" "extern"
 ] @keyword
 
 ["func" "naked" "inline" "far"] @keyword.function
@@ -104,6 +105,9 @@
 (data_block name: (identifier) @label)
 (data_label name: (identifier) @label)
 (segment_declaration name: (identifier) @namespace)
+(extern_func name: (identifier) @function)
+(extern_var name: (identifier) @variable)
+(extern_const name: (identifier) @constant)
 (label name: (identifier) @label)
 (label name: (local_identifier) @label)
 

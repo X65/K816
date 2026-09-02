@@ -25,10 +25,11 @@
 
 use k816::ast::{
     AddressEncoding, ArithmeticOp, AstFile, BinaryOp, BranchConditionKind, CallArgument,
-    ComparisonKind, ContractOutput, EvalExprKind, ExprKind, FlagKind, FunctionKind, HlaOperandKind,
-    HlaStatement, IndexRegister, IndexRegisterKind, ItemKind, LabelScope, LoopCondition,
-    MetadataQueryKind, NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind,
-    StepOp, StorageClassKind, TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    ComparisonKind, ContractOutput, EvalExprKind, ExprKind, ExternKind, FlagKind, FunctionKind,
+    HlaOperandKind, HlaStatement, IndexRegister, IndexRegisterKind, ItemKind, LabelScope,
+    LoopCondition, MetadataQueryKind, NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp,
+    StatementKind, StepOp, StorageClassKind, TestableFlag, TypeWidthKind, UnaryOp,
+    WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -421,6 +422,15 @@ fn dump_ast(file: &AstFile) -> String {
                         statement.span.start, statement.span.end
                     ));
                 }
+            }
+            ItemKind::Import(import) => {
+                out.push_str(&format!("import \"{}\"\n", import.file.path));
+            }
+            ItemKind::Extern(declaration) => {
+                out.push_str(&format!(
+                    "extern {}\n",
+                    k816::ast::extern_name(&declaration.kind).text
+                ));
             }
             ItemKind::Error => {
                 out.push_str(&format!("error @{}..{}\n", item.span.start, item.span.end));
@@ -2675,4 +2685,157 @@ fn an_evaluator_entry_is_its_own_data_value() {
         })
         .collect();
     assert_eq!(values, vec!["(&& ptr)", "[(+ 2 2)]", "(&< (+ ptr 1))"]);
+}
+
+/// The two items sub-plan K adds build the shapes they declare.
+///
+/// Structural rather than a snapshot, because what matters here is the
+/// *fields* — an extern's far-ness, its two contract halves, a variable's
+/// storage class and typed width — and a rendered line would let one of them
+/// go missing without changing the text.
+#[test]
+fn import_and_extern_items_build_the_declared_shapes() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "sub/dir/unit.k816",
+        "import \"lib.k816\"\n\
+         import \"../shared/defs.k65\"\n\
+         extern func _puts\n\
+         extern far func rom_entry\n\
+         extern func setup @a8 @i16 -> @a16 @i8\n\
+         extern var frame\n\
+         extern var dp ptr\n\
+         extern var far rom : far\n\
+         extern const ROWS\n",
+    );
+    let parse = parse_source(map.file(file), None);
+    assert_eq!(parse.diagnostics, Vec::new());
+
+    let paths: Vec<(&str, String)> = parse
+        .file
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Import(import) => Some((
+                import.file.path.as_str(),
+                import.file.resolved.to_string_lossy().into_owned(),
+            )),
+            _ => None,
+        })
+        .collect();
+    // The path is kept as written *and* resolved against the importing
+    // file's own directory, which is what makes `import "lib.k816"` mean the
+    // sibling of the source rather than of the working directory.
+    assert_eq!(
+        paths,
+        vec![
+            ("lib.k816", "sub/dir/lib.k816".to_owned()),
+            (
+                "../shared/defs.k65",
+                "sub/dir/../shared/defs.k65".to_owned()
+            ),
+        ]
+    );
+
+    let externs: Vec<&ExternKind> = parse
+        .file
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Extern(declaration) => Some(&declaration.kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(externs.len(), 7);
+
+    match externs[0] {
+        ExternKind::Func(function) => {
+            assert_eq!(function.name.text, "_puts");
+            assert!(!function.is_far);
+            assert!(function.width.is_empty());
+            assert!(function.exit.is_none());
+        }
+        other => panic!("expected an extern function, got {other:?}"),
+    }
+    match externs[1] {
+        ExternKind::Func(function) => {
+            assert_eq!(function.name.text, "rom_entry");
+            assert!(function.is_far, "`extern far func` carries its far-ness");
+        }
+        other => panic!("expected an extern function, got {other:?}"),
+    }
+    match externs[2] {
+        ExternKind::Func(function) => {
+            let entry: Vec<WidthAnnotationKind> =
+                function.width.iter().map(|width| width.kind).collect();
+            let exit: Vec<WidthAnnotationKind> = function
+                .exit
+                .as_ref()
+                .expect("a declared exit")
+                .width
+                .iter()
+                .map(|width| width.kind)
+                .collect();
+            // Both halves, kept apart: the annotations before `->` are what
+            // a caller must reach, the ones after are what it may believe.
+            assert_eq!(
+                entry,
+                vec![WidthAnnotationKind::A8, WidthAnnotationKind::I16]
+            );
+            assert_eq!(
+                exit,
+                vec![WidthAnnotationKind::A16, WidthAnnotationKind::I8]
+            );
+        }
+        other => panic!("expected an extern function, got {other:?}"),
+    }
+    let variables: Vec<(&str, Option<StorageClassKind>, Option<TypeWidthKind>)> = externs[3..6]
+        .iter()
+        .map(|kind| match kind {
+            ExternKind::Var(variable) => (
+                variable.name.text.as_str(),
+                variable.storage.map(|storage| storage.kind),
+                variable.width.map(|width| width.kind),
+            ),
+            other => panic!("expected an extern variable, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        variables,
+        vec![
+            ("frame", None, None),
+            ("ptr", Some(StorageClassKind::DirectPage), None),
+            ("rom", Some(StorageClassKind::Far), Some(TypeWidthKind::Far)),
+        ]
+    );
+    match externs[6] {
+        // No value, which is the whole difference from a `const`.
+        ExternKind::Const(name) => assert_eq!(name.text, "ROWS"),
+        other => panic!("expected an extern constant, got {other:?}"),
+    }
+}
+
+/// `extern` and `import` are item keywords and nothing else.
+///
+/// Tree-sitter's keyword extraction makes a literal a keyword only where the
+/// parser expects one, so a program that already uses either word as an
+/// ordinary name keeps working. Nothing in the corpus does, but the language
+/// promised it by not putting them in `reserved.global`, and a promise
+/// nothing checks is not one.
+#[test]
+fn import_and_extern_are_still_usable_as_names() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "unit.k816",
+        "var import = $0400\n\
+         var extern = $0401\n\
+         \n\
+         func main @a8 @i8 {\n\
+         \x20   a = import\n\
+         \x20   extern = a\n\
+         \x20   return\n\
+         }\n",
+    );
+    let parse = parse_source(map.file(file), None);
+    assert_eq!(parse.diagnostics, Vec::new());
 }

@@ -416,3 +416,58 @@ fn the_grammar_directory_references_no_compiler_module() {
     }
     assert!(checked > 5, "only {checked} files were read");
 }
+
+/// `tags.scm` captures an `extern` declaration's name.
+///
+/// Explicit, because the corpus gate above cannot reach it: that test filters
+/// the symbol table to `!symbol.imported`, and an `extern` declares an
+/// imported symbol by construction. So the one form whose whole purpose is to
+/// tell a reader where a name comes from would be the one form a code index
+/// could not find, and nothing would have said so.
+#[test]
+fn extern_declarations_are_tagged_as_definitions() {
+    let source = "extern func _puts\n\
+                  extern far func rom_entry\n\
+                  extern var dp ptr\n\
+                  extern const ROWS\n\
+                  import \"lib.k816\"\n";
+    let mut map = SourceMap::new();
+    let file = map.add_file("unit.k816", source);
+    let parse = parse_source(map.file(file), None);
+    assert_eq!(parse.diagnostics, Vec::new());
+
+    let tagged: Vec<(String, String)> = compiled("tags")
+        .captures(&parse.tree, file, source)
+        .into_iter()
+        .filter(|capture| capture.name.starts_with("definition."))
+        .map(|capture| (capture.name.clone(), map.span_text(capture.span).to_owned()))
+        .collect();
+
+    // Each extern is tagged under the kind it declares, and the `import` is
+    // tagged not at all: a path is not a definition, and an index that
+    // carried one would be listing files as symbols.
+    // The span is the declaration node's, which starts after `extern`
+    // because that keyword belongs to the wrapper. The order is the query's,
+    // not the source's.
+    assert_eq!(
+        tagged,
+        vec![
+            ("definition.constant".to_owned(), "const ROWS".to_owned()),
+            ("definition.function".to_owned(), "func _puts".to_owned()),
+            (
+                "definition.function".to_owned(),
+                "far func rom_entry".to_owned()
+            ),
+            ("definition.variable".to_owned(), "var dp ptr".to_owned()),
+        ]
+    );
+
+    // And the names themselves, which is what an index stores.
+    let names: Vec<String> = compiled("tags")
+        .captures(&parse.tree, file, source)
+        .into_iter()
+        .filter(|capture| capture.name == "name")
+        .map(|capture| map.span_text(capture.span).to_owned())
+        .collect();
+    assert_eq!(names, vec!["_puts", "rom_entry", "ptr", "ROWS"]);
+}

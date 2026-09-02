@@ -90,6 +90,12 @@ fn expected_in(parent: Option<&str>) -> &'static str {
         Some("var_declaration") => "a variable name, type, or initializer",
         Some("const_declaration") | Some("const_entry") => "a constant name or its value",
         Some("segment_declaration") => "a segment name",
+        Some("import_declaration") => "a quoted path to a K816 unit",
+        Some("extern_declaration") => "`func`, `var`, or `const` after `extern`",
+        Some("extern_func") => "an extern function name, its widths, or `-> @a8`",
+        Some("extern_var") => "an extern variable name or its type",
+        Some("extern_const") => "an extern constant name",
+        Some("extern_exit") => "a width annotation after `->`",
         Some("field_list") | Some("field_declaration") => "a `.field` entry",
         Some("call_contract") | Some("contract_inputs") | Some("contract_outputs") => {
             "a call contract parameter"

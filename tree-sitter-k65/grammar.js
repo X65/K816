@@ -268,6 +268,8 @@ export default grammar({
         $.reserved_image_toplevel,
         $.bank_declaration,
         $.evalfunc_declaration,
+        $.import_declaration,
+        $.extern_declaration,
       ),
 
     // `evalfunc name(a, b) [ ... ]` — a user-defined evaluator function. The
@@ -380,6 +382,61 @@ export default grammar({
 
     // segment NAME — selects the output segment for what follows.
     segment_declaration: $ => seq('segment', field('name', $.identifier)),
+
+    // `import "sprites.k816"` — names a unit this one may see. Sub-plan K.
+    //
+    // The path is a string literal, resolved relative to the *importing*
+    // file, which is the rule `binary NAME = "file"` already uses. There is
+    // no identifier spelling: `binary` accepts one because the original did
+    // (`binary_entry`), and nothing here has that history.
+    import_declaration: $ => seq('import', field('file', $.string)),
+
+    // `extern func _puts @a8 -> @a16` — a symbol some *other* object
+    // provides: a cc65-compiled C function, a hand-written ca65 routine, a
+    // linker-placed variable, a constant an include file exports.
+    //
+    // One keyword introduces three forms, each reusing the declaration
+    // vocabulary of its non-extern counterpart minus everything that would
+    // describe storage K816 does not emit: no body, no address, no span, no
+    // count, no initializer. What is left is exactly what ld65 cannot infer
+    // and ca65 needs — the address size, and for a function the widths.
+    extern_declaration: $ =>
+      seq(
+        'extern',
+        field('item', choice($.extern_func, $.extern_var, $.extern_const)),
+      ),
+
+    // `prec.right` because an extern has no body to close it, so a `@a8`
+    // after the name is ambiguous with the top-level `module_width` item
+    // that could follow the declaration. It binds to the extern, which is
+    // the only reading anyone means. The cost is that a module default
+    // written *immediately* after an `extern func` is swallowed by it; write
+    // it above the extern, which is where a default belongs anyway.
+    extern_func: $ =>
+      prec.right(
+        seq(
+          optional(field('far', alias('far', $.far_marker))),
+          'func',
+          field('name', $.identifier),
+          repeat(field('width', $.width_annotation)),
+          optional(seq('->', field('exit', $.extern_exit))),
+        ),
+      ),
+
+    // Widths only. A `func`'s own contract may name registers and flags; an
+    // extern's may not, because those are checked against a body and there
+    // is none — so the grammar refuses them rather than a later pass.
+    extern_exit: $ => prec.right(repeat1(field('width', $.width_annotation))),
+
+    extern_var: $ =>
+      seq(
+        'var',
+        optional(field('storage', alias($.identifier, $.storage_class))),
+        field('name', $.identifier),
+        optional(field('type', $.type_suffix)),
+      ),
+
+    extern_const: $ => seq('const', field('name', $.identifier)),
 
     // The code sections:
     //

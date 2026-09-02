@@ -178,3 +178,20 @@ func second @a8 {
     width: (width_annotation)
     body: (block
       (return_statement))))
+
+================================================================================
+An extern with no kind recovers
+:error
+================================================================================
+
+extern
+extern const OK
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (extern_declaration
+    (ERROR
+      (identifier))
+    item: (extern_const
+      name: (identifier))))

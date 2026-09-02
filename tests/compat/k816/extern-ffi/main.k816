@@ -1,0 +1,14 @@
+// Every `extern` shape.
+//
+// Nothing here is defined by any K816 unit, which is the point: `_puts` and
+// `_blink` are cc65's mangling of C functions, `_count` is a C variable,
+// `ptr` is a zero-page cell the runtime places, `rom_entry` is a 24-bit
+// address in a hand-written module, and `ROWS` is a constant an include file
+// exports.  ld65 resolves all six.
+extern func _puts
+extern func _blink @a8 @i8 -> @a16
+extern far func rom_entry
+extern var _count
+extern var dp ptr
+extern var far rom_table : far
+extern const ROWS

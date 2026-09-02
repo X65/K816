@@ -32,13 +32,14 @@ use crate::ast::{
     BranchCondition, BranchConditionKind, CallArgument, CallContract, CallStatement,
     ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
     ContractOutput, ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind,
-    DataValue, EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind, FieldAccess,
+    DataValue, EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind,
+    ExternDeclaration, ExternExit, ExternFunction, ExternKind, ExternVar, FieldAccess,
     FieldDeclaration, FlagKind, Function, FunctionKind, GotoStatement, HlaArithmetic,
     HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift, HlaStack,
-    HlaStatement, HlaStep, IllegalOpcode, IndexRegister, IndexRegisterKind, IndirectOperand, Item,
-    ItemKind, LabelScope, LabelStatement, LongIndirectOperand, LoopCondition, LoopStatement,
-    MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand,
-    PreprocessorDirective, PreprocessorKind, Register, RegisterKind, ReservedCall,
+    HlaStatement, HlaStep, IllegalOpcode, ImportDeclaration, IndexRegister, IndexRegisterKind,
+    IndirectOperand, Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand,
+    LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name, NativeInstruction,
+    NativeOperand, PreprocessorDirective, PreprocessorKind, Register, RegisterKind, ReservedCall,
     ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp, Statement, StatementKind,
     StepOp, StmtId, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth,
     TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
@@ -86,6 +87,8 @@ pub(crate) fn assign_statement_ids(file: &mut AstFile) {
             | ItemKind::Binary(_)
             | ItemKind::Reserved(_)
             | ItemKind::ModuleWidth(_)
+            | ItemKind::Import(_)
+            | ItemKind::Extern(_)
             | ItemKind::Error => {}
         }
     }
@@ -236,6 +239,20 @@ impl AstBuilder<'_> {
                     span: self.span(child),
                 }),
                 "func_declaration" => items.push(self.func_declaration(child)),
+                "import_declaration" => items.push(Item {
+                    kind: ItemKind::Import(ImportDeclaration {
+                        file: self.binary_inclusion(child),
+                    }),
+                    span: self.span(child),
+                }),
+                "extern_declaration" => {
+                    if let Some(declaration) = self.extern_declaration(child) {
+                        items.push(Item {
+                            kind: ItemKind::Extern(declaration),
+                            span: self.span(child),
+                        });
+                    }
+                }
                 "data_block" => items.push(Item {
                     kind: ItemKind::Data(self.data_block(child)),
                     span: self.span(child),
@@ -519,6 +536,50 @@ impl AstBuilder<'_> {
             .with_docs("doc/syntax-reference.md#far-calls"),
         );
         false
+    }
+
+    /// `extern func` / `extern var` / `extern const`.
+    ///
+    /// Returns `None` only where the declaration has no name to hang a
+    /// symbol on, which recovery can produce; the parse diagnostic has
+    /// already been reported by then and a second complaint would be noise.
+    fn extern_declaration(&mut self, node: Node<'_>) -> Option<ExternDeclaration> {
+        let item = node.child_by_field_name("item")?;
+        let kind = match item.kind() {
+            "extern_func" => {
+                ExternKind::Func(ExternFunction {
+                    name: self.name(item.child_by_field_name("name"), item),
+                    // `far_marker` takes the node that *carries* the field
+                    // and checks the word itself, because the marker is an
+                    // aliased identifier rather than a keyword.
+                    is_far: self.far_marker(item),
+                    width: self.width_annotations(item),
+                    exit: item.child_by_field_name("exit").map(|exit| ExternExit {
+                        width: self.width_annotations(exit),
+                        span: self.span(exit),
+                    }),
+                })
+            }
+            "extern_var" => ExternKind::Var(ExternVar {
+                name: self.name(item.child_by_field_name("name"), item),
+                storage: item
+                    .child_by_field_name("storage")
+                    .and_then(|storage| self.storage_class(storage)),
+                width: item
+                    .child_by_field_name("type")
+                    .and_then(|width| self.type_width(width)),
+            }),
+            "extern_const" => ExternKind::Const(self.name(item.child_by_field_name("name"), item)),
+            _ => {
+                self.unexpected(item, "an `extern` declaration");
+                return None;
+            }
+        };
+        Some(ExternDeclaration {
+            kind,
+            keyword_span: self.span(node.child(0)?),
+            span: self.span(node),
+        })
     }
 
     fn width_annotations(&mut self, node: Node<'_>) -> Vec<WidthAnnotation> {

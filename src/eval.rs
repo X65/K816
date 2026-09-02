@@ -1512,11 +1512,16 @@ pub fn sites_of_item<'a>(item: &'a crate::ast::Item, out: &mut Vec<Site<'a>>) {
         ItemKind::Preprocessor(_) => {}
         // An `evalfunc` body is not evaluated where it is written; it runs at
         // each call, in the caller's frame.
+        // Neither of K's items holds an expression: an `import` holds a
+        // path, and an `extern` holds no value at all — that is what makes
+        // it an extern.
         ItemKind::EvalFunc(_)
         | ItemKind::Segment(_)
         | ItemKind::Binary(_)
         | ItemKind::Reserved(_)
         | ItemKind::ModuleWidth(_)
+        | ItemKind::Import(_)
+        | ItemKind::Extern(_)
         | ItemKind::Error => {}
     }
 }

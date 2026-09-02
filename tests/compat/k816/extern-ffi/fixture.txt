@@ -1,0 +1,43 @@
+row       k816-extern
+config    atarixl.cfg
+compare   diagnostics
+strict    yes
+units     main.k816
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+expect    main.k816 K816-E0160
+
+
+**A K816 unit meeting another language.**  Every `extern` form is here: a
+near function, a near function with a declared contract, a far function, an
+absolute variable, a direct-page variable, a far variable with a typed width,
+and a link-time constant.
+
+**Declarations only, and no use sites.**  What this fixture is evidence for is
+the *flag*, which walks the syntax and stops before anything is resolved.  A
+call to `_blink` here would say `K816-E0101` for as long as an `extern`
+declares no symbol, and a fixture that carried six of those while claiming to
+demonstrate `extern` would be describing the scaffolding rather than the
+feature.  The use sites live where they can be checked: `tests/ffi.rs` for the
+resolution and the declared contracts, `tests/emit_ca65.rs` for the emitted
+`.import` spellings, and `tests/driver.rs` for the link that actually joins a
+`.k816`, a `.c` and a `.s`.
+
+**Why no K816 unit defines any of them, and why one must not be added.**  An
+`extern` says "another object provides this".  A K816 unit that also defined
+the name would be a program disagreeing with its own interface file, which is
+`K816-E0164` by design — see `k816/extern-collision`, which is that error.  So
+the symbols are resolved outside K816 entirely: by a hand-written `.s`, by a
+C file cc65 compiled, or by the linker configuration.  `tests/driver.rs` is
+where that link is actually performed, on one `cl65` command line with a
+`.k816`, a `.c` and a `.s` on it, because that is the claim worth making and
+it needs a driver rather than a fixture.
+
+`compare diagnostics` for the strict claim.  The emitted `.import` spellings —
+`.importzp ptr`, `.import rom_entry: far`, plain `.import _puts` — are
+asserted in `tests/emit_ca65.rs`, where the address size can be read off the
+line rather than inferred from an image.

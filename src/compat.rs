@@ -521,6 +521,8 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-address-encoding", K816Extension, Rejects),
     row("k816-stack-relative", K816Extension, Rejects),
     row("k816-indexed-offset", K816Extension, Rejects),
+    row("k816-import", K816Extension, Rejects),
+    row("k816-extern", K816Extension, Rejects),
     row("k65-global-namespace", IntentionallyChanged, Quiet),
     row("optimizer-branch-to-next-label", BackendDifferent, Quiet),
     row("optimizer-duplicate-return", BackendDifferent, Quiet),
@@ -707,6 +709,22 @@ const REPORTED: &[Reported] = &[
             "the original's assignment outlives the transform and K816's does not; assign in a block of its own",
         ),
     },
+    Reported {
+        id: "k816-import",
+        what: "`import`",
+        instead: Some(
+            "K65 has no import syntax: its linker resolved every name across a project's \
+             sources, and K816 compiles one unit and the units it names",
+        ),
+    },
+    Reported {
+        id: "k816-extern",
+        what: "an `extern` declaration",
+        instead: Some(
+            "K65 has no way to name a symbol another object provides, because it had no \
+             other language to meet",
+        ),
+    },
 ];
 
 /// Every construct of one unit that a manifest row classifies, as
@@ -871,6 +889,13 @@ impl StrictWalk<'_> {
             }
             ItemKind::Binary(_) | ItemKind::Reserved(_) | ItemKind::Error => {}
             ItemKind::ModuleWidth(width) => self.mark("k816-width-annotations", width.span),
+            ItemKind::Import(_) => self.mark("k816-import", item.span),
+            // One mark per declaration, at the `extern` keyword. The widths
+            // inside are not separately `k816-width-annotations`: an extern
+            // has no K65 spelling with or without them, so a second
+            // diagnostic on the same line would say nothing the first did
+            // not.
+            ItemKind::Extern(declaration) => self.mark("k816-extern", declaration.keyword_span),
             ItemKind::Func(function) => self.function(function),
         }
     }

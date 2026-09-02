@@ -124,8 +124,8 @@ impl Candidate {
 /// here against `grammar.json`'s literals, so the list cannot name a keyword
 /// the language does not have.
 pub const ITEM_KEYWORDS: &[&str] = &[
-    "abstract", "binary", "const", "data", "evalfunc", "far", "func", "inline", "main", "naked",
-    "segment", "var",
+    "abstract", "binary", "const", "data", "evalfunc", "extern", "far", "func", "import", "inline",
+    "main", "naked", "segment", "var",
 ];
 
 /// The keywords that open or close a statement inside a body.

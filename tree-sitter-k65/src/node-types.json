@@ -3819,6 +3819,144 @@
     }
   },
   {
+    "type": "extern_const",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "extern_declaration",
+    "named": true,
+    "fields": {
+      "item": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "extern_const",
+            "named": true
+          },
+          {
+            "type": "extern_func",
+            "named": true
+          },
+          {
+            "type": "extern_var",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "extern_exit",
+    "named": true,
+    "fields": {
+      "width": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "width_annotation",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "extern_func",
+    "named": true,
+    "fields": {
+      "exit": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "extern_exit",
+            "named": true
+          }
+        ]
+      },
+      "far": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "far_marker",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "width": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "width_annotation",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "extern_var",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "storage": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "storage_class",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_suffix",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "field_access",
     "named": true,
     "fields": {
@@ -4806,6 +4944,22 @@
     }
   },
   {
+    "type": "import_declaration",
+    "named": true,
+    "fields": {
+      "file": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "index_register",
     "named": true,
     "fields": {}
@@ -5662,7 +5816,15 @@
           "named": true
         },
         {
+          "type": "extern_declaration",
+          "named": true
+        },
+        {
           "type": "func_declaration",
+          "named": true
+        },
+        {
+          "type": "import_declaration",
           "named": true
         },
         {
@@ -6675,6 +6837,10 @@
     "named": false
   },
   {
+    "type": "extern",
+    "named": false
+  },
+  {
     "type": "far",
     "named": false
   },
@@ -6725,6 +6891,10 @@
   {
     "type": "image_scan",
     "named": true
+  },
+  {
+    "type": "import",
+    "named": false
   },
   {
     "type": "inline",

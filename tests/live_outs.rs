@@ -354,6 +354,11 @@ fn census_of(file: &AstFile, symbols: &SymbolTable) -> Census {
             | ItemKind::Binary(_)
             | ItemKind::Reserved(_)
             | ItemKind::ModuleWidth(_)
+            // An `extern` is a section this program does not emit, so it is
+            // not one of the sections the census counts; its declared
+            // contract is a promise rather than a body to narrow.
+            | ItemKind::Import(_)
+            | ItemKind::Extern(_)
             | ItemKind::Error => {}
         }
     }

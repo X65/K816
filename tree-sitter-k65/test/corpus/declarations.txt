@@ -337,3 +337,100 @@ var OK = 1
     entry: (var_entry
       name: (identifier)
       address: (number))))
+
+================================================================================
+Import declarations name a unit by path
+================================================================================
+
+import "lib.k816"
+import "sub/deeper/data.k65"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_declaration
+    file: (string))
+  (import_declaration
+    file: (string)))
+
+================================================================================
+Extern function declarations carry far-ness and both contract halves
+================================================================================
+
+extern func _puts
+extern far func rom_entry
+extern func setup @a8 @i16 -> @a16 @i8
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (extern_declaration
+    item: (extern_func
+      name: (identifier)))
+  (extern_declaration
+    item: (extern_func
+      far: (far_marker)
+      name: (identifier)))
+  (extern_declaration
+    item: (extern_func
+      name: (identifier)
+      width: (width_annotation)
+      width: (width_annotation)
+      exit: (extern_exit
+        width: (width_annotation)
+        width: (width_annotation)))))
+
+================================================================================
+Extern variables carry a storage class and a typed width; constants carry neither
+================================================================================
+
+extern var frame
+extern var dp ptr
+extern var abs port : word
+extern var far rom : far
+extern const ROWS
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (extern_declaration
+    item: (extern_var
+      name: (identifier)))
+  (extern_declaration
+    item: (extern_var
+      storage: (storage_class)
+      name: (identifier)))
+  (extern_declaration
+    item: (extern_var
+      storage: (storage_class)
+      name: (identifier)
+      type: (type_suffix)))
+  (extern_declaration
+    item: (extern_var
+      storage: (storage_class)
+      name: (identifier)
+      type: (type_suffix)))
+  (extern_declaration
+    item: (extern_const
+      name: (identifier))))
+
+================================================================================
+A module default after an extern constant is still a module default
+================================================================================
+
+extern const ROWS
+@a8
+func main { return }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (extern_declaration
+    item: (extern_const
+      name: (identifier)))
+  (module_width
+    width: (width_annotation))
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (return_statement))))

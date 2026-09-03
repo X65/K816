@@ -429,7 +429,7 @@ fn push_or_pull(resolver: &mut Resolver, stack: &HlaStack, site: Span) -> Option
 fn nops(resolver: &mut Resolver, count: Option<&Expr>, site: Span) -> Option<Vec<Classified>> {
     let count = match count {
         None => 1,
-        Some(expr) => resolver.constant(expr, "NOP counts")?,
+        Some(expr) => resolver.repetition(expr, "NOP counts")?,
     };
     Some(vec![
         resolver

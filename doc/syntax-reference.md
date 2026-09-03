@@ -813,6 +813,19 @@ A parameter's name is an identifier, always. `#3` is not a parameter — a numbe
 
 There is no third narrowing. `:far` shares the spelling a variable's data width uses, where it does mean something, and on an immediate parameter it is `K816-E0169`: the narrowing is a range an *immediate* must fit, and an immediate is carried by the accumulator — eight or sixteen bits, never twenty-four.
 
+**An alias may be a repetition count.** `lsr * n` in a body is as many `LSR`s as the argument says, and the count is folded at each expansion rather than at the declaration — where there is nothing bound to fold. So an `inline` that names a parameter in a count is not itself an error, and an argument that has no compile-time value is refused at the use site that passed it:
+
+```k65
+inline shift (a, #n) -> a {
+  lsr * n
+}
+
+func work @a8 @i8 {
+  a = #$80
+  shift a, #3 -> a          // lsr / lsr / lsr
+}
+```
+
 The `#` in argument position is *argument syntax*, not a claim about what the substituted expression is used as: it is the only way to write a non-register argument, and it is what keeps `inc_x` on one line from reading as an argument to a call on the line above. Whether the alias stands for a value or a place is decided by how it was *declared* — `#factor` is a value and may only be read, `target` is a place and may be stored to.
 
 What follows from binding at expansion rather than at a call:
@@ -2566,7 +2579,8 @@ LSR  Shift One Bit Right (Memory or Accumulator)
 
 - `*` for single NOP
 - `* N` to emit `N` NOPs (where `N` is a constant expression: literal, global `const`, or inline-fn `#param`)
-- `<mnemonic> * N` to repeat any implied-addressing instruction `N` times (e.g. `inx * 3`, `clc * 2`, `pha * 4`)
+- `<mnemonic> * N` to repeat any implied-addressing instruction `N` times (e.g. `inx * 3`, `clc * 2`, `pha * 4`), with the same three spellings of `N`
+- inside an `inline`, a count that names a `#param` is folded at each expansion — see "How an alias is bound"
 
 ```none
 NOP  No Operation

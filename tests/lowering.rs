@@ -827,6 +827,92 @@ fn an_invisible_callee_is_recorded_as_assumed_in_both_surfaces() {
     );
 }
 
+/// An immediate parameter counts a repetition, which is what
+/// `doc/syntax-reference.md` ("`NOP`") says a count may be: "a literal, a
+/// global `const`, or an inline-fn `#param`".
+///
+/// A count names a parameter that only the use site binds, so the body is
+/// classified once with a single copy and each expansion folds the real
+/// number. Before this the declaration demanded a fold nothing could supply
+/// and reported `K816-E0108` at the body — once, whether or not the `inline`
+/// was ever used. The legacy compiler carries two regression fixtures for the
+/// same construct (`inline-repeat-immediate-param`, and its cross-unit twin).
+#[test]
+fn an_immediate_parameter_counts_a_repetition() {
+    const SOURCE: &str = "const TWO = 2\n\n\
+                          inline shift (a, #n) -> a {\n    lsr * n\n}\n\n\
+                          inline pad (#n) {\n    * n\n}\n\n\
+                          func work @a8 @i8 {\n\
+                          \x20   shift a, #3 -> a\n\
+                          \x20   shift a, #(TWO + 1) -> a\n\
+                          \x20   shift a, #0 -> a\n\
+                          \x20   pad #2\n}\n";
+    let program = lower_program(SOURCE);
+    let mnemonics: Vec<&str> = first_function(&program)
+        .ops
+        .iter()
+        .filter_map(|op| match &op.kind {
+            KOpKind::Instruction(instruction) => Some(instruction.mnemonic.ca65()),
+            _ => None,
+        })
+        .collect();
+    // Three, then three, then none, then two `nop`s — and the `rts` the body
+    // falls off the end into.
+    assert_eq!(
+        mnemonics,
+        vec![
+            "lsr", "lsr", "lsr", "lsr", "lsr", "lsr", "nop", "nop", "rts"
+        ]
+    );
+}
+
+/// A parameter in a count is deferred, not accepted: the expansion still has
+/// to produce a number, and an argument that cannot is reported there.
+///
+/// A count outside an `inline` is unchanged — there is no use site to fold it
+/// later, so it is refused where it is written.
+#[test]
+fn a_repetition_count_is_still_a_number_where_one_can_be_had() {
+    let codes = |source: &str| -> Vec<String> {
+        let mut map = SourceMap::new();
+        let id = map.add_file("count.k816", source);
+        let parse = parse_source(map.file(id), None);
+        assert_eq!(parse.diagnostics, vec![], "`{source}` did not parse");
+        let (model, mut diagnostics) = analyze_file(&parse.file);
+        // Lowering runs only over a program analysis accepted, which is the
+        // rule the driver follows: an unclassified instruction it met anyway
+        // would be `K816-E0900`, a compiler bug rather than an answer.
+        if !diagnostics.iter().any(|diagnostic| diagnostic.is_error()) {
+            let (_, lowered) = lower(model.program(&parse.file), &model);
+            diagnostics.extend(lowered);
+        }
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str().to_owned())
+            .collect()
+    };
+
+    // Declared and never used: nothing to fold, and nothing to report.
+    assert_eq!(
+        codes("inline shift (a, #n) -> a {\n    lsr * n\n}\n"),
+        Vec::<String>::new(),
+    );
+    // Used with an argument ld65 decides: reported at the expansion.
+    assert_eq!(
+        codes(
+            "extern const SYM\n\n\
+             inline shift (a, #n) -> a {\n    lsr * n\n}\n\n\
+             func work @a8 @i8 {\n    shift a, #SYM -> a\n}\n"
+        ),
+        vec!["K816-E0167".to_owned()],
+    );
+    // And a count that names an address, in an ordinary body: unchanged.
+    assert_eq!(
+        codes("var slot = $80\n\nfunc work @a8 @i8 {\n    lsr * slot\n}\n"),
+        vec!["K816-E0108".to_owned()],
+    );
+}
+
 /// An immediate parameter narrows to `byte` or `word`, and to nothing else.
 ///
 /// The narrowing is a range every argument must fit, so it is checked at each

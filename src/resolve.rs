@@ -1343,37 +1343,75 @@ impl<'a> Resolver<'a> {
         match folded.value() {
             Some(value) => Some(value.get()),
             None => {
-                let mut symbols = Vec::new();
-                folded.symbols(&mut symbols);
-                // An `extern const` is its own answer. "This is not known
-                // until link time" is true of it and of a label alike, but
-                // only one of the two can be *made* known by writing the
-                // number, and saying which is the whole use of the message.
-                if let Some(id) = symbols
-                    .iter()
-                    .find(|id| matches!(self.symbols.kind(**id), SymbolKind::Const { value: None }))
-                {
-                    let name = self.symbols.name(*id).to_owned();
-                    let declaration = self.symbols.symbol(*id).declaration;
-                    self.report(link_time_value(&name, expr.span, Some(declaration)));
-                    return None;
-                }
-                let named = symbols.first().map(|id| self.symbols.name(*id).to_owned());
-                let mut diagnostic = Diagnostic::error(
-                    DiagnosticCode::NOT_CONSTANT,
-                    format!("{position} must be known at compile time"),
-                    Label::new(expr.span, "this value is not known until link time"),
-                )
-                .with_help("use a numeric literal or a `const` here")
-                .with_docs("doc/syntax-reference.md#constant-declaration");
-                if let Some(name) = named {
-                    diagnostic =
-                        diagnostic.with_note(format!("`{name}` gets its address from ld65"));
-                }
-                self.report(diagnostic);
+                self.not_constant(expr, position, &folded);
                 None
             }
         }
+    }
+
+    /// A repetition count, folded here or left to the expansion site.
+    ///
+    /// `lsr * n` inside an `inline` names a parameter *this* site does not
+    /// bind, and `doc/syntax-reference.md` ("`NOP`") documents the case: a
+    /// count may be "a literal, a global `const`, or an inline-fn `#param`".
+    /// So the body is classified once with a single copy — the count decides
+    /// how many copies to emit and nothing about whether the instruction is
+    /// legal — and each expansion folds the real number with the argument
+    /// bound, which is also where a count that is not constant *there* is
+    /// reported. An `inline` body is lowered only through an expansion, so
+    /// there is no path on which the placeholder reaches the output.
+    pub fn repetition(&mut self, count: &Expr, position: &str) -> Option<u32> {
+        let folded = self.fold(count)?;
+        if let Some(value) = folded.value() {
+            return Some(value.get());
+        }
+        if self.names_an_unbound_alias(&folded) {
+            return Some(1);
+        }
+        self.not_constant(count, position, &folded);
+        None
+    }
+
+    /// True when `folded` still names an `inline` parameter this site does
+    /// not bind — the one reason a fold can fail that the *use* site fixes.
+    fn names_an_unbound_alias(&self, folded: &KExpr) -> bool {
+        let mut symbols = Vec::new();
+        folded.symbols(&mut symbols);
+        symbols.iter().any(|id| {
+            matches!(self.symbols.kind(*id), SymbolKind::Alias { .. })
+                && !self.aliases.contains_key(id)
+        })
+    }
+
+    /// Reports an expression that had to be a number and was not.
+    fn not_constant(&mut self, expr: &Expr, position: &str, folded: &KExpr) {
+        let mut symbols = Vec::new();
+        folded.symbols(&mut symbols);
+        // An `extern const` is its own answer. "This is not known until link
+        // time" is true of it and of a label alike, but only one of the two
+        // can be *made* known by writing the number, and saying which is the
+        // whole use of the message.
+        if let Some(id) = symbols
+            .iter()
+            .find(|id| matches!(self.symbols.kind(**id), SymbolKind::Const { value: None }))
+        {
+            let name = self.symbols.name(*id).to_owned();
+            let declaration = self.symbols.symbol(*id).declaration;
+            self.report(link_time_value(&name, expr.span, Some(declaration)));
+            return;
+        }
+        let named = symbols.first().map(|id| self.symbols.name(*id).to_owned());
+        let mut diagnostic = Diagnostic::error(
+            DiagnosticCode::NOT_CONSTANT,
+            format!("{position} must be known at compile time"),
+            Label::new(expr.span, "this value is not known until link time"),
+        )
+        .with_help("use a numeric literal or a `const` here")
+        .with_docs("doc/syntax-reference.md#constant-declaration");
+        if let Some(name) = named {
+            diagnostic = diagnostic.with_note(format!("`{name}` gets its address from ld65"));
+        }
+        self.report(diagnostic);
     }
 
     /// The symbol a plain name denotes here, in scope and without reporting.
@@ -1501,7 +1539,7 @@ impl<'a> Resolver<'a> {
         // stage did the folding.
         let repeat = match &native.repeat {
             None => 1,
-            Some(count) => self.constant(count, "instruction repetition counts")?,
+            Some(count) => self.repetition(count, "instruction repetition counts")?,
         };
         let classified = self.classify_operand(
             mnemonic,

@@ -2084,13 +2084,28 @@ fn rename_refuses_what_the_compiler_would_refuse() {
     };
 
     // A reserved spelling, worded by `compat::reserved_name_refusal` itself.
-    let refusal = refuse(&mut workspace, 564, "x");
+    // Asked of a *unit-level* name, because that is where the compiler
+    // reserves them: `TASKS` at 494.
+    let refusal = refuse(&mut workspace, 494, "x");
     assert_eq!(
         refusal,
         k816::compat::reserved_name_refusal("x").expect("`x` is reserved")
     );
     assert!(refusal.contains("names a register"), "{refusal}");
-    assert!(refuse(&mut workspace, 564, "c").contains("names a flag"));
+    assert!(refuse(&mut workspace, 494, "c").contains("names a flag"));
+    assert!(refuse(&mut workspace, 494, "lda").contains("is a 65816 instruction"));
+
+    // …and *not* of a dotted one. A local label and a field keep their `.`,
+    // so `.x` is not the register spelling and the compiler takes it —
+    // `var pos[ .x :byte .y :byte ]` is how the original writes a point. The
+    // editor declined that rename until the question was asked about the
+    // replacement rather than about the name with its dot stripped off.
+    for offset in [506, 564] {
+        for to in [".x", "x", ".c", ".lda"] {
+            rename_edits(&mut workspace, RENAME_DOC, offset, to)
+                .unwrap_or_else(|e| panic!("renaming at {offset} to `{to}`: {e}"));
+        }
+    }
 
     // A collision inside the owner's scope: `first` already has `.state`.
     let refusal = refuse(&mut workspace, 564, "state");

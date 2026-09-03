@@ -188,7 +188,7 @@ pub fn rename(
             SymbolKind::Alias { .. }
         )
     });
-    check_spelling(bare, &replacement, alias)?;
+    check_spelling(&replacement, alias)?;
 
     let spans = references(analysis, file, offset, true);
     if spans.is_empty() {
@@ -233,13 +233,19 @@ fn current_text(context: &Context<'_>) -> String {
 ///
 /// The words are `compat::reserved_name`'s, not a second set here: a rename
 /// an editor accepts and the next build rejects is worse than one the editor
-/// declined, and the two agreeing has to be a fact rather than a habit.
+/// declined, and the two agreeing has to be a fact rather than a habit. It
+/// runs in the other direction too, which is why the question is asked about
+/// `replacement` and not about `bare`: a local label and a field keep their
+/// leading `.`, so `.x` is not the register spelling `x` and the compiler
+/// takes it — `var pos[ .x :byte .y :byte ]` is how the original writes a
+/// point. Asking about the dot-stripped name declined a rename the next
+/// build would have accepted.
 ///
 /// `alias` is the compiler's one exception, and agreeing means keeping it: an
 /// `inline` parameter is bound at the use site rather than declared into a
 /// namespace, so no spelling is taken.
-fn check_spelling(bare: &str, replacement: &str, alias: bool) -> Result<(), Refusal> {
-    if !alias && let Some(refusal) = crate::compat::reserved_name_refusal(bare) {
+fn check_spelling(replacement: &str, alias: bool) -> Result<(), Refusal> {
+    if !alias && let Some(refusal) = crate::compat::reserved_name_refusal(replacement) {
         return Err(refusal);
     }
     let mut characters = replacement.trim_start_matches('.').chars();

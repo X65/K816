@@ -1778,6 +1778,24 @@ In addition to the classical 6502 modes, the K65 operand grammar exposes these 6
 
 Operand rule for **raw mnemonics**: `#expr` is immediate, while an unprefixed value operand (`lda 0`, `lda addr`, `lda expr`) is an address-mode operand. Bare `const` names and const-rooted expressions are rejected in address position because `const` names values, not memory locations — the two stack-relative forms above being the exception, since their operand is an offset rather than an address; use `#CONST` for an immediate, declare a `var`/label for memory access, or attach an address-encoding prefix (`lda dp 0`, `lda abs 0`, `lda far 0`) when a numeric literal should force a specific address width. The address-of operators `&&label` and `&&&label` are the intentional exception: they produce immediate relocations even without `#`.
 
+A **section's own name** is not an address operand either (`K816-E0115`). `lda target` where `target` is a `func` or a `naked` section is refused, and the reason is the address rather than the load: a body is an operation stream the optimizer rewrites — a mode operation folded, a redundant load coalesced, a dead store dropped — so the offset of its first byte is not one the compiler can promise to keep, and `--no-opt` alone would move it. To read a code byte, put a **label** in the body and load through that; the label is the position the author placed, and it is what survives a rewritten body:
+
+```k65
+var slot = $80
+
+func target @a8 @i8 {
+patch:
+  slot = a
+}
+
+func main @a8 @i8 {
+  lda patch                 // the byte at the label
+  slot = a
+}
+```
+
+`call target` calls it and `&&target` takes its address as a value; neither reads the byte, which is why the diagnostic names all three. An `inline` name is refused in the same position for a different reason and with its own message — it is copied into each use site and has no one address at all. The original K65 compiler accepts `a = target` as an absolute load, so this is a deliberate narrowing, recorded as `k816-function-name-is-not-a-place` in `doc/k65-compat-manifest.md`.
+
 ### Registers
 
 **One rule names them all: a single letter is a flag, and a register that is not `a x y s` is spelled by its datasheet abbreviation.** `a`, `x`, `y`, and `s` are the four the K65 grammar itself names; every other register the 65816 has and the 6502 did not gets a longer name, so no spelling has to be read two ways.

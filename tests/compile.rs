@@ -4193,6 +4193,36 @@ fn a_borrowed_declaration_carries_what_it_depends_on() {
         }
     }
 }
+/// A label inside a body is the address a code byte is read through.
+///
+/// The name of a `func` is not (`K816-E0115`, and the manifest row
+/// `k816-function-name-is-not-a-place`): a body is an operation stream the
+/// optimizer rewrites, so the offset of its first byte is not one the
+/// compiler can keep. A label is what the author places, and the diagnostic's
+/// help sends the reader here — so the spelling it recommends is gated at the
+/// bytes rather than left as advice.
+#[test]
+fn a_label_in_a_body_is_the_address_a_code_byte_is_read_through() {
+    let (bytes, _) = compile_and_link(
+        "code-byte-label",
+        "patch.k816",
+        "var slot = $80\n\n\
+         func target @a8 @i8 {\npatch:\n    slot = a\n}\n\n\
+         func main @a8 @i8 {\n    lda patch\n    slot = a\n}\n",
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
+
+    // `target` is first, so `patch` is the load address itself: $8000 under
+    // `tests/golden/slice.cfg`.
+    assert_eq!(
+        &bytes[..8],
+        &[0x85, 0x80, 0x60, 0xAD, 0x00, 0x80, 0x85, 0x80],
+        "sta $80 / rts, then lda $8000 / sta $80: {bytes:02X?}"
+    );
+}
 
 /// A stack offset is a number, and it reaches the object file as one.
 ///

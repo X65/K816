@@ -1,0 +1,33 @@
+row       k816-function-name-is-not-a-place
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0115
+
+**A `func`'s name is an address to the original, and not one K816 will
+promise.**
+
+`VarArg -> Ident` (`compiler.inc:278`) never asks what kind of thing a name
+is, so a section name in operand position is simply its address:
+`oracle.lst` has `LDA target`, and `oracle.hex` has `AD 03 20` — the first
+byte of `target`'s body.
+
+K816 refuses it with `K816-E0115`.  The load is not the problem; the address
+is.  A `func` body is an operation stream the optimizer rewrites — a mode
+operation folded, a redundant load coalesced, a dead store dropped — so "the
+byte at the start of the section" is not a thing the compiler can keep
+stable across a build, and a name that means it would be a promise broken by
+`--no-opt` alone.  A **label inside the body** is exactly the promise K816
+can keep: the author places it, the passes treat it as a position, and
+`a = patch` compiles.
+
+The fixture makes that the whole difference.  `patch:` is the body's first
+statement, so the original gives `a = target` and `a = patch` the same three
+bytes — `AD 03 20` twice, at $2007 and $200C — and the two spellings differ
+only in whether the compiler is being asked for an offset it chose or one the
+source did.
+
+`inline` names stay refused for a different reason, and the original agrees:
+an `inline` is copied into its use sites and has no address at all.  Asking
+for one is a link error there (`Unknown label`), measured while this row was
+written.

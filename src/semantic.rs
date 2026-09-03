@@ -3274,6 +3274,17 @@ impl Analysis {
             // for: a message that names the wrong one sends the reader to
             // the wrong declaration.
             let what = symbol.kind.describe();
+            // Every kind that reaches here is a section: an `inline` is
+            // refused where the name resolves, an `abstract var` has
+            // `K816-E0136`, and a `const` is skipped above. The title still
+            // asks the symbol what it is, so a kind that starts arriving
+            // names itself rather than being called a function — but the
+            // note below is written about a section, which is why the
+            // assertion says so out loud.
+            debug_assert!(
+                matches!(symbol.kind, SymbolKind::Function { .. }),
+                "`{name}` is {what} and reached the section-name check"
+            );
             self.diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::SYMBOL_KIND_MISMATCH,
@@ -3281,8 +3292,21 @@ impl Analysis {
                     Label::new(site, "cannot be used as a memory operand"),
                 )
                 .with_secondary(Label::new(declaration, "declared here"))
+                // The original K65 compiles this — a section name in operand
+                // position is the address of its first byte
+                // (`k816-function-name-is-not-a-place`, measured) — so the
+                // refusal narrows a real program and owes the reader the
+                // spelling that works. `&&NAME` is not it: that is the
+                // address as a *value*, and an author who wants the byte at
+                // it is no better off.
+                .with_note(
+                    "a `func` body is an operation stream the optimizer rewrites, so the \
+                     address of its first byte is not one the compiler can promise to \
+                     keep; a label inside the body is",
+                )
                 .with_help(format!(
-                    "call it with `call {name}`, or take its address with `&&{name}`"
+                    "call it with `call {name}`, take its address with `&&{name}`, or \
+                     put a label in the body and load through that"
                 )),
             );
         }

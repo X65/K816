@@ -499,6 +499,11 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-metadata-query", K816Extension, Rejects),
     row("k816-typed-view", K816Extension, Rejects),
     row("k816-abstract-var", K816Extension, Rejects),
+    row(
+        "k816-function-name-is-not-a-place",
+        IntentionallyChanged,
+        Quiet,
+    ),
     row("k816-zero-store-target", K816Extension, Quiet),
     row("k816-eval-extensions", K816Extension, Rejects),
     row("k816-eval-diagnostics", K816Extension, Quiet),

@@ -977,6 +977,39 @@ fn a_memory_location_is_not_a_stack_offset() {
     }
 }
 
+/// A section's name in address position says which spelling *does* read a
+/// code byte.
+///
+/// The original K65 compiles `a = target` to `LDA target`, so this is a real
+/// narrowing rather than a spelling the original lacks
+/// (`k816-function-name-is-not-a-place`, measured against the pinned oracle).
+/// The reason is the address and not the load: a body is an operation stream
+/// the optimizer rewrites, so the offset of its first byte is not one the
+/// compiler can promise to keep. A label inside the body is, and the help has
+/// to say so — an author sent to `&&target` gets the address as a *value* and
+/// still cannot read the byte.
+#[test]
+fn a_section_name_in_address_position_offers_the_label() {
+    for source in [
+        "func target @a8 @i8 {\n    return\n}\n\nfunc work @a8 @i8 { lda target }\n",
+        "func target @a8 @i8 {\n    return\n}\n\nfunc work @a8 @i8 { a = target }\n",
+    ] {
+        let (_, diagnostic) = diagnostic_for(source, DiagnosticCode::SYMBOL_KIND_MISMATCH);
+        let help = diagnostic.help.clone().unwrap_or_default();
+        assert!(
+            help.contains("label"),
+            "the help has to name the spelling that works: {diagnostic:?}"
+        );
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("optimizer") && note.contains("label")),
+            "the note has to say why the section's own name is refused: {diagnostic:?}"
+        );
+    }
+}
+
 /// The other half of the same rule: a `const` offset is not an address error.
 ///
 /// `K816-E0110` fires wherever a `const` stands in for a location. A stack

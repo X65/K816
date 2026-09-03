@@ -1,0 +1,33 @@
+// Oracle question: what does a `func`'s *name* mean in operand position - the
+// address of the section's first byte, or nothing a program may load through?
+//
+// `VarArg -> Ident` (`compiler.inc:278`) does not ask what kind of thing the
+// name is, so the question is what the compiler does with a section name where
+// a variable would go.  The answer is in `oracle.lst`: `LDA target`, an
+// ordinary absolute load from the address the section starts at.
+//
+// K816 refuses it - `K816-E0115` - and the reason is not that the load is
+// meaningless but that the address is: a body is rewritten by the optimizer,
+// so "the section's first byte" is not an offset the compiler can promise to
+// keep.  A label inside the body is, and `a = patch` below is the spelling
+// that survives, in this fixture so that the refusal is shown to be about
+// which name is written and not about reading code as data.  `target`'s body
+// is a store rather than a load: a width-dependent immediate outside the entry
+// section is `K816-E0104`, which would be a second answer to a different
+// question.
+
+var slot = 0x80
+
+func target {
+patch:
+  slot = a
+  return
+}
+
+main {
+  a = target
+  slot = a
+  a = patch
+  slot = a
+  return
+}

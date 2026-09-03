@@ -230,9 +230,31 @@ Three things bound the check, and each is a deliberate limit rather than an over
 
 - **A declaration with no `:` suffix makes no claim.** It is not a defaulted `:byte`. Allocation still treats an unwritten width as one byte — `var arr[10]` is ten bytes — but that is a question about *size*, and the absence of a suffix is the absence of an answer about *width*. `var counter` loads in `@a8` and in `@a16` alike.
 - **Only accesses that move the datum through a register are checked**, which is what the rule is about. `lda`, `sta`, `ldx`, `cpy`, and the ALU operations qualify; `inc mem` and `stz mem` move their datum through no register, so there is nothing to disagree with them.
-- **A pointer is not its target.** `lda [ptr]` names `ptr` and loads what it points at, so the check does not apply to it — which is what makes the recommended spelling for a `:far` variable legal.
+- **A pointer is not its target.** `lda [ptr]` names `ptr` and loads what it points at, so the datum check does not apply to it — which is what makes the recommended spelling for a `:far` variable legal.
 
 Where the tracked width is unknown, the check is silent: an unknown width is not a claim either, and `K816-E0104` is the diagnostic for not knowing one.
+
+#### The pointer has a width of its own
+
+The last bullet says the datum check leaves an indirect operand alone. The *pointer* is still checked, against a different question: how many bytes of address the mode reads out of the direct page. `(ptr)`, `(ptr),y` and `(ptr,x)` read **two**; `[ptr]` and `[ptr],y` read **three**. A pointer declared narrower than that is read past its own end, into whatever ld65 placed after it; one declared wider is read short, silently dropping the bank it was declared to hold. Either way the address is wrong and nothing says so, which is why a declared width that disagrees is `K816-E0172`:
+
+```k65
+var dp one:byte
+var dp near:word
+var dp long:far
+
+func main @a8 @i8 {
+  lda (near)       // fine: two bytes read, two declared
+  lda [long]       // fine: three and three
+  lda (one)        // K816-E0172 — reads `one` and the byte after it
+  lda (long)       // K816-E0172 — reads two of the three, dropping the bank
+  lda [near]       // K816-E0172 — reads a bank byte `near` does not have
+}
+```
+
+This is the *pointer's* width, not the datum's: how wide the thing it reaches is stays the M flag's business, so `lda (near)` is a one-byte load in `@a8` and a two-byte one in `@a16` with the same two-byte pointer. And the first bullet above still holds — a declaration with no `:` suffix makes no claim, so `var ptr = $80` with `lda (ptr)` is what it always was, which is how every pointer in the original's own sources is written.
+
+`(ptr,s),y` is not in the list. Its operand is an offset into the stack frame rather than a variable that holds a pointer, and `K816-E0168` is what governs it.
 
 ### Address-encoding (prefixes)
 

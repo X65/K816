@@ -640,6 +640,60 @@ fn transfer_width_mismatch(
     .with_docs("doc/register-width-aware-syntax.md")
 }
 
+/// The size of pointer one indirect mode reads, or `None` when the operand
+/// is not a pointer.
+///
+/// `(expr,S),Y` is deliberately absent: its operand is an offset into the
+/// frame, and the pointer it reaches is on the stack rather than named here
+/// (`K816-E0168` is what governs that operand).
+fn pointer_width(form: OperandForm) -> Option<DataWidth> {
+    match form {
+        OperandForm::Indirect | OperandForm::IndirectIndexedX | OperandForm::IndirectIndexedY => {
+            Some(DataWidth::Word)
+        }
+        OperandForm::LongIndirect | OperandForm::LongIndirectIndexedY => Some(DataWidth::Far),
+        _ => None,
+    }
+}
+
+/// A pointer that is not the size the mode reads.
+fn pointer_width_mismatch(
+    mnemonic: Mnemonic,
+    operand: Span,
+    declaration: Span,
+    wanted: DataWidth,
+    declared: DataWidth,
+) -> Diagnostic {
+    let spelling = |width: DataWidth| match width {
+        DataWidth::Byte => ":byte",
+        DataWidth::Word => ":word",
+        DataWidth::Far => ":far",
+    };
+    let (wanted_bytes, declared_bytes) = (wanted.bytes(), declared.bytes());
+    let other = match wanted {
+        DataWidth::Far => "`(…)` if it really holds a 16-bit one",
+        _ => "`[…]` if it really holds a 24-bit one",
+    };
+    Diagnostic::error(
+        DiagnosticCode::INDIRECT_POINTER_WIDTH,
+        format!(
+            "`{}` reads a {wanted_bytes}-byte pointer here, and this one holds {declared_bytes}",
+            mnemonic.ca65()
+        ),
+        Label::new(operand, format!("declared `{}`", spelling(declared))),
+    )
+    .with_secondary(Label::new(declaration, "the width is declared here"))
+    .with_note(format!(
+        "the mode reads {wanted_bytes} bytes of address; how wide the datum it reaches is \
+         stays the M flag's business, so the two widths are separate claims"
+    ))
+    .with_help(format!(
+        "declare the pointer `{}`, or reach it through {other}",
+        spelling(wanted)
+    ))
+    .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65")
+}
+
 /// A `:far` datum in register position: there is no register to put it in.
 fn datum_too_wide(mnemonic: Mnemonic, operand: Span, declaration: Span) -> Diagnostic {
     Diagnostic::error(
@@ -1875,6 +1929,7 @@ impl<'a> Resolver<'a> {
         }
         self.check_fits(spec, &expr, value.span);
         self.check_datum_width(mnemonic, form, value);
+        self.check_pointer_width(mnemonic, form, value);
 
         let index = index.and_then(|index| match index.kind {
             IndexRegisterKind::X => Some(IndexRegister::X),
@@ -2021,6 +2076,41 @@ impl<'a> Resolver<'a> {
                 from,
                 destination,
                 to,
+            ));
+        }
+    }
+
+    /// Refuses an indirect operand whose pointer is not the size the mode
+    /// reads.
+    ///
+    /// `(ptr)` reads two bytes of address out of the direct page and `[ptr]`
+    /// three, so a pointer declared narrower than that is read past its own
+    /// end — into whatever ld65 placed next, which is a wrong address with
+    /// nothing said. A pointer declared *wider* is the other half of the same
+    /// mistake: `(ptr)` on a `:far` variable silently drops the bank it was
+    /// declared to hold.
+    ///
+    /// This is not [`Self::check_datum_width`] in another costume. That one
+    /// asks whether the *register* can hold the datum, and it skips these
+    /// modes precisely because the operand names a pointer rather than the
+    /// datum; this asks whether the *variable* can hold the pointer. The two
+    /// widths are independent, which is what the note says.
+    fn check_pointer_width(&mut self, mnemonic: Mnemonic, form: OperandForm, value: &Expr) {
+        let Some(wanted) = pointer_width(form) else {
+            return;
+        };
+        // A variable that declares no width is the K65 idiom and makes no
+        // claim to disagree with, the same rule the datum check follows.
+        let Some((declared, declaration)) = self.declared_width(value) else {
+            return;
+        };
+        if declared != wanted {
+            self.report(pointer_width_mismatch(
+                mnemonic,
+                value.span,
+                declaration,
+                wanted,
+                declared,
             ));
         }
     }

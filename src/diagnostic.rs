@@ -467,6 +467,21 @@ impl DiagnosticCode {
     /// right, exactly as the legacy compiler had it.
     pub const TRANSFER_WIDTH_MISMATCH: Self = Self("K816-E0171");
 
+    /// An indirect operand whose pointer is not declared wide enough to be
+    /// one.
+    ///
+    /// `(ptr)` reads a 16-bit pointer out of the direct page and `[ptr]` a
+    /// 24-bit one; how wide the *datum* they reach is stays the M flag's
+    /// business. So the pointer's declared width is a separate claim from
+    /// the datum's, and a `:byte` variable in `(ptr)` means the second byte
+    /// of the address is whatever ld65 placed after it — a silent wrong
+    /// answer, which is why this is an error and not a warning.
+    ///
+    /// Only a *declared* width can disagree. A variable that declares none
+    /// is the K65 idiom (`var ptr = $80`) and says nothing to check, exactly
+    /// as it says nothing in [`DATA_WIDTH_MISMATCH`](Self::DATA_WIDTH_MISMATCH).
+    pub const INDIRECT_POINTER_WIDTH: Self = Self("K816-E0172");
+
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
     // reserved for the same meaning: nothing else may take the number, and a
@@ -761,6 +776,7 @@ mod tests {
         DiagnosticCode::IMMEDIATE_PARAMETER_WIDTH,
         DiagnosticCode::IMMEDIATE_PARAMETER_RANGE,
         DiagnosticCode::TRANSFER_WIDTH_MISMATCH,
+        DiagnosticCode::INDIRECT_POINTER_WIDTH,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

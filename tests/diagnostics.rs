@@ -106,6 +106,11 @@ const FAMILY: &[Case] = &[
         caret: "slot",
     },
     Case {
+        source: "var dp ptr:byte\nfunc work @a8 @i8 { lda (ptr) }\n",
+        code: DiagnosticCode::INDIRECT_POINTER_WIDTH,
+        caret: "ptr",
+    },
+    Case {
         source: "func work @a8 @i16 { tax }\n",
         code: DiagnosticCode::TRANSFER_WIDTH_MISMATCH,
         caret: "tax",
@@ -974,6 +979,76 @@ fn a_memory_location_is_not_a_stack_offset() {
                 .any(|note| note.contains("ld65") && note.contains("slot")),
             "the note has to say why silence would be worse: {diagnostic:?}"
         );
+    }
+}
+
+/// Every indirect mode checks the pointer it reads, and an undeclared width
+/// is still the K65 idiom.
+///
+/// `(ptr)` reads two bytes of address out of the direct page and `[ptr]`
+/// three. A `:byte` pointer in the first is read one byte past its own end —
+/// into whatever ld65 placed next — and a `:far` one is read two bytes short,
+/// silently dropping the bank it was declared to hold. Both are wrong
+/// addresses with nothing said, which is why they are errors.
+///
+/// The legacy compiler kept `syntax-addrmode-indirect-err-ptr` for this and
+/// K816 compiled all three of its lines. What K816 must *not* do is refuse
+/// `var ptr = $80` used indirectly: that declares no width, it is how the
+/// original writes every pointer, and it is the reason this check asks the
+/// declaration rather than the storage class.
+#[test]
+fn an_indirect_pointer_is_the_size_the_mode_reads() {
+    let refused = |source: &str| {
+        let (_, diagnostic) = diagnostic_for(source, DiagnosticCode::INDIRECT_POINTER_WIDTH);
+        diagnostic
+    };
+    // Two-byte modes, both directions of wrong.
+    for operand in ["(ptr)", "(ptr),y", "(ptr,x)"] {
+        for (declared, held) in [(":byte", "1"), (":far", "3")] {
+            let source = format!("var dp ptr{declared}\nfunc work @a8 @i8 {{ lda {operand} }}\n");
+            let diagnostic = refused(&source);
+            assert!(
+                diagnostic.title.contains("reads a 2-byte pointer")
+                    && diagnostic.title.ends_with(&format!("holds {held}")),
+                "{operand} with {declared}: {diagnostic:?}"
+            );
+        }
+    }
+    // Three-byte modes.
+    for operand in ["[ptr]", "[ptr],y"] {
+        for declared in [":byte", ":word"] {
+            let source = format!("var dp ptr{declared}\nfunc work @a8 @i8 {{ lda {operand} }}\n");
+            let diagnostic = refused(&source);
+            assert!(
+                diagnostic.title.contains("reads a 3-byte pointer"),
+                "{operand} with {declared}: {diagnostic:?}"
+            );
+        }
+    }
+    // The two widths are separate claims, and the note is where that is said.
+    let diagnostic = refused("var dp ptr:byte\nfunc work @a8 @i8 { lda (ptr) }\n");
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("M flag") && note.contains("separate")),
+        "{diagnostic:?}"
+    );
+    // And what must still compile: the right width, and no width at all.
+    for source in [
+        "var dp ptr:word\nfunc work @a8 @i8 { lda (ptr) }\n",
+        "var dp ptr:far\nfunc work @a8 @i8 { lda [ptr] }\n",
+        "var dp ptr\nfunc work @a8 @i8 { lda (ptr) }\n",
+        "var ptr = $80\nfunc work @a8 @i8 { lda (ptr),y }\n",
+        // A stack-relative indirect names an offset, not a pointer variable.
+        "const slot = $04\nfunc work @a8 @i8 { lda (slot,s),y }\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("case.k816", source);
+        let parse = parse_source(map.file(id), None);
+        assert_eq!(parse.diagnostics, vec![], "{source}");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parse.file);
+        assert_eq!(diagnostics, vec![], "{source}");
     }
 }
 

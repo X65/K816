@@ -349,7 +349,17 @@ export default grammar({
         field('fields', $.field_list),
       ),
 
-    field_list: $ => seq($._open_bracket, repeat1($.field_declaration), ']'),
+    // Entries may be separated by a newline, by a comma, or by both, and a
+    // trailing comma is allowed. K65 is newline-insensitive everywhere else,
+    // and the legacy K816's own fixtures wrote the comma form
+    // (`var dp gpio[ .ddr:byte, .data:byte, ]`), so a field list is the one
+    // place a newline used to be load-bearing.
+    field_list: $ =>
+      seq(
+        $._open_bracket,
+        repeat1(seq($.field_declaration, optional(','))),
+        ']',
+      ),
 
     _open_bracket: $ => choice('[', $._open_bracket_immediate),
 

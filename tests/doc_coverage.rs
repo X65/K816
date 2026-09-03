@@ -807,7 +807,10 @@ fn every_symbolic_subscript_section_is_accounted_for() {
         ),
         (
             "Field item grammar",
-            "tests/semantic.rs: a_field_takes_the_nearest_width_and_counts_elements_of_it",
+            "tests/semantic.rs: a_field_takes_the_nearest_width_and_counts_elements_of_it \
+             for the widths and counts, and a_field_list_takes_a_comma_a_newline_or_both \
+             for the separators — the half this row used to leave uncovered, which is how \
+             the grammar came to accept only the newline",
         ),
         (
             "Diagnostics",

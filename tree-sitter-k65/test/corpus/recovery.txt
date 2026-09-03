@@ -96,6 +96,28 @@ var v[
         (ERROR)))))
 
 ================================================================================
+A doubled comma in a field list recovers
+:error
+================================================================================
+
+var v[
+  .x,, .y
+]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    entry: (var_entry
+      name: (identifier)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier))
+        (ERROR)
+        (field_declaration
+          name: (local_identifier))))))
+
+================================================================================
 A malformed call contract recovers
 :error
 ================================================================================

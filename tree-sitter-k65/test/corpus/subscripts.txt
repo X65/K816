@@ -27,6 +27,44 @@ var TASKS[
       address: (number))))
 
 ================================================================================
+Field entries take a comma, a newline, or both
+================================================================================
+
+var pos[.x, .y]
+
+var dp gpio[
+    .ddr   :byte,
+    .data  :byte,
+    .latch :word,
+]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    entry: (var_entry
+      name: (identifier)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier))
+        (field_declaration
+          name: (local_identifier)))))
+  (var_declaration
+    entry: (var_entry
+      storage: (storage_class)
+      name: (identifier)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))))))
+
+================================================================================
 Field lists nest
 ================================================================================
 

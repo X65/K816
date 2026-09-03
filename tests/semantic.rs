@@ -895,6 +895,60 @@ var pairs:word[2] * 3
     assert_eq!((axes("pairs").2, axes("pairs").3), (4, Some(3)));
 }
 
+/// A field list separates its entries by a newline, by a comma, or by both,
+/// and tolerates a trailing comma — and every spelling packs the same layout.
+///
+/// K65 is newline-insensitive everywhere else and `var a, b, c` is a comma
+/// list already, so the field list was the one place a newline was
+/// load-bearing. The legacy K816's own fixtures wrote the comma form, which
+/// is why four of them would not parse here.
+#[test]
+fn a_field_list_takes_a_comma_a_newline_or_both() {
+    use k816::symbol::SymbolKind;
+
+    let spellings = [
+        "var gpio[.ddr :byte, .data :byte, .latch :word]\n",
+        "var gpio[.ddr :byte .data :byte .latch :word]\n",
+        "var gpio[\n    .ddr :byte,\n    .data :byte,\n    .latch :word,\n]\n",
+        "var gpio[\n    .ddr :byte\n    .data :byte\n    .latch :word\n]\n",
+        // A comma and a newline together, and a nested list that ends on one.
+        "var gpio[\n    .ddr :byte,\n    .data :byte, .latch :word,\n]\n",
+    ];
+    for source in spellings {
+        let (model, diagnostics) = analyze(source);
+        assert_eq!(diagnostics, vec![], "{source:?}");
+        let id = model.symbols.lookup("gpio").expect("declared");
+        let SymbolKind::Var { layout, .. } = model.symbols.symbol(id).kind else {
+            panic!("`gpio` is not a var");
+        };
+        let layout = model.symbols.layout(layout.expect("a field list"));
+        assert_eq!(layout.size, 4, "{source:?}");
+        assert_eq!(layout.field("ddr").expect("packed").offset, 0);
+        assert_eq!(layout.field("data").expect("packed").offset, 1);
+        assert_eq!(layout.field("latch").expect("packed").offset, 2);
+    }
+}
+
+/// A nested list takes the separator too, and the comma after a nested list
+/// belongs to the list that contains it.
+#[test]
+fn a_nested_field_list_takes_the_separator_as_well() {
+    use k816::symbol::SymbolKind;
+
+    let (model, diagnostics) = analyze(
+        "var REGS[\n    .status :byte,\n    .data[.lo :byte, .hi :byte],\n    .end :byte\n]\n",
+    );
+    assert_eq!(diagnostics, vec![]);
+    let id = model.symbols.lookup("REGS").expect("declared");
+    let SymbolKind::Var { layout, .. } = model.symbols.symbol(id).kind else {
+        panic!("`REGS` is not a var");
+    };
+    let layout = model.symbols.layout(layout.expect("a field list"));
+    assert_eq!(layout.size, 4);
+    assert_eq!(layout.field("data").expect("packed").offset, 1);
+    assert_eq!(layout.field("end").expect("packed").offset, 3);
+}
+
 /// What a field list packs, and what the three widths in one declaration
 /// each decide.
 #[test]

@@ -77,7 +77,11 @@ Separators inside the field list:
 
 - newline
 - comma
-- trailing separator is allowed
+- both together
+- a trailing separator is allowed
+
+So `var pos[.x, .y]`, the same list one field per line, and the multi-line
+comma form with a trailing comma are three spellings of one declaration.
 
 ## Access Syntax
 

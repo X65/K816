@@ -927,8 +927,41 @@ impl<'a> Resolver<'a> {
         match &expr.kind {
             ExprKind::Number(value) => Some(KExpr::number(*value)),
             ExprKind::Symbol(name) => {
-                let id = self.resolve(&name.text, name.span)?;
-                self.symbol_value(id, name.span)
+                let reported = self.diagnostics.len();
+                if let Some(id) = self.resolve(&name.text, name.span) {
+                    return self.symbol_value(id, name.span);
+                }
+                // A `const` a visible unit declares folds here even before
+                // the import pass has put it in the table.
+                //
+                // `semantic::analyze` declares foreign names *after* the
+                // unit's own items, so that a local declaration always wins
+                // its name — which leaves a unit-level initializer, `const
+                // FRAME = s_regsf + 1`, resolving at a moment when the
+                // foreign name does not exist yet. A `const`'s value is a
+                // compile-time fact wherever it was written, and the
+                // evaluator is seeded with the workspace's for exactly this
+                // reason; asking it only after the table has missed keeps
+                // the order the seeding comment states. Without this the
+                // same expression folds inside `[ ]` and is `K816-E0101`
+                // outside it — two answers to one question.
+                let foreign = self
+                    .eval
+                    .sections()
+                    .foreign_const(&name.text)
+                    .map(eval::to_integer)
+                    .and_then(k65_number);
+                match foreign {
+                    Some(value) => {
+                        self.diagnostics.truncate(reported);
+                        // The name is a symbol once the import pass runs, so
+                        // the editor can still navigate to it — settled at
+                        // the end of analysis like every other deferral.
+                        self.pending_references.push((name.span, name.text.clone()));
+                        Some(KExpr::number(value))
+                    }
+                    None => None,
+                }
             }
             ExprKind::LocalSymbol(name) => {
                 let id = self.resolve_local(&name.text, name.span)?;

@@ -259,8 +259,14 @@ pub fn emit(
         }
         let size = symbol.kind.address_size();
         if symbol.imported {
-            // Only a name this unit actually used needs importing.
-            if model.referenced.contains(&id) {
+            // Only a name this unit actually used needs importing — and a
+            // `const` another unit *defines* is not one of them however often
+            // it is written: its value is a compile-time fact, so every use
+            // folded and nothing in this file refers to the name any more.
+            // An `extern const` is the other kind, `value: None`, and it does
+            // need the import: ld65 is the one that knows its number.
+            let folded = matches!(symbol.kind, SymbolKind::Const { value: Some(_) });
+            if model.referenced.contains(&id) && !folded {
                 let where_from = map.file(symbol.declaration.file);
                 let line = where_from.line_col(symbol.declaration.start).line + 1;
                 let how = match linkage.definition(&symbol.name).map(|found| found.origin) {

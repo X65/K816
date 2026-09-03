@@ -549,6 +549,23 @@ k816 compile lib.k816  -o lib.s
 
 An `import` may sit inside a `#if` region, and one the preprocessor drops is not a file the build reads — so it is not a dependency of the object either.
 
+**What crosses, and when.** A name an imported unit defines is available wherever a local one would be, but *what* it is worth depends on the kind. A variable, a label, a data label or a function has an address, and ld65 decides it — so a reference to one is an `.import` in the emitted assembly and nothing this compilation can fold. A `const` is the other case: its value was settled where it was written, so it is a compile-time fact here too. It folds in an evaluator bracket, in an initializer of this unit's own declarations, and in an immediate alike, and it leaves no `.import` behind, exactly as a local `const` does:
+
+```k65
+// defs.k65
+const REG_Y = 1
+const REG_X = REG_Y + 2
+const FRAME = REG_X + 2
+
+// main.k65
+import "defs.k65"
+
+const NAME_PTR = FRAME + 1      // $06 — folded here, not linked
+var   buffer   = FRAME + $100   // an address is a compile-time value too
+```
+
+An `extern const` is not this case. It names a value *no* unit of this program defines, so ld65 is the one that knows it and every compile-time position refuses it (`K816-E0167`) — see "Extern declarations".
+
 ### What this replaces
 
 The original K65 compiler resolved every name across a project's sources, so a K65 file declares nothing about where a name comes from; K816 reproduced that over whatever the command line named, with a `--unit` option. That option is gone. A build system that compiles one source per invocation cannot produce a sibling list, and a program that says what it is needs no such list — which is why `import` exists and why the option does not.

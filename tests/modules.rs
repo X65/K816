@@ -334,6 +334,94 @@ fn a_unit_means_the_same_whichever_file_is_the_entry() {
     );
 }
 
+/// A `const` an imported unit declares folds in a unit-level declaration,
+/// not only inside an evaluator bracket.
+///
+/// Foreign names are declared *after* this unit's own items, so that a local
+/// declaration always wins its name — which leaves a unit-level initializer
+/// resolving at a moment when the foreign name is not in the table yet. The
+/// evaluator is seeded with the workspace's `const` values before the walk
+/// for exactly this reason, and the fold now asks it after the table misses.
+///
+/// Before that, `[ BASE * 2 ]` folded and `const D = BASE * 2` was
+/// `K816-E0101 BASE is not declared` — two answers to one question, and the
+/// second one false: the name is declared, in the file above.
+#[test]
+fn a_const_an_imported_unit_declares_folds_in_a_declaration() {
+    let mut map = SourceMap::new();
+    map.add_file("defs.k816", "const BASE = 7\nconst STEP = 2\n");
+    let entry = map.add_file(
+        "main.k816",
+        "import \"defs.k816\"\n\n\
+         const DERIVED = BASE + 1\n\
+         const CHAINED = DERIVED + STEP\n\n\
+         var slot = BASE + $100\n\n\
+         func main @a8 @i8 {\n    a = #CHAINED\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(result.diagnostics, vec![], "cross-unit `const` chain");
+    let assembly = result.assembly.expect("compiles");
+    for expected in [
+        ".export DERIVED : abs = $0008",
+        ".export CHAINED : abs = $000A",
+        "lda     #$0A",
+        // A `var` address is a compile-time value too, and reaches the same
+        // fold by the same route.
+        "slot            := $0107",
+    ] {
+        assert!(assembly.contains(expected), "`{expected}` in:\n{assembly}");
+    }
+}
+
+/// The two spellings of one compile-time question agree.
+///
+/// A bracket is the evaluator and a declaration is the resolver, and both are
+/// asking what a `const` is worth. The pair is written here rather than left
+/// to the two tests above, because the failure it guards is precisely that
+/// they diverge.
+#[test]
+fn a_bracket_and_a_declaration_fold_an_imported_const_alike() {
+    let mut map = SourceMap::new();
+    map.add_file("defs.k816", "const BASE = 7\n");
+    let entry = map.add_file(
+        "main.k816",
+        "import \"defs.k816\"\n\n\
+         const BY_DECLARATION = BASE * 2\n\
+         const BY_BRACKET = [ BASE * 2 ]\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(result.diagnostics, vec![]);
+    let assembly = result.assembly.expect("compiles");
+    assert!(
+        assembly.contains(".export BY_DECLARATION : abs = $000E")
+            && assembly.contains(".export BY_BRACKET : abs = $000E"),
+        "{assembly}"
+    );
+}
+
+/// A `const` another unit *defines* leaves no `.import`, exactly as a local
+/// one does.
+///
+/// Its value is a compile-time fact, so every use folded and the name does
+/// not survive into the object at all — ca65 drops the unreferenced import,
+/// which is why this was quiet. The line was still a false statement in a
+/// file people read: "defined by defs.k816:1", about a name the assembly no
+/// longer mentions. An `extern const` is the other kind and still imports.
+#[test]
+fn a_const_that_folded_across_an_import_is_not_imported() {
+    let mut map = SourceMap::new();
+    map.add_file("defs.k816", "const BASE = 7\n");
+    let entry = map.add_file(
+        "main.k816",
+        "import \"defs.k816\"\n\nfunc main @a8 @i8 {\n    a = #BASE\n}\n",
+    );
+    let assembly = k816::compile_to_ca65(&map, entry, &k816::Options::default())
+        .assembly
+        .expect("compiles");
+    assert!(assembly.contains("lda     #$07"), "{assembly}");
+    assert!(!assembly.contains(".import BASE"), "{assembly}");
+}
+
 /// Only the entry file is emitted: an imported unit contributes names, not
 /// bytes.
 #[test]

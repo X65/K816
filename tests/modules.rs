@@ -373,6 +373,84 @@ fn a_const_an_imported_unit_declares_folds_in_a_declaration() {
     }
 }
 
+/// An `inline` parameter wins its name against an imported `const`.
+///
+/// A parameter may be spelled anything — it is not in a namespace, which is
+/// the exemption the reserved-name rule states — so a body may legitimately
+/// bind `#BASE` while another unit exports a `const BASE`. The fold asks the
+/// symbol table (and the section's own scope before it) and only then the
+/// values imports carried in, so the argument wins and the import is not
+/// even consulted.
+///
+/// This is the case that makes that order load-bearing rather than tidy:
+/// reverse it and the expansion substitutes the *other unit's* number, which
+/// assembles, links, and is wrong.
+#[test]
+fn an_inline_parameter_wins_its_name_against_an_imported_const() {
+    let mut map = SourceMap::new();
+    map.add_file("defs.k816", "const BASE = $70\n");
+    let entry = map.add_file(
+        "main.k816",
+        "import \"defs.k816\"\n\nvar slot = $80\n\n\
+         inline mask @a8 (a, #BASE) -> a {\n    a & #BASE\n}\n\n\
+         func main @a8 @i8 {\n    a = #$FF\n    mask a, #$0F -> a\n    slot = a\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(result.diagnostics, vec![]);
+    let assembly = result.assembly.expect("compiles");
+    assert!(
+        assembly.contains("and     #$0F"),
+        "the argument, not the imported `const`'s $70:\n{assembly}"
+    );
+    assert!(!assembly.contains("and     #$70"), "{assembly}");
+}
+
+/// A `const` reads what is declared above it, and a workspace does not change
+/// that.
+///
+/// The foreign table the fold falls back to is seeded from what this unit may
+/// *see*, which includes what it defines itself — so seeding it with this
+/// unit's own values would let a declaration read one written below it, and
+/// only when a workspace had been built at all. It did: `analyze_file` said
+/// `K816-E0101` and `compile_to_ca65` folded the same two lines, which is one
+/// program with two answers.
+///
+/// A declaration is answerable from the line after it. That is the order
+/// `declare_items` walks in and the order the evaluator answers about a
+/// section in, and it is now the order both entry points agree on.
+#[test]
+fn a_const_reads_only_what_is_declared_above_it() {
+    let both = |source: &str| -> (Vec<&'static str>, Vec<String>) {
+        let mut map = SourceMap::new();
+        let id = map.add_file("order.k816", source);
+        let parse = k816::parser::parse_source(map.file(id), None);
+        let (_, alone) = k816::semantic::analyze_file(&parse.file);
+        (
+            alone.iter().map(|d| d.code.0).collect(),
+            codes_for(&map, id),
+        )
+    };
+
+    // Forward: refused, and refused the same way with a workspace as without.
+    let (alone, workspace) = both("const LATER = EARLIER + 1\nconst EARLIER = 7\n");
+    assert_eq!(alone, vec!["K816-E0101"], "without a workspace");
+    assert_eq!(workspace, vec!["K816-E0101".to_owned()], "with one");
+
+    // The same through an evaluator bracket, which reaches the table by the
+    // other road and used to fold this to six.
+    let (alone, workspace) = both("const VIA = [ LATER * 2 ]\nconst LATER = 3\n");
+    assert!(!alone.is_empty(), "without a workspace");
+    assert!(!workspace.is_empty(), "with one: {workspace:?}");
+
+    // And in order, both roads still fold.
+    let (alone, workspace) = both("const EARLIER = 7\nconst LATER = EARLIER + 1\n");
+    assert_eq!(alone, Vec::<&str>::new());
+    assert_eq!(workspace, Vec::<String>::new());
+    let (alone, workspace) = both("const EARLIER = 3\nconst VIA = [ EARLIER * 2 ]\n");
+    assert_eq!(alone, Vec::<&str>::new());
+    assert_eq!(workspace, Vec::<String>::new());
+}
+
 /// The two spellings of one compile-time question agree.
 ///
 /// A bracket is the evaluator and a declaration is the resolver, and both are

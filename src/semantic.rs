@@ -507,13 +507,25 @@ fn analyze(
                 .eval
                 .record_foreign_section(name, bytes.clone());
         }
-        // And the workspace's `const` values, for the same reason and with
-        // the same rule: a `const` folds, so its value is a compile-time fact
-        // wherever it was written, and the symbol table is asked first so a
-        // local declaration still wins the name. A *borrowed* `inline` body
-        // needs this — its brackets read its own unit's `const`s, and
+        // And the `const` values of the units this one *imports*, for the
+        // same reason and with the same rule: a `const` folds, so its value
+        // is a compile-time fact wherever it was written, and the symbol
+        // table is asked first so a local declaration — or an `inline`
+        // parameter, which is looked up before it — still wins the name. A
+        // *borrowed* `inline` body needs this: its brackets read the `const`s
+        // of the unit that declared it, which are foreign here, and
         // `declare_imports` runs after the brackets have already run.
+        //
+        // **This unit's own are not seeded**, and that is the rule rather
+        // than an optimization. A declaration is answerable from the line
+        // after it and not before — the order `declare_items` walks in, and
+        // the order the evaluator answers about a section in — so a table
+        // holding this unit's own values lets a `const` read one declared
+        // *below* it, and only when a workspace was built at all. It did.
         for (name, definition) in linkage.visible_definitions(unit) {
+            if definition.file == unit {
+                continue;
+            }
             if let SymbolKind::Const { value: Some(value) } = definition.kind {
                 analysis
                     .model

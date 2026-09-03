@@ -300,6 +300,30 @@ pub fn analyze_parsed(
             model,
         });
     }
+    // And what lowering would say. An `inline`'s arguments are checked where
+    // it is expanded, which is here and not in analysis — so `K816-E0167` on
+    // a link-time argument and `K816-E0170` on one that overruns its
+    // parameter's narrowing are *errors* the build reports, and until this
+    // ran, the editor showed the file clean and the next build refused it.
+    // That is the disagreement sub-plan H's decision 1 exists to prevent.
+    //
+    // Only over a program with no errors, which is the rule
+    // [`compile_to_ca65`] follows for the same reason: lowering a body
+    // analysis refused reaches shapes it was promised were checked, and
+    // answers `K816-E0900` about a construct the author has already been told
+    // about. The two paths agree about *when* to lower, so they agree about
+    // what lowering says.
+    if !diagnostic::has_errors(&diagnostics) {
+        for unit in &units {
+            let source = map.file(unit.file);
+            let (_, lowered) = lower::lower_unit(
+                unit.model.program(&unit.parse.file),
+                &unit.model,
+                source.name(),
+            );
+            diagnostics.extend(lowered);
+        }
+    }
     Analysis {
         diagnostics,
         units,

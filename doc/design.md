@@ -583,7 +583,7 @@ pub fn analyze_workspace(
 ) -> Analysis;
 ```
 
-The CLI may continue to ca65 after successful analysis. The LSP stops at `Analysis`.
+The CLI may continue to ca65 after successful analysis. The LSP stops at `Analysis` — but `Analysis` *includes lowering*, because some diagnostics are only produced there: an `inline`'s arguments are checked where it is expanded, and a use site that passes a link-time value or one that overruns its parameter's narrowing is an error the build reports. An editor that stopped before lowering would show those files clean, and the two would disagree about the same program. Lowering costs about six per cent on top of analysis over the tree's own corpus; what the editor drops is the emission, not the check.
 
 ## 11. ca65 and ld65 integration
 

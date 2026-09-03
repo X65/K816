@@ -2073,6 +2073,104 @@ fn rename_of_an_imported_symbol_edits_both_units() {
     }
 }
 
+/// The editor and the build report the same diagnostics, over every program
+/// in the tree.
+///
+/// Decision 1's property, checked rather than intended. It was not true: the
+/// editor's analysis stopped after the semantic pass and the build lowered,
+/// so every diagnostic lowering produces was invisible in the editor —
+/// including *errors*. An `inline`'s arguments are checked where it is
+/// expanded, which is lowering, so `shift a, #SYM -> a` with a link-time
+/// argument showed a clean file and failed the next build.
+///
+/// The sweep is the point. Two hand-written cases pin the two errors that
+/// found this, and the corpus is what stops a *new* lowering diagnostic from
+/// reopening the gap without anyone noticing — the two warnings it caught
+/// (`K816-W0123`, `K816-W0157`) were nobody's deliberate choice either.
+#[test]
+fn the_editor_and_the_build_report_the_same_diagnostics() {
+    use std::collections::BTreeSet;
+
+    let both = |name: &str, text: &str| -> (BTreeSet<String>, BTreeSet<String>) {
+        let mut map = SourceMap::new();
+        let id = map.add_file(name, text);
+        let cli = k816::compile_to_ca65(&map, id, &k816::Options::default())
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.0.to_owned())
+            .collect();
+        let mut workspace = Workspace::new();
+        workspace.update(format!("file:///{name}"), text);
+        let lsp = workspace
+            .analyze()
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.0.to_owned())
+            .collect();
+        (cli, lsp)
+    };
+
+    let mut disagreed = Vec::new();
+    let mut checked = 0;
+    let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&golden)
+        .expect("read tests/golden")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "k816" || extension == "k65")
+        })
+        .collect();
+    entries.sort();
+    // The two that found it: an argument ld65 decides, and one that overruns
+    // the narrowing its parameter declares. Both are reported by `lower.rs`,
+    // where an `inline` is expanded.
+    let hand: &[(&str, &str)] = &[
+        (
+            "lsp-agree-extern-argument.k816",
+            "extern const SYM\n\ninline shift (a, #n) -> a {\n    lsr * n\n}\n\n\
+             func main @a8 @i8 {\n    shift a, #SYM -> a\n}\n",
+        ),
+        (
+            "lsp-agree-narrowed-argument.k816",
+            "inline scale @a16 (a, #by:byte) -> a {\n  a & #by\n}\n\n\
+             func work @a16 @i8 {\n  a = #$FF\n  scale a, #$1234 -> a\n}\n",
+        ),
+    ];
+    for (name, text) in hand {
+        let (cli, lsp) = both(name, text);
+        checked += 1;
+        assert!(
+            !cli.is_empty(),
+            "`{name}` is here because the build refuses it"
+        );
+        if cli != lsp {
+            disagreed.push(format!("  {name}\n    build: {cli:?}\n    editor: {lsp:?}"));
+        }
+    }
+    for path in entries {
+        let name = path
+            .file_name()
+            .expect("a file")
+            .to_string_lossy()
+            .to_string();
+        let text = std::fs::read_to_string(&path).expect("read a golden");
+        let (cli, lsp) = both(&name, &text);
+        checked += 1;
+        if cli != lsp {
+            disagreed.push(format!("  {name}\n    build: {cli:?}\n    editor: {lsp:?}"));
+        }
+    }
+    assert!(checked > 40, "the sweep found only {checked} programs");
+    assert!(
+        disagreed.is_empty(),
+        "the editor and the build disagree about {} of {checked} programs:\n{}",
+        disagreed.len(),
+        disagreed.join("\n")
+    );
+}
+
 /// Every refusal decision 8 names, in the compiler's own words where it has
 /// them.
 #[test]

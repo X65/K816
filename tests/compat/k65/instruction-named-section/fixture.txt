@@ -1,0 +1,40 @@
+row       k816-instruction-named-declaration
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0173
+expect    input.k65 K816-E0106
+
+**A section may be named after an instruction in the original, and not
+here — because of what K816 writes, not what it reads.**
+
+The original's grammar has no raw mnemonics: `Instr -> Arg` and the HLA
+forms are the whole of a statement, so `lda` is an ordinary identifier.
+`oracle.lst` has `section lda` and `JSR lda`, and `oracle.hex` links it —
+eleven bytes, the bare call reaching the section by name.
+
+K816 emits ca65 assembly, and there `lda:` at the start of a line is the
+instruction: the assembler answers "Expected an expression but found ':'"
+and refuses the file.  So a name K816 accepted would produce a program that
+cannot be assembled, with nothing said until ca65 speaks about a file the
+author did not write.  `K816-E0173` says it where the name is.
+
+The second code is the other half of the same sentence, and worth keeping in
+the fixture rather than writing the refusal alone.  Once `lda` cannot be a
+section, the bare `lda` on its own line in `main` is the *instruction* — and
+the 65816 has no implied `LDA`, so `K816-E0106` says it does not support that
+operand form.  The original reads the same line as a call (`JSR lda`); the two
+readings are exactly what the row is about.
+
+The narrowing is the whole unit-level namespace and not only sections:
+`var sec`, `data and` and `naked jmp` reach the same emitted shapes.
+`const bit` happens to survive ca65 today — a `const` is exported inline as
+`.export bit : abs = $01` rather than written at the start of a line — and is
+refused anyway, because "some instruction names may be declared and others
+may not" is a rule nobody can hold in their head, and because what a `const`
+emits is K816's to change.
+
+Two namespaces are *not* narrowed, exactly as they are not for a register
+spelling: an `inline` parameter and an evaluator variable.  Neither is ever
+emitted, so neither can collide with anything — `inline mask (a, #and)` and
+`[ nop = 3 ]` both compile.

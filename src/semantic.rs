@@ -1777,11 +1777,15 @@ impl Analysis {
         self.declare(name, SymbolKind::Const { value: Some(value) }, span);
     }
 
-    /// Refuses a declaration that asks for a register or flag spelling.
+    /// Refuses a declaration that asks for a reserved spelling — a register,
+    /// a flag, or an instruction.
     ///
     /// Both declaring paths funnel here, so a `var`, a `const`, a `func`, a
-    /// label and an `inline` alias are all covered by one rule. A local label
-    /// keeps its leading `.`, so `.c` is a different name and passes.
+    /// `data` block and a label are covered by one rule. A local label keeps
+    /// its leading `.`, so `.c` is a different name and passes, and an
+    /// `inline` parameter does not come through here at all — it is bound at
+    /// the use site and never emitted, so there is nothing for it to collide
+    /// with (`Analyzer::declare_alias`).
     fn reserved(&mut self, name: &str, span: Span) -> bool {
         let Some(diagnostic) = compat::reserved_name(span, name) else {
             return false;

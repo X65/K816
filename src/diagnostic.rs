@@ -482,6 +482,20 @@ impl DiagnosticCode {
     /// as it says nothing in [`DATA_WIDTH_MISMATCH`](Self::DATA_WIDTH_MISMATCH).
     pub const INDIRECT_POINTER_WIDTH: Self = Self("K816-E0172");
 
+    /// A declaration asking for the name of a 65816 instruction.
+    ///
+    /// K816 emits ca65 assembly, and ca65's parser cannot tell a label from
+    /// an instruction: `func lda` emits `lda:` at the start of a line, which
+    /// ca65 reads as the instruction and refuses — "Expected an expression
+    /// but found ':'". So the name has to be refused here, where the author
+    /// can be told what is wrong, rather than at the assembler, where the
+    /// message is about a file they did not write.
+    ///
+    /// Reserved for the same *positions* as a register spelling and no
+    /// others: an `inline` parameter and an evaluator variable are never
+    /// emitted, so neither can collide with anything.
+    pub const INSTRUCTION_NAME: Self = Self("K816-E0173");
+
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
     // reserved for the same meaning: nothing else may take the number, and a
@@ -777,6 +791,7 @@ mod tests {
         DiagnosticCode::IMMEDIATE_PARAMETER_RANGE,
         DiagnosticCode::TRANSFER_WIDTH_MISMATCH,
         DiagnosticCode::INDIRECT_POINTER_WIDTH,
+        DiagnosticCode::INSTRUCTION_NAME,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

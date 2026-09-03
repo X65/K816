@@ -237,6 +237,11 @@ pub const RESERVED_NAMES: &[&str] = &[
 /// accepts and the next build rejects is worse than one the editor declined,
 /// and the two agreeing has to be a fact rather than a habit.
 pub fn reserved_name_refusal(name: &str) -> Option<String> {
+    if crate::isa::Mnemonic::parse(name).is_some() {
+        return Some(format!(
+            "`{name}` is a 65816 instruction, so a declaration cannot take it"
+        ));
+    }
     let lowered = name.to_ascii_lowercase();
     if !RESERVED_NAMES.contains(&lowered.as_str()) {
         return None;
@@ -263,6 +268,26 @@ pub fn reserved_name_refusal(name: &str) -> Option<String> {
 /// refuses the ones that would shadow a register or a flag.
 pub fn reserved_name(span: Span, name: &str) -> Option<Diagnostic> {
     let refusal = reserved_name_refusal(name)?;
+    // Two rules, one list of positions. A register spelling is refused
+    // because the source would mean two things; an instruction's name
+    // because the *output* would — ca65 reads `lda:` at the start of a line
+    // as the instruction and refuses the file K816 wrote.
+    if let Some(mnemonic) = crate::isa::Mnemonic::parse(name) {
+        return Some(
+            Diagnostic::error(
+                DiagnosticCode::INSTRUCTION_NAME,
+                refusal,
+                Label::new(span, "this name is an instruction"),
+            )
+            .with_note(format!(
+                "K816 emits ca65 assembly, and `{}:` at the start of a line is the \
+                 instruction there, not a label — the assembler would refuse the file",
+                mnemonic.ca65()
+            ))
+            .with_help("rename the declaration")
+            .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65"),
+        );
+    }
     Some(
         Diagnostic::error(
             DiagnosticCode::RETIRED_REGISTER_SPELLING,
@@ -499,6 +524,11 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-metadata-query", K816Extension, Rejects),
     row("k816-typed-view", K816Extension, Rejects),
     row("k816-abstract-var", K816Extension, Rejects),
+    row(
+        "k816-instruction-named-declaration",
+        IntentionallyChanged,
+        Quiet,
+    ),
     row(
         "k816-function-name-is-not-a-place",
         IntentionallyChanged,

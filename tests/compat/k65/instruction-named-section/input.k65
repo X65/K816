@@ -1,0 +1,28 @@
+// Oracle question: may a section be named after a 65816 instruction?
+//
+// The original's grammar has no raw mnemonics — `Instr -> Arg` and the HLA
+// forms are the whole of a statement — so `lda` is an ordinary identifier
+// there and `func lda` should be an ordinary section.  `oracle.lst` says it
+// is: the section is emitted under that name and the bare call reaches it.
+//
+// K816 refuses it with `K816-E0173`, and not by preference: K816 emits ca65
+// assembly, where `lda:` at the start of a line is the instruction and the
+// assembler refuses the file.  The refusal is a narrowing of a program the
+// original compiles, which is why it is a row rather than a rule nobody
+// wrote down.
+
+var slot = 0x80
+
+// The section's body is deliberately empty of names.  A declaration K816
+// refuses is not walked, so a name inside it would be a resolution site the
+// reference index never records — true of a register-named section too, and
+// not what this fixture is about.
+func lda {
+  return
+}
+
+main {
+  a = slot
+  lda
+  return
+}

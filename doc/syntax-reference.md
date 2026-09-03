@@ -1860,6 +1860,10 @@ A label costs the grammar a little to say that. The eight register spellings are
 
 The compile-time evaluator is **not** covered, and deliberately: the K65 grammar's `AllIdent` rule lets these letters be names again in an evaluator block and as a `for` variable, and `for i = 0 .. 3` is the idiomatic K65 loop. A reserved name is then an evaluator *local* — a later bracket in another item cannot read it, because the bridge is the symbol table and that is what the reservation closes.
 
+**An instruction's name is reserved too, in the same positions** — `K816-E0173`. `func lda`, `var sec`, `data and` and `naked jmp` are refused, whatever the case, and the reason is not the source but the output: K816 emits ca65 assembly, and `lda:` at the start of a line is the instruction there, not a label. The assembler answers "Expected an expression but found `:`" and refuses the file, so a name accepted here would produce a program that cannot be assembled, with nothing said until ca65 spoke about a file the author did not write.
+
+The original K65 has no raw mnemonics — `Instr -> Arg` and the HLA forms are the whole of a statement — so `func lda` compiles there, and this is a narrowing of a program the original accepts. It is recorded as `k816-instruction-named-declaration` in `doc/k65-compat-manifest.md` and measured against the original in `tests/compat/k65/instruction-named-section`. The two exemptions above hold here unchanged: an `inline` parameter may be `#and`, and `[ nop = 3 ]` is an ordinary evaluator assignment, because neither is ever emitted.
+
 ```k65
 var c = $10                     // E0158
 const n = 5                     // E0158

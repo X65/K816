@@ -20,9 +20,9 @@ rather than going uncounted.
 
 | | count |
 |---|---|
-| unit compilations | 156 |
+| unit compilations | 157 |
 | of those, compiling | 115 |
-| refusing on purpose | 41 |
+| refusing on purpose | 42 |
 
 A *unit compilation* is one file of one fixture, compiled with the siblings its
 fixture names. A refusal is a fixture that pins one, and every one of them says

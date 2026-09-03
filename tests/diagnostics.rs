@@ -106,6 +106,11 @@ const FAMILY: &[Case] = &[
         caret: "slot",
     },
     Case {
+        source: "func inc @a8 @i8 {\n    nop\n}\n",
+        code: DiagnosticCode::INSTRUCTION_NAME,
+        caret: "inc",
+    },
+    Case {
         source: "var dp ptr:byte\nfunc work @a8 @i8 { lda (ptr) }\n",
         code: DiagnosticCode::INDIRECT_POINTER_WIDTH,
         caret: "ptr",
@@ -979,6 +984,57 @@ fn a_memory_location_is_not_a_stack_offset() {
                 .any(|note| note.contains("ld65") && note.contains("slot")),
             "the note has to say why silence would be worse: {diagnostic:?}"
         );
+    }
+}
+
+/// A declaration cannot take an instruction's name, because the file K816
+/// writes would not assemble.
+///
+/// `func lda` emits `lda:` at the start of a line and ca65 reads that as the
+/// instruction: "Expected an expression but found ':'". So K816 produced a
+/// program that could not be assembled and said nothing, which is the one
+/// outcome a compiler owes its author a diagnostic for. The legacy compiler
+/// refused the same name ("function name 'lda' is reserved"), and the
+/// original K65 has no raw mnemonics at all, so nothing there is narrowed by
+/// a spelling the original could not have meant.
+///
+/// The positions are a register spelling's positions, and for the same
+/// reason: an `inline` parameter and an evaluator variable are never
+/// emitted, so neither can collide with anything.
+#[test]
+fn a_declaration_cannot_be_named_after_an_instruction() {
+    for source in [
+        "func lda @a8 @i8 {\n    nop\n}\n",
+        "naked jmp {\n    nop\n}\n",
+        "var sec = $80\n",
+        "const bit = 1\n",
+        "inline tax {\n    nop\n}\n",
+        "data and {\n    1\n}\n",
+        // Whatever the case, the way a register spelling is.
+        "func LDA @a8 @i8 {\n    nop\n}\n",
+    ] {
+        let (_, diagnostic) = diagnostic_for(source, DiagnosticCode::INSTRUCTION_NAME);
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("ca65") && note.contains("not a label")),
+            "the note has to say why the name is refused: {diagnostic:?}"
+        );
+    }
+
+    // A parameter and an evaluator variable are not in the emitted namespace,
+    // so they keep every spelling — the exemption the register rule takes.
+    for source in [
+        "inline mask @a8 (a, #and) -> a {\n  a & #and\n}\n",
+        "const SIZE = [ nop = 3  nop + 1 ]\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("case.k816", source);
+        let parse = parse_source(map.file(id), None);
+        assert_eq!(parse.diagnostics, vec![], "{source}");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parse.file);
+        assert_eq!(diagnostics, vec![], "{source}");
     }
 }
 

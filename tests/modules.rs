@@ -515,6 +515,47 @@ fn a_layout_an_imported_unit_declares_crosses_with_its_offsets() {
     }
 }
 
+/// A layout crosses one `import`, not two.
+///
+/// Decision 2 is that a unit sees what it imports *directly* and nothing
+/// further, and a layout is visible on the same terms as everything else —
+/// which is a claim about the `sees` filter in `visible_layouts`, not about
+/// the arena copy beside it. Mutation-testing the layout work found this: the
+/// filter could be deleted outright and every test still passed, because all
+/// of them had the declaration one import away.
+#[test]
+fn a_layout_two_imports_away_is_not_visible() {
+    let mut map = SourceMap::new();
+    map.add_file("c.k816", "abstract var DEV[ .open :word  .close :word ]\n");
+    let middle = map.add_file(
+        "b.k816",
+        "import \"c.k816\"\n\nvar slotb = $81\n\n\
+         func helper @a8 @i8 {\n    a = #DEV:sizeof\n    slotb = a\n}\n",
+    );
+    let far = map.add_file(
+        "a.k816",
+        "import \"b.k816\"\n\nvar slot = $80\n\n\
+         func main @a8 @i8 {\n    a = #DEV:sizeof\n    slot = a\n}\n",
+    );
+
+    // The unit that imports it directly reads its offsets.
+    let result = k816::compile_to_ca65(&map, middle, &k816::Options::default());
+    assert_eq!(result.diagnostics, vec![], "the direct importer");
+    assert!(
+        result.assembly.expect("compiles").contains("lda     #$04"),
+        "the middle unit reads the layout it imports"
+    );
+
+    // The unit two away does not, even though the file is loaded — the whole
+    // closure is read so that contracts settle, and visibility is a separate
+    // question with a narrower answer.
+    assert_eq!(
+        codes_for(&map, far),
+        vec!["K816-E0101".to_owned()],
+        "a layout two imports away"
+    );
+}
+
 /// Crossing does not make it a place, and does not make it a definition.
 ///
 /// The first half: an address use of an imported layout is `K816-E0136`,

@@ -1459,14 +1459,28 @@ impl<'a> Resolver<'a> {
         None
     }
 
-    /// True when `folded` still names an `inline` parameter this site does
-    /// not bind — the one reason a fold can fail that the *use* site fixes.
+    /// True when `folded` still names an `inline` parameter — the one reason
+    /// a fold can fail that the *use* site fixes.
+    ///
+    /// A parameter reaching here is unbound by construction, so this does not
+    /// ask [`Self::aliases`] whether it is: [`Self::symbol_value`] answers a
+    /// bound one *with its value*, so the alias symbol is gone from the
+    /// folded expression before this can see it. It asked until mutation
+    /// testing showed the question could not come back `false` — a condition
+    /// that reads as load-bearing and is not, which is worse than no
+    /// condition. The invariant is asserted instead, so a change to
+    /// `symbol_value` trips a test rather than quietly making a use site
+    /// emit one copy where the argument said three.
     fn names_an_unbound_alias(&self, folded: &KExpr) -> bool {
         let mut symbols = Vec::new();
         folded.symbols(&mut symbols);
         symbols.iter().any(|id| {
-            matches!(self.symbols.kind(*id), SymbolKind::Alias { .. })
-                && !self.aliases.contains_key(id)
+            let alias = matches!(self.symbols.kind(*id), SymbolKind::Alias { .. });
+            debug_assert!(
+                !alias || !self.aliases.contains_key(id),
+                "a bound `inline` parameter reached the fold as a symbol"
+            );
+            alias
         })
     }
 

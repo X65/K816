@@ -590,6 +590,14 @@ const NOT_THE_WIDTH_MODELS: &[(&str, &str)] = &[
          than a listing",
     ),
     (
+        "Why the rule stops at immediates",
+        "prose about the rule's scope, and its two claims are checked where \
+         they can be: tests/width.rs reads the ISA table for \
+         only_an_immediate_encodes_a_different_length_at_a_different_width, and \
+         tests/compile.rs reads the linked bytes for \
+         an_unannotated_callee_runs_at_its_callers_width",
+    ),
+    (
         "Compilation pipeline",
         "prose: the stage list, not a program",
     ),

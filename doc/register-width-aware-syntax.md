@@ -88,6 +88,36 @@ one axis (`TXY`, `TYX`) have no two widths to disagree, and the ones whose
 other end is the stack pointer or the direct-page register (`TXS`, `TSX`,
 `TCD`, `TDC`, `TCS`, `TSC`) answer to one flag, or to none.
 
+### Why the rule stops at immediates
+
+An immediate is the only operand a width makes longer or shorter. A memory
+operand's size comes from its addressing mode — `lda $80` is two bytes and
+`lda $0400` three, whatever `M` says — so in a function with an unknown
+width, no instruction's *encoding* depends on the width it runs at. What
+depends on it is how many bytes a store writes, and that is the caller's
+business: a function that declares no width runs at its caller's, preserves
+it (an unknown exit is `Preserve`), and emits neither a mode operation nor an
+assumption directive of its own.
+
+**A value the next narrowing makes unreachable is not reported either**, and
+for a different reason: it is a construct. `@a16` then `lda`, `@a8` then
+`sta`, `xba`, `sta` is how a program splits a sixteen-bit value into two
+bytes — the high half is reached by exchanging it into the low one, not by
+being read where it was. A rule that called the wide load dead would refuse
+the idiom. The legacy K816 reported "accumulator value is dead after
+switching to @a8" and K816 declines the check on purpose (decided by
+interview, 2026-09-03).
+
+That is what makes an unannotated function legal, and it has to be: the
+original K65 targets the 6502 and annotates nothing, so every function of a
+K65 program but the entry point is one. The legacy K816 refused a
+width-dependent memory access under an unknown width — `stz addr`, `stx addr`
+— and K816 deliberately does not (decided by interview, 2026-09-03). The
+claims this rests on are checked rather than asserted:
+`only_an_immediate_encodes_a_different_length_at_a_different_width` reads the
+ISA table, and `an_unannotated_callee_runs_at_its_callers_width` reads the
+linked bytes.
+
 ## Function-level mode contracts
 
 A function declares its expected register widths with annotations after the

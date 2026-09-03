@@ -1740,3 +1740,99 @@ fn only_the_four_transfers_that_cross_the_axes_are_checked() {
         .collect();
     assert_eq!(refused, vec!["tax", "tay", "txa", "tya"]);
 }
+
+/// A function with no width annotation preserves its caller's widths, and
+/// says nothing about them.
+///
+/// The rule the legacy compiler wanted extended and K816 keeps narrow:
+/// `K816-E0104` refuses a width-dependent *immediate* under an unknown
+/// width and nothing else, so a function with no annotation is legal and the
+/// width it runs at is the caller's. That only holds if the callee neither
+/// establishes a width nor destroys the caller's belief in one, which is
+/// what these three assertions are.
+///
+/// It also has to hold for a K65 source to compile at all: a 6502 program
+/// has no annotation anywhere, so every function but the entry point is this
+/// one.
+#[test]
+fn an_unannotated_function_preserves_its_callers_widths() {
+    let source = "var slot = $80\n\n\
+                  func helper {\n    slot = a\n    x++\n}\n\n\
+                  func caller @a16 @i16 {\n\
+                  \x20   lda #$1234\n    call helper\n    lda #$5678\n    slot = a\n}\n";
+    let (file, model, diagnostics) = analyze(source);
+    assert_eq!(codes(&diagnostics), Vec::<&str>::new());
+
+    // 1. The callee makes no claim: both axes are unknown in its body.
+    let helper = statement_ids(&file, "helper");
+    let analysis = model
+        .width(model.symbols.lookup("helper").expect("declared"))
+        .expect("analyzed");
+    assert_eq!(
+        (
+            analysis.before(helper[0]).map(|state| state.a),
+            analysis.before(helper[0]).map(|state| state.i)
+        ),
+        (Some(AxisState::Unknown), Some(AxisState::Unknown)),
+        "an unannotated body has no width to run at but its caller's"
+    );
+
+    // 2. And it takes none away: an unknown exit is `Preserve`, which is the
+    // language's rule and the reason the caller may go on believing.
+    assert_eq!(analysis.exit.a, AxisExit::Preserve);
+    assert_eq!(analysis.exit.i, AxisExit::Preserve);
+
+    // 3. So the caller's widths are the same either side of the call — the
+    // statement after it is still sized 16-bit.
+    let caller = statement_ids(&file, "caller");
+    let widths = |index: usize| {
+        let analysis = model
+            .width(model.symbols.lookup("caller").expect("declared"))
+            .expect("analyzed");
+        let state = analysis.before(caller[index]).expect("a tracked state");
+        (state.a, state.i)
+    };
+    assert_eq!(
+        widths(1),
+        (known(RegisterWidth::W16), known(RegisterWidth::W16))
+    );
+    assert_eq!(
+        widths(2),
+        (known(RegisterWidth::W16), known(RegisterWidth::W16)),
+        "the call must not disturb what the caller established"
+    );
+}
+
+/// Every encoding a width decides is an immediate, which is why the rule can
+/// stop at immediates.
+///
+/// A memory operand's size comes from its addressing mode, not from `M` or
+/// `X`, so an unannotated function's *bytes* do not depend on the width it
+/// runs at — only what it writes to memory does, and that is the caller's
+/// business. Read off the ISA table rather than asserted: if an encoding
+/// whose length varies with a width ever appears outside the immediate
+/// forms, this fails instead of the rule quietly becoming unsound.
+#[test]
+fn only_an_immediate_encodes_a_different_length_at_a_different_width() {
+    use k816::isa::{AddressingMode, ImmediateWidthClass, specs_for};
+
+    let mut varying = Vec::new();
+    for mnemonic in k816::isa::Mnemonic::ALL {
+        for spec in specs_for(*mnemonic) {
+            // `Fixed8` and `Fixed16` are immediates whose length a width does
+            // not decide — a `SEP` mask, the `BRK` signature byte, `PEA`'s
+            // pushed word — so they are not the class this is about, and
+            // `brk`/`cop`/`pea` are legal in an unannotated body.
+            if !matches!(
+                spec.immediate_width(),
+                Some(ImmediateWidthClass::MDependent | ImmediateWidthClass::XDependent)
+            ) {
+                continue;
+            }
+            if spec.mode != AddressingMode::Immediate {
+                varying.push(format!("{} {:?}", mnemonic.ca65(), spec.mode));
+            }
+        }
+    }
+    assert_eq!(varying, Vec::<String>::new());
+}

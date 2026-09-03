@@ -4193,6 +4193,103 @@ fn a_borrowed_declaration_carries_what_it_depends_on() {
         }
     }
 }
+/// Narrowing after a wide load is a construct, not a dead value.
+///
+/// `@a16`, `lda`, `@a8`, `sta`, `xba`, `sta` is how a program splits a
+/// sixteen-bit value into two bytes: the high half is reached by exchanging
+/// it into the low one, not by being read where it was written. The legacy
+/// compiler reported "accumulator value is dead after switching to @a8" here
+/// and K816 declines the check on purpose — this is the program that would
+/// have been refused, pinned at the bytes so a later liveness rule cannot
+/// take it away by accident.
+#[test]
+fn a_wide_load_narrowed_and_exchanged_is_two_stores() {
+    let (bytes, _) = compile_and_link(
+        "split-halves",
+        "split.k816",
+        "var lo = $80\nvar hi = $81\n\n\
+         func split @a16 @i8 {\n\
+         \x20   lda #$1234\n    @a8\n    lo = a\n    xba\n    hi = a\n}\n",
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(
+        &bytes[..],
+        &[
+            0xA9, 0x34, 0x12, // lda #$1234, sixteen bits of it
+            0xE2, 0x20, //       sep #$20
+            0x85, 0x80, //       sta $80 — the low half
+            0xEB, //             xba
+            0x85, 0x81, //       sta $81 — the half a dead-value rule would
+            0x60, //             have called unreachable
+        ],
+        "{bytes:02X?}"
+    );
+}
+
+/// A callee with no width annotation runs at its caller's width, and the
+/// bytes say so.
+///
+/// `K816-E0104` refuses a width-dependent *immediate* under an unknown width
+/// and nothing else, which is what lets a function with no annotation exist
+/// at all — and what a K65 source is made of, since a 6502 program annotates
+/// nothing. The claim that rule rests on is here at the bytes: the callee
+/// establishes no width, so it emits no mode operation and no assumption
+/// directive, and the caller's belief survives the call, so the immediate
+/// after it is still three bytes.
+#[test]
+fn an_unannotated_callee_runs_at_its_callers_width() {
+    const SOURCE: &str = "var slot = $80\n\n\
+                          func helper {\n    slot = a\n}\n\n\
+                          func caller @a16 @i16 {\n\
+                          \x20   lda #$1234\n    call helper\n    lda #$5678\n    slot = a\n}\n";
+    let (bytes, _) = compile_and_link(
+        "unannotated-callee",
+        "context.k816",
+        SOURCE,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(
+        &bytes[..],
+        &[
+            // helper: `sta $80` and `rts`, and nothing before them.
+            0x85, 0x80, 0x60, //
+            // caller: a 16-bit immediate, the call, and a 16-bit immediate
+            // *after* it — the width the caller established is still in force.
+            0xA9, 0x34, 0x12, //
+            0x20, 0x00, 0x80, //
+            0xA9, 0x78, 0x56, //
+            0x85, 0x80, 0x60,
+        ],
+        "{bytes:02X?}"
+    );
+
+    // And the assembler is told the same thing: `caller` states its contract,
+    // `helper` states nothing, so ca65 sizes `helper` under whatever is in
+    // force where it is reached rather than under a claim K816 invented.
+    let assembly = compile_fixture("context.k816", SOURCE);
+    let helper = assembly
+        .split_once("helper:")
+        .expect("the callee")
+        .1
+        .split_once("caller:")
+        .expect("the caller after it")
+        .0;
+    for directive in [".a8", ".a16", ".i8", ".i16", "rep", "sep"] {
+        assert!(
+            !helper.contains(directive),
+            "`{directive}` in an unannotated body:\n{helper}"
+        );
+    }
+}
+
 /// A label inside a body is the address a code byte is read through.
 ///
 /// The name of a `func` is not (`K816-E0115`, and the manifest row

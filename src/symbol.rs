@@ -162,6 +162,51 @@ impl Layouts {
     pub fn get(&self, id: LayoutId) -> &Layout {
         &self.layouts[id.index()]
     }
+
+    /// `root` and everything nested under it, as an arena of its own.
+    ///
+    /// A [`LayoutId`] indexes *one unit's* arena, so a layout cannot be
+    /// handed to another unit as an id — that is a dangling index, and the
+    /// panic it produces is not a diagnostic. What crosses is the data: this
+    /// copies the reachable layouts into a fresh arena whose ids are its own,
+    /// and [`Self::adopt`] copies them back in on the other side.
+    pub fn extract(&self, root: LayoutId) -> (Vec<Layout>, LayoutId) {
+        let mut arena = Vec::new();
+        let root = copy_layout(self.layouts.as_slice(), root, &mut arena);
+        (arena, root)
+    }
+
+    /// The inverse: interns a layout another unit declared, and returns the
+    /// id it has *here*.
+    pub fn adopt(&mut self, arena: &[Layout], root: LayoutId) -> LayoutId {
+        copy_layout(arena, root, &mut self.layouts)
+    }
+}
+
+/// Copies the layout `root` names, and everything nested under it, from one
+/// arena to another, rewriting the nested ids as it goes.
+///
+/// Depth-first and nested-first, which is the invariant [`Layouts::add`]
+/// states: a sub-layout is interned before the layout that names it.
+fn copy_layout(from: &[Layout], root: LayoutId, into: &mut Vec<Layout>) -> LayoutId {
+    let source = &from[root.index()];
+    let fields: Vec<Field> = source
+        .fields
+        .iter()
+        .map(|field| Field {
+            shape: match field.shape {
+                FieldShape::Nested(nested) => FieldShape::Nested(copy_layout(from, nested, into)),
+                scalar => scalar,
+            },
+            ..field.clone()
+        })
+        .collect();
+    let id = LayoutId(u32::try_from(into.len()).expect("too many layouts"));
+    into.push(Layout {
+        fields,
+        size: source.size,
+    });
+    id
 }
 
 /// A packed field layout: what `var foo[ .lo :byte .hi :byte ]` declares.
@@ -644,6 +689,14 @@ impl SymbolTable {
     /// at once — a nested field's size is its sub-layout's.
     pub fn layouts(&self) -> &Layouts {
         &self.layouts
+    }
+
+    /// Interns a layout another unit declared, returning the id it has here.
+    ///
+    /// The importing half of [`Layouts::extract`]: an id belongs to one
+    /// unit's arena, so what crosses a unit boundary is the layout's data.
+    pub fn adopt_layout(&mut self, arena: &[Layout], root: LayoutId) -> LayoutId {
+        self.layouts.adopt(arena, root)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (SymbolId, &Symbol)> {

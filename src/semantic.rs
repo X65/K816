@@ -2752,6 +2752,28 @@ impl Analysis {
                 definition.declaration,
             );
         }
+        // A layout is not a definition — it emits nothing and ld65 never sees
+        // it — so it travels separately, and as *data*: a `LayoutId` indexes
+        // one unit's arena, and handing an importer the id would be a
+        // dangling index rather than a layout. Interned here, so the kind is
+        // built with the id it has in this unit.
+        //
+        // Collected first because interning borrows the table mutably while
+        // the iterator borrows the linkage; the pair is small, and a layout
+        // this unit declares itself is already in the table and loses to
+        // nothing, since `declare_imported` keeps what is there.
+        let foreign: Vec<_> = linkage
+            .visible_layouts(unit)
+            .map(|(name, layout)| (name.to_owned(), layout.clone()))
+            .collect();
+        for (name, layout) in foreign {
+            let id = self.model.symbols.adopt_layout(&layout.arena, layout.root);
+            self.model.symbols.declare_imported(
+                &name,
+                SymbolKind::AbstractVar { layout: id },
+                layout.declaration,
+            );
+        }
     }
 
     /// The site of one data block, which its synthetic `address` segment

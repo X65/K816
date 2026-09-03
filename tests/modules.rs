@@ -399,6 +399,82 @@ fn a_bracket_and_a_declaration_fold_an_imported_const_alike() {
     );
 }
 
+/// An `abstract var` an imported unit declares is visible, layout and all.
+///
+/// A layout has no address at all — its offsets are arithmetic settled where
+/// they were written — so it is a compile-time fact of the same kind as a
+/// `const`'s value, and `import` is how a unit says which of those it may
+/// use. What crosses is the *data*: a `LayoutId` indexes one unit's arena, so
+/// handing an importer the id would be a dangling index and a panic rather
+/// than a diagnostic.
+///
+/// Before this, `DEV:sizeof` over an import was `K816-E0101 not declared` —
+/// about a name declared in the file above — and the help offered
+/// `var DEV = $0400`.
+#[test]
+fn a_layout_an_imported_unit_declares_crosses_with_its_offsets() {
+    let mut map = SourceMap::new();
+    map.add_file(
+        "layout.k816",
+        "abstract var DEV[\n    .open  :word\n    .close :word\n\
+         \x20   .buf[\n        .lo :byte\n        .hi :byte\n    ]\n]\n",
+    );
+    let entry = map.add_file(
+        "main.k816",
+        "import \"layout.k816\"\n\nvar slot = $80\n\n\
+         func main @a8 @i8 {\n\
+         \x20   a = #DEV:sizeof\n    slot = a\n\
+         \x20   a = #DEV.close:offsetof\n    slot = a\n\
+         \x20   a = #DEV.buf.hi:offsetof\n    slot = a\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(result.diagnostics, vec![], "an imported layout");
+    let assembly = result.assembly.expect("compiles");
+    // Six bytes in the layout; `.close` at two; `.buf.hi` at four plus one —
+    // the nested list crossed with its own offsets, not merely its size.
+    for expected in ["lda     #$06", "lda     #$02", "lda     #$05"] {
+        assert!(assembly.contains(expected), "`{expected}` in:\n{assembly}");
+    }
+}
+
+/// Crossing does not make it a place, and does not make it a definition.
+///
+/// The first half: an address use of an imported layout is `K816-E0136`,
+/// which says what is wrong — it has no storage — where `K816-E0101` said the
+/// name did not exist. The second: two units may still declare the same
+/// layout, because a layout is not a definition and there is nothing for
+/// ld65 to resolve twice. A local declaration wins its own name.
+#[test]
+fn an_imported_layout_is_not_a_place_and_not_a_definition() {
+    let mut map = SourceMap::new();
+    map.add_file("layout.k816", "abstract var DEV[ .open :word ]\n");
+    let entry = map.add_file(
+        "main.k816",
+        "import \"layout.k816\"\n\nfunc main @a8 @i8 {\n    lda DEV\n}\n",
+    );
+    assert_eq!(
+        codes_for(&map, entry),
+        vec!["K816-E0136".to_owned()],
+        "an address use of an imported layout"
+    );
+
+    let mut map = SourceMap::new();
+    map.add_file("a.k816", "abstract var DEV[ .open :word ]\n");
+    let entry = map.add_file(
+        "main.k816",
+        "abstract var DEV[ .open :word  .close :word ]\n\
+         import \"a.k816\"\n\nvar slot = $80\n\n\
+         func main @a8 @i8 {\n    a = #DEV:sizeof\n    slot = a\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(result.diagnostics, vec![], "two units, one layout name");
+    // Four, not two: the unit's own declaration wins its name.
+    assert!(
+        result.assembly.expect("compiles").contains("lda     #$04"),
+        "the local layout has to win its own name"
+    );
+}
+
 /// A `const` another unit *defines* leaves no `.import`, exactly as a local
 /// one does.
 ///

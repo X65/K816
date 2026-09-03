@@ -144,11 +144,36 @@ struct ImportEdge {
     target: Option<FileId>,
 }
 
+/// One `abstract var` declaration, carried across a unit boundary.
+#[derive(Clone, Debug)]
+pub struct LayoutDeclaration {
+    /// Where it was written, for the diagnostic that points at it.
+    pub declaration: Span,
+    /// The layout and everything nested under it, with ids of its own.
+    pub arena: Vec<crate::symbol::Layout>,
+    pub root: crate::symbol::LayoutId,
+}
+
 /// What every unit in a workspace defines, and which foreign names each one
 /// uses.
 #[derive(Debug, Default)]
 pub struct Linkage {
     definitions: BTreeMap<String, Definition>,
+    /// The `abstract var` layouts each unit declares, per unit.
+    ///
+    /// Kept out of `definitions` on purpose, and it is not one: a layout
+    /// emits nothing, ld65 never sees it, and two units may declare the same
+    /// one without that being a duplicate — which is what a shared header
+    /// needs and what `is_exportable` says. What it *is* is a compile-time
+    /// fact with no address at all, exactly like a `const`'s value, so it
+    /// crosses a direct `import` the way a `const` does.
+    ///
+    /// The data crosses rather than the id. A [`LayoutId`] indexes one unit's
+    /// arena and the declaring unit's model is gone by the time an importer
+    /// asks, so each entry carries an arena of its own
+    /// ([`Layouts::extract`]), and the importer interns it
+    /// ([`SymbolTable::adopt_layout`]).
+    layouts: BTreeMap<FileId, BTreeMap<String, LayoutDeclaration>>,
     /// Every unit that defines *or* declares each name.
     ///
     /// Visibility is decided against this rather than against
@@ -520,7 +545,26 @@ impl Linkage {
                 self.sections
                     .insert(symbol.name.clone(), (file, bytes.clone()));
             }
-            if !symbol.is_unit_level() || !is_exportable(symbol.kind) {
+            if !symbol.is_unit_level() {
+                continue;
+            }
+            if !is_exportable(symbol.kind) {
+                // A layout is the one non-exportable kind another unit may
+                // still name. An `extern` cannot declare one, so a layout
+                // here is always this unit's own.
+                if let SymbolKind::AbstractVar { layout } = symbol.kind
+                    && !symbol.imported
+                {
+                    let (arena, root) = model.symbols.layouts().extract(layout);
+                    self.layouts.entry(file).or_default().insert(
+                        symbol.name.clone(),
+                        LayoutDeclaration {
+                            declaration: symbol.declaration,
+                            arena,
+                            root,
+                        },
+                    );
+                }
                 continue;
             }
             // In this pass, `imported` can only mean one thing: the unit
@@ -862,6 +906,23 @@ impl Linkage {
                     .is_some_and(|files| files.iter().any(|owner| self.sees(unit, *owner)))
             })
             .map(|(name, definition)| (name.as_str(), definition))
+    }
+
+    /// The `abstract var` layouts `unit` may name: its own, and those of the
+    /// units it imports directly.
+    ///
+    /// Separate from [`Linkage::visible_definitions`] because a layout is not
+    /// a definition and does not travel as one — the caller interns the arena
+    /// and builds the kind with the id it gets back.
+    pub fn visible_layouts(
+        &self,
+        unit: FileId,
+    ) -> impl Iterator<Item = (&str, &LayoutDeclaration)> {
+        self.layouts
+            .iter()
+            .filter(move |(owner, _)| self.sees(unit, **owner))
+            .flat_map(|(_, layouts)| layouts.iter())
+            .map(|(name, declaration)| (name.as_str(), declaration))
     }
 
     /// Whether `unit` may see what `owner` declares.

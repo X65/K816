@@ -61,6 +61,7 @@ fn main() -> ExitCode {
         Some("emit-ir") => emit_ir(&prog_name, &args[1..]),
         Some("lsp") => lsp(&prog_name, &args[1..]),
         Some("fmt") => fmt(&prog_name, &args[1..]),
+        Some("bind") => bind(&prog_name, &args[1..]),
         _ => {
             usage(&prog_name);
             ExitCode::FAILURE
@@ -82,6 +83,17 @@ fn usage(prog_name: &str) {
     );
     eprintln!("                                       nothing and exits non-zero if a file would");
     eprintln!("                                       change");
+    eprintln!("  bind [--for FILE] [--all] [--layouts [--flat]] [-o OUT.k816] DEBUGFILE");
+    eprintln!("                                       write K816 declarations for the symbols");
+    eprintln!("                                       ca65 modules provide, read from the debug");
+    eprintln!(
+        "                                       file ld65 wrote (`cl65 -g -Wl --dbgfile,F`)."
+    );
+    eprintln!("                                       --for FILE: only what the module built from");
+    eprintln!("                                       FILE imports; --all: every export, used or");
+    eprintln!("                                       not; --layouts: every `.struct` as a field");
+    eprintln!("                                       layout instead, --flat as one `var` per");
+    eprintln!("                                       member of a `.struct` at an `.org`");
     eprintln!("  lsp [--strict-k65] [--entry AXES]    run the language server over stdio. The");
     eprintln!("                                       same options a build states, so an editor");
     eprintln!("                                       and a build agree; a client may also send");
@@ -128,6 +140,8 @@ enum Command {
     Lsp,
     /// `fmt [--check] FILE...`
     Fmt,
+    /// `bind [--for FILE] [--all] [--layouts [--flat]] [-o OUT] DEBUGFILE`
+    Bind,
 }
 
 impl Command {
@@ -136,7 +150,7 @@ impl Command {
         match self {
             Self::Compile => Some(("--no-opt", false)),
             Self::EmitIr => Some(("--after-opt", true)),
-            Self::Lsp | Self::Fmt => None,
+            Self::Lsp | Self::Fmt | Self::Bind => None,
         }
     }
 
@@ -171,6 +185,9 @@ struct CommandLine {
     inputs: Vec<PathBuf>,
     /// `fmt --check`: report what would change and write nothing.
     check: bool,
+    /// `bind`'s own options: which module's imports, every export or only
+    /// the used ones, and layouts instead of symbols.
+    bind: k816::bind::Request,
     /// Print what the optimizer did, after the dump (`emit-ir --explain`).
     explain: bool,
     output: Option<PathBuf>,
@@ -205,6 +222,7 @@ fn parse_command_line(
     let mut output: Option<PathBuf> = None;
     let mut explain = false;
     let mut check = false;
+    let mut bind = k816::bind::Request::default();
     let mut dep_files: Vec<PathBuf> = Vec::new();
     let mut dep_target: Option<PathBuf> = None;
     let mut options = Options {
@@ -280,6 +298,23 @@ fn parse_command_line(
             }
             "--explain" if command == Command::EmitIr => explain = true,
             "--check" if command == Command::Fmt => check = true,
+            "--for" if command == Command::Bind => match iter.next() {
+                Some(path) => bind.for_module = Some(PathBuf::from(path)),
+                None => {
+                    render::render_tool_error(
+                        prog_name,
+                        "`--for` needs the source file of a module",
+                        message_format,
+                    );
+                    return Err(());
+                }
+            },
+            _ if command == Command::Bind && arg.starts_with("--for=") => {
+                bind.for_module = Some(PathBuf::from(&arg["--for=".len()..]));
+            }
+            "--all" if command == Command::Bind => bind.all = true,
+            "--layouts" if command == Command::Bind => bind.layouts = true,
+            "--flat" if command == Command::Bind => bind.flat = true,
             flag if opt_flag.is_some_and(|(name, _)| name == flag) => {
                 options.optimize = opt_flag.expect("matched the toggle's own name").1;
             }
@@ -315,6 +350,7 @@ fn parse_command_line(
     Ok(CommandLine {
         inputs,
         check,
+        bind,
         explain,
         output,
         options,
@@ -484,6 +520,65 @@ fn fmt(prog_name: &str, args: &[String]) -> ExitCode {
 
     if failed || (command.check && changed > 0) {
         return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+/// `k816 bind [--for FILE] [--all] [--layouts [--flat]] [-o OUT] DEBUGFILE`
+///
+/// The K816 side of a program's ca65 modules, written from what ld65
+/// recorded about them. The reading and the writing are the library's
+/// (`k816::bind`); this reads the files and chooses where the text goes.
+fn bind(prog_name: &str, args: &[String]) -> ExitCode {
+    let Ok(mut command) = parse_command_line(prog_name, args, Command::Bind) else {
+        return ExitCode::FAILURE;
+    };
+    let input = command.inputs[0].clone();
+    let text = match std::fs::read_to_string(&input) {
+        Ok(text) => text,
+        Err(error) => {
+            render::render_tool_error(
+                prog_name,
+                &format!("cannot read {}: {error}", input.display()),
+                command.message_format,
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let database = match k816::bind::Database::parse(&text) {
+        Ok(database) => database,
+        Err(error) => {
+            render::render_tool_error(
+                prog_name,
+                &format!("{}: {error}", input.display()),
+                command.message_format,
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    command.bind.output = command.output.clone();
+    command.bind.invocation = format!("{prog_name} bind {}", args.join(" "));
+    let generated = match k816::bind::bind(&database, &command.bind, &|path| {
+        std::fs::read_to_string(path).ok()
+    }) {
+        Ok(generated) => generated,
+        Err(error) => {
+            render::render_tool_error(prog_name, &error, command.message_format);
+            return ExitCode::FAILURE;
+        }
+    };
+    match command.output {
+        Some(output) => {
+            if let Err(error) = std::fs::write(&output, generated) {
+                render::render_tool_error(
+                    prog_name,
+                    &format!("cannot write {}: {error}", output.display()),
+                    command.message_format,
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+        None => print!("{generated}"),
     }
     ExitCode::SUCCESS
 }

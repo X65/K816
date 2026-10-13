@@ -143,6 +143,15 @@ Commands:
                                        space, and the final newline. --check writes
                                        nothing and exits non-zero if a file would
                                        change
+  bind [--for FILE] [--all] [--layouts [--flat]] [-o OUT.k816] DEBUGFILE
+                                       write K816 declarations for the symbols
+                                       ca65 modules provide, read from the debug
+                                       file ld65 wrote (`cl65 -g -Wl --dbgfile,F`).
+                                       --for FILE: only what the module built from
+                                       FILE imports; --all: every export, used or
+                                       not; --layouts: every `.struct` as a field
+                                       layout instead, --flat as one `var` per
+                                       member of a `.struct` at an `.org`
   lsp [--strict-k65] [--entry AXES]    run the language server over stdio. The
                                        same options a build states, so an editor
                                        and a build agree; a client may also send

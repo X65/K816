@@ -39,7 +39,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
 
-use k816::parser::{Query, format};
+use k816::parser::{Capture, Query, format, parse_source};
+use k816::source::SourceMap;
+
+#[path = "common/corpus.rs"]
+mod corpus_files;
 
 #[path = "common/fingerprint.rs"]
 mod fingerprint;
@@ -395,7 +399,7 @@ fn the_extension_crate_is_its_own_workspace() {
 
 /// The query files Zed reads from `languages/K816/`, and so the whole set: a
 /// file not listed is one no gate holds to anything.
-const ZED_QUERIES: &[&str] = &["highlights", "injections", "brackets"];
+const ZED_QUERIES: &[&str] = &["highlights", "injections", "brackets", "indents"];
 
 /// The queries Zed reads unchanged. Zed reads queries only from the
 /// extension's own directory, so these are copies — and a copy is a second
@@ -497,4 +501,113 @@ fn every_zed_query_compiles() {
         names(grammar_queries(), "highlights")
     );
     assert!(names(language_dir(), "injections").is_empty());
+    assert_eq!(
+        names(language_dir(), "indents"),
+        BTreeSet::from(["indent".to_owned(), "end".to_owned()])
+    );
+}
+
+/// Every capture `query` yields over every source in the corpus.
+///
+/// Spans carry the file they are in, so one sorted list over the whole corpus
+/// compares as exactly as a list per file.
+fn corpus_captures(query: &str) -> Vec<Capture> {
+    let query = Query::compile(query).expect("the query compiles");
+    let mut map = SourceMap::new();
+    let mut found = Vec::new();
+    let mut seen = BTreeSet::new();
+    for set in corpus_files::corpus() {
+        for path in set.files {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let source = read(path.clone());
+            let file = map.add_file(path.to_string_lossy(), source.clone());
+            let parse = parse_source(map.file(file), None);
+            found.extend(query.captures(&parse.tree, file, &source));
+        }
+    }
+    assert!(seen.len() > 100, "the corpus has {} sources", seen.len());
+    found
+}
+
+/// The spans of every capture named `name`, sorted.
+fn spans_named(captures: &[Capture], name: &str) -> Vec<k816::source::Span> {
+    let mut spans: Vec<_> = captures
+        .iter()
+        .filter(|capture| capture.name == name)
+        .map(|capture| capture.span)
+        .collect();
+    spans.sort();
+    spans.dedup();
+    spans
+}
+
+// ---------------------------------------------------------------------------
+// Indentation
+// ---------------------------------------------------------------------------
+
+/// The constructs Zed indents are the formatter's.
+///
+/// The same claim `tests/format.rs` makes of the grammar's query, read the
+/// same way — the construct named first in each `@indent` pattern — so a
+/// construct added to `format::INDENTING` and not here fails, as does one
+/// added here and not there.
+#[test]
+fn the_zed_indent_query_names_the_formatters_constructs() {
+    let query = read(language_dir().join("indents.scm"));
+    let marked: BTreeSet<String> = query
+        .lines()
+        .filter(|line| line.contains("@indent") && !line.trim_start().starts_with(';'))
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix('(')?;
+            let end = rest.find(|c: char| c.is_whitespace() || c == ')')?;
+            Some(rest[..end].to_owned())
+        })
+        .collect();
+    let indenting: BTreeSet<String> = format::INDENTING
+        .iter()
+        .map(|node| (*node).to_owned())
+        .collect();
+    assert_eq!(marked, indenting);
+}
+
+/// Over the whole corpus, Zed's query indents exactly what the grammar's
+/// does, and closes each range at that construct's own last delimiter.
+///
+/// The first half catches a pattern that is right by name and wrong by shape
+/// — `(code_subblock "}" @end)` names the construct and matches nothing,
+/// because the brace is the body's. The second catches an `@end` on the wrong
+/// delimiter, which would leave the closing line indented.
+#[test]
+fn the_zed_indent_query_indents_what_the_grammars_does() {
+    let zed = corpus_captures(&read(language_dir().join("indents.scm")));
+    let grammar = corpus_captures(&read(grammar_queries().join("indents.scm")));
+
+    let indents = spans_named(&zed, "indent");
+    assert_eq!(
+        indents,
+        spans_named(&grammar, "indent"),
+        "Zed's indents.scm indents different spans from the grammar's"
+    );
+    assert!(indents.len() > 500, "only {} indented spans", indents.len());
+
+    // Pattern by pattern, so a construct cannot borrow the `@end` of the
+    // body it wraps: `(nocross_data_group) @indent` ends where its
+    // `data_body`'s `@end` does, and a check by position alone passes it.
+    let patterns: BTreeSet<usize> = zed.iter().map(|capture| capture.pattern).collect();
+    for pattern in patterns {
+        let closed = |name: &str| -> BTreeSet<_> {
+            zed.iter()
+                .filter(|capture| capture.pattern == pattern && capture.name == name)
+                .map(|capture| (capture.span.file, capture.span.end))
+                .collect()
+        };
+        assert_eq!(
+            closed("indent"),
+            closed("end"),
+            "pattern {pattern} of Zed's indents.scm does not close each range it opens at \
+             that construct's own last delimiter"
+        );
+    }
 }

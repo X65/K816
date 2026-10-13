@@ -39,6 +39,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
 
+use k816::parser::{Query, format};
+
 #[path = "common/fingerprint.rs"]
 mod fingerprint;
 
@@ -50,6 +52,16 @@ fn root() -> PathBuf {
 
 fn extension_dir() -> PathBuf {
     root().join("editors/zed-k816")
+}
+
+/// Where Zed reads the language's configuration and queries from.
+fn language_dir() -> PathBuf {
+    extension_dir().join("languages/K816")
+}
+
+/// The grammar's own queries, which the extension copies or derives from.
+fn grammar_queries() -> PathBuf {
+    root().join("tree-sitter-k65/queries")
 }
 
 fn read(path: PathBuf) -> String {
@@ -375,4 +387,114 @@ fn the_extension_crate_is_its_own_workspace() {
         .map(|(version, _)| version)
         .expect("Cargo.lock resolves zed_extension_api");
     assert_eq!(pinned, locked);
+}
+
+// ---------------------------------------------------------------------------
+// The language
+// ---------------------------------------------------------------------------
+
+/// The query files Zed reads from `languages/K816/`, and so the whole set: a
+/// file not listed is one no gate holds to anything.
+const ZED_QUERIES: &[&str] = &["highlights", "injections", "brackets"];
+
+/// The queries Zed reads unchanged. Zed reads queries only from the
+/// extension's own directory, so these are copies — and a copy is a second
+/// source of truth unless something compares it with the first.
+const COPIED: &[&str] = &["highlights", "injections"];
+
+#[test]
+fn the_copied_queries_are_the_grammars_own() {
+    for name in COPIED {
+        let original = grammar_queries().join(format!("{name}.scm"));
+        let copy = language_dir().join(format!("{name}.scm"));
+        assert!(
+            std::fs::read(&original).expect("read the grammar's query")
+                == std::fs::read(&copy).expect("read the extension's copy"),
+            "the extension's {name}.scm differs from the grammar's. Edit the grammar's file — \
+             the server derives its semantic tokens from it too — and copy it:\n    \
+             cp tree-sitter-k65/queries/{name}.scm editors/zed-k816/languages/K816/"
+        );
+    }
+}
+
+/// Each fact the language configuration repeats, held to where it is stated
+/// first.
+#[test]
+fn the_language_config_states_what_the_grammar_and_the_formatter_state() {
+    let config = scan_toml(&read(language_dir().join("config.toml")));
+    let manifest = extension_manifest();
+    let grammar = &grammar_manifest()["grammars"][0];
+
+    assert_eq!(
+        config.get("name").str(),
+        manifest.get("language_servers.k816.languages").strings()[0],
+        "the server is attached to the language by this name"
+    );
+    assert_eq!(config.get("grammar").str(), grammar["name"]);
+    assert!(
+        manifest
+            .keys
+            .contains_key(&format!("grammars.{}.rev", config.get("grammar").str())),
+        "the language names a grammar the extension declares"
+    );
+
+    let file_types: Vec<&str> = grammar["file-types"]
+        .as_array()
+        .expect("file-types")
+        .iter()
+        .map(|suffix| suffix.as_str().expect("a suffix"))
+        .collect();
+    let mut suffixes = config.get("path_suffixes").strings();
+    suffixes.sort_unstable();
+    assert_eq!(suffixes, file_types);
+
+    assert_eq!(
+        config.get("tab_size"),
+        &Value::Int(i64::try_from(format::INDENT).expect("a small indent")),
+        "Zed indents by the width `k816 fmt` writes"
+    );
+    assert_eq!(config.get("hard_tabs"), &Value::Bool(false));
+    assert_eq!(config.get("line_comments").strings(), ["// "]);
+}
+
+/// Every query file Zed reads compiles against the committed grammar, and
+/// each uses only the captures its reader understands.
+#[test]
+fn every_zed_query_compiles() {
+    let mut present: Vec<String> = std::fs::read_dir(language_dir())
+        .expect("read languages/K816")
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".scm").map(str::to_owned)
+        })
+        .collect();
+    present.sort();
+    let mut expected: Vec<String> = ZED_QUERIES.iter().map(|name| (*name).to_owned()).collect();
+    expected.sort();
+    assert_eq!(
+        present, expected,
+        "languages/K816 holds exactly these queries"
+    );
+
+    let names = |dir: PathBuf, name: &str| -> BTreeSet<String> {
+        let source = read(dir.join(format!("{name}.scm")));
+        Query::compile(&source)
+            .unwrap_or_else(|error| panic!("{name}.scm does not compile: {error}"))
+            .capture_names()
+            .into_iter()
+            .collect()
+    };
+    for name in ZED_QUERIES {
+        names(language_dir(), name);
+    }
+
+    assert_eq!(
+        names(language_dir(), "brackets"),
+        BTreeSet::from(["open".to_owned(), "close".to_owned()])
+    );
+    assert_eq!(
+        names(language_dir(), "highlights"),
+        names(grammar_queries(), "highlights")
+    );
+    assert!(names(language_dir(), "injections").is_empty());
 }

@@ -1,0 +1,23 @@
+# The K816 language, as Zed sees it.
+#
+# Every fact here that something else states first is held to it by
+# `tests/zed.rs`: the grammar name and the file types are
+# `tree-sitter-k65/tree-sitter.json`'s, the indent width is the formatter's
+# (`format::INDENT`), and `name` is the language the server is attached to in
+# `extension.toml`.  One language serves both suffixes, because one grammar
+# and one compiler read both.
+
+name = "K816"
+grammar = "k65"
+path_suffixes = ["k816", "k65"]
+line_comments = ["// "]
+block_comment = { start = "/*", prefix = "", end = "*/", tab_size = 1 }
+tab_size = 4
+hard_tabs = false
+autoclose_before = ";:.,=}])>"
+brackets = [
+    { start = "{", end = "}", close = true, newline = true },
+    { start = "[", end = "]", close = true, newline = true },
+    { start = "(", end = ")", close = true, newline = true },
+    { start = "\"", end = "\"", close = true, newline = false },
+]

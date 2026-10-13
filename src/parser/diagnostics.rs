@@ -40,18 +40,26 @@ pub(super) fn collect_syntax_diagnostics(
     if root.has_error() {
         walk(root, source, &mut diagnostics);
     }
+    // And the one ca65 idiom that parses: a `;` comment whose words are
+    // calls. Reported here, where the tree is in hand, rather than at the
+    // undeclared names it would otherwise produce one by one.
+    diagnostics.extend(super::ca65::comments_read_as_calls(root, source));
     diagnostics
 }
 
 fn walk(node: tree_sitter::Node<'_>, source: &SourceFile, diagnostics: &mut Vec<Diagnostic>) {
     if node.is_error() {
-        diagnostics.push(error_diagnostic(node, source));
+        diagnostics.push(
+            recognized(node, false, source).unwrap_or_else(|| error_diagnostic(node, source)),
+        );
         // Do not descend: one diagnostic per malformed region keeps the
         // output actionable; the AST still carries an `Error` node for it.
         return;
     }
     if node.is_missing() {
-        diagnostics.push(missing_diagnostic(node, source));
+        diagnostics.push(
+            recognized(node, true, source).unwrap_or_else(|| missing_diagnostic(node, source)),
+        );
         return;
     }
     let mut cursor = node.walk();
@@ -60,6 +68,27 @@ fn walk(node: tree_sitter::Node<'_>, source: &SourceFile, diagnostics: &mut Vec<
             walk(child, source, diagnostics);
         }
     }
+}
+
+/// The ca65 idiom at a recovery point, when the text holds one.
+///
+/// Asked before the generic diagnostics because its answer is the same
+/// region explained better: "`;` begins a comment in ca65" where the grammar
+/// could only say "missing `:`". A line that parses is never reached, so a
+/// `;` used as K816's statement separator is not reported.
+fn recognized(
+    node: tree_sitter::Node<'_>,
+    missing: bool,
+    source: &SourceFile,
+) -> Option<Diagnostic> {
+    super::ca65::recognize(
+        super::ca65::Recovery {
+            span: node_span(node, source),
+            missing,
+            parent: node.parent().map(|parent| parent.kind()),
+        },
+        source,
+    )
 }
 
 /// A Tree-sitter `ERROR` node: genuinely malformed source.

@@ -548,6 +548,31 @@ impl DiagnosticCode {
     /// names that here (decision 32).
     pub const K65_OVERFLOW_FLAG_SPELLING: Self = Self("K816-K65-0006");
 
+    // The `K816-CA65-####` family: ca65 syntax recognized *where the grammar
+    // already failed*, so that a source carried over from ca65 by hand is
+    // told what K816 spells instead of what the grammar expected. Nothing in
+    // this family changes what parses — the region is the one Tree-sitter
+    // reported, the explanation is better — and `doc/ca65-to-k816.md` is the
+    // document each one points at (`src/parser/ca65.rs`).
+
+    /// `;` before text that did not parse: a ca65 comment, read as K816's
+    /// statement separator followed by code.
+    pub const CA65_COMMENT: Self = Self("K816-CA65-0001");
+    /// A `.directive` as the first token of a line: `.byte`, `.segment`,
+    /// `.a8`, `.proc`, and the rest of ca65's vocabulary.
+    pub const CA65_DIRECTIVE: Self = Self("K816-CA65-0002");
+    /// `NAME::field`, or `::name` for a global: ca65's scope operator.
+    pub const CA65_SCOPE_OPERATOR: Self = Self("K816-CA65-0003");
+    /// `#<`, `#>`, `#^`, `.lobyte()`, `.hibyte()`, `.bankbyte()`: the
+    /// address-byte operators, which K816 spells `&<` and `&>`.
+    pub const CA65_ADDRESS_BYTE: Self = Self("K816-CA65-0004");
+    /// `.sizeof(NAME)`, which K816 spells `NAME:sizeof`.
+    pub const CA65_SIZEOF: Self = Self("K816-CA65-0005");
+    /// `@name`, a cheap local label; a K816 local label is `.name`.
+    pub const CA65_CHEAP_LOCAL: Self = Self("K816-CA65-0006");
+    /// `name:` at the top level: ca65 code outside any section.
+    pub const CA65_CODE_OUTSIDE_SECTION: Self = Self("K816-CA65-0007");
+
     pub fn as_str(self) -> &'static str {
         self.0
     }
@@ -799,6 +824,13 @@ mod tests {
         DiagnosticCode::K65_UNSUPPORTED_ILLEGAL_OPCODE,
         DiagnosticCode::K65_FLAG_STACK_FORM,
         DiagnosticCode::K65_OVERFLOW_FLAG_SPELLING,
+        DiagnosticCode::CA65_COMMENT,
+        DiagnosticCode::CA65_DIRECTIVE,
+        DiagnosticCode::CA65_SCOPE_OPERATOR,
+        DiagnosticCode::CA65_ADDRESS_BYTE,
+        DiagnosticCode::CA65_SIZEOF,
+        DiagnosticCode::CA65_CHEAP_LOCAL,
+        DiagnosticCode::CA65_CODE_OUTSIDE_SECTION,
     ];
 
     /// Every declared code is in [`REGISTERED`].

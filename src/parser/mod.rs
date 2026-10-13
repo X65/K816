@@ -27,6 +27,7 @@
 //! lowering, optimization, and emission never see them.
 
 mod ast_builder;
+mod ca65;
 mod cst;
 mod diagnostics;
 pub mod format;

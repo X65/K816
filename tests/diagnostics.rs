@@ -564,6 +564,33 @@ const FAMILY: &[Case] = &[
 /// and two of E's come from lowering — or it cannot be reached from source at
 /// all, in which case the entry says why and that claim is the coverage.
 const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
+    // The ca65 idioms are syntax diagnostics: the parser reports them where
+    // the grammar failed, so `diagnostic_for` never sees one.
+    (
+        "K816-CA65-0001",
+        "tests/parser.rs: a_ca65_comment_is_named_and_offered_as_a_line_comment",
+    ),
+    (
+        "K816-CA65-0002",
+        "tests/parser.rs: a_ca65_directive_is_named_with_what_k816_writes",
+    ),
+    (
+        "K816-CA65-0003",
+        "tests/parser.rs: the_scope_operator_is_a_field_dot_or_nothing",
+    ),
+    (
+        "K816-CA65-0004",
+        "tests/parser.rs: address_byte_operators_are_spelled_with_an_ampersand",
+    ),
+    ("K816-CA65-0005", "tests/parser.rs: sizeof_is_a_suffix"),
+    (
+        "K816-CA65-0006",
+        "tests/parser.rs: a_cheap_local_is_renamed_at_every_use",
+    ),
+    (
+        "K816-CA65-0007",
+        "tests/parser.rs: code_outside_a_section_is_told_to_open_one",
+    ),
     (
         "K816-E0003",
         "tests/parser.rs: a_literal_too_big_for_32_bits_is_refused_where_it_is_written",
@@ -1392,6 +1419,53 @@ const FIX_SITES: &[FixSite] = &[
         source: "func main @a8 {\n    return\n",
         title: "insert `}`",
     },
+    // The ca65 idioms (`src/parser/ca65.rs`): each is reported where the
+    // grammar already failed, and the fix spells the K816 form.
+    FixSite {
+        site: "src/parser/ca65.rs — a `;` comment the grammar could not read",
+        source: "func main @a8 @i8 {\n    lda #1 ; a ca65 comment\n}\n",
+        title: "replace `;` with `//`",
+    },
+    FixSite {
+        site: "src/parser/ca65.rs — a `;` comment read as calls",
+        source: "func main @a8 @i8 {\n    lda #1 ; load one\n}\n",
+        title: "replace `;` with `//`",
+    },
+    FixSite {
+        site: "src/parser/ca65.rs — a directive with a token-for-token spelling",
+        source: "func main {\n    .a8\n    lda #1\n}\n",
+        title: "replace `.a8` with `@a8`",
+    },
+    FixSite {
+        site: "src/parser/ca65.rs — a directive K816 does without",
+        source: ".export main\nfunc main @a8 @i8 {\n    nop\n}\n",
+        title: "delete the line",
+    },
+    FixSite {
+        site: "src/parser/ca65.rs — `::` as a global prefix",
+        source: "func main @a8 @i8 {\n    jsr ::foo\n}\n",
+        title: "delete `::`",
+    },
+    FixSite {
+        site: "src/parser/ca65.rs — `::` reaching a field",
+        source: "var RIA[ .op :byte ] = $FFC0\nfunc main @a8 @i8 {\n    sta RIA::op\n}\n",
+        title: "replace `::` with `.`",
+    },
+    FixSite {
+        site: "src/parser/ca65.rs — an address-byte operator",
+        source: "var addr = $1234\nfunc main @a8 @i8 {\n    lda #<addr\n}\n",
+        title: "replace `#<` with `#&<`",
+    },
+    FixSite {
+        site: "src/parser/ca65.rs — `.sizeof()`",
+        source: "var RIA[ .op :byte ] = $FFC0\nfunc main @a8 @i8 {\n    lda #.sizeof(RIA)\n}\n",
+        title: "replace with `RIA:sizeof`",
+    },
+    FixSite {
+        site: "src/parser/ca65.rs — a cheap local label",
+        source: "func main @a8 @i8 {\n@loop:\n    dex\n    bne @loop\n}\n",
+        title: "replace `@loop` with `.loop`",
+    },
     FixSite {
         site: "src/hla.rs — a transfer the 65816 has no instruction for",
         source: "func w @a8 @i8 {\n    dpr = x\n    return\n}\n",
@@ -1485,6 +1559,7 @@ fn every_site_that_attaches_a_fix_is_reached_by_a_source() {
         "src/resolve.rs",
         "src/semantic.rs",
         "src/parser/diagnostics.rs",
+        "src/parser/ca65.rs",
     ] {
         let text = std::fs::read_to_string(root.join(file)).expect("read a source file");
         producers += text.matches(".with_fix(").count();

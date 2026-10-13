@@ -2839,3 +2839,279 @@ fn import_and_extern_are_still_usable_as_names() {
     let parse = parse_source(map.file(file), None);
     assert_eq!(parse.diagnostics, Vec::new());
 }
+
+// ---------------------------------------------------------------------------
+// ca65 idioms, recognized where the grammar failed (`src/parser/ca65.rs`)
+// ---------------------------------------------------------------------------
+//
+// A source carried over from ca65 by hand fails in a handful of recurring
+// shapes, and the grammar's own account of each — "missing `:`", "expected a
+// data entry" — is true and useless. These are the shapes, each reported
+// with its own code, the K816 spelling, and a fix where one is token for
+// token. The generic syntax diagnostic is *replaced* for that region, not
+// added to.
+
+/// The one diagnostic with `code` a source produces, and the map to read its
+/// spans against.
+fn ca65_diagnostic(
+    source: &str,
+    code: DiagnosticCode,
+) -> (SourceMap, k816::diagnostic::Diagnostic) {
+    let mut map = SourceMap::new();
+    let id = map.add_file("carried.k816", source);
+    let result = parse_source(map.file(id), None);
+    let found = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code == code)
+        .unwrap_or_else(|| {
+            panic!(
+                "no {} in {:?}",
+                code.as_str(),
+                result
+                    .diagnostics
+                    .iter()
+                    .map(|d| (d.code.as_str(), d.title.as_str()))
+                    .collect::<Vec<_>>()
+            )
+        })
+        .clone();
+    // The generic diagnostic for the same region is gone: a reader gets one
+    // explanation, the better one.
+    assert!(
+        !result.diagnostics.iter().any(|d| {
+            matches!(
+                d.code,
+                DiagnosticCode::SYNTAX_ERROR | DiagnosticCode::SYNTAX_MISSING
+            ) && d.primary.span.start >= found.primary.span.start
+                && d.primary.span.start <= found.primary.span.end
+        }),
+        "the generic syntax diagnostic survived beside {}",
+        code.as_str()
+    );
+    (map, found)
+}
+
+#[test]
+fn a_ca65_comment_is_named_and_offered_as_a_line_comment() {
+    let (map, found) = ca65_diagnostic(
+        "func main @a8 @i8 {\n    lda #1 ; load one\n}\n",
+        DiagnosticCode::CA65_COMMENT,
+    );
+    assert!(map.span_text(found.primary.span).starts_with("; load one"));
+    let fix = found.fixes.first().expect("a fix");
+    assert_eq!(fix.applicability, Applicability::MaybeIncorrect);
+    assert_eq!(map.span_text(fix.edits[0].span), ";");
+    assert_eq!(fix.edits[0].replacement, "//");
+}
+
+#[test]
+fn a_ca65_comment_that_parses_as_calls_is_reported_once_as_a_warning() {
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "prose.k816",
+        "func main @a8 @i8 {\n    sei ; disable interrupts\n}\n",
+    );
+    let result = parse_source(map.file(id), None);
+    let [found] = result.diagnostics.as_slice() else {
+        panic!("one diagnostic, found {:?}", result.diagnostics);
+    };
+    assert_eq!(found.code, DiagnosticCode::CA65_COMMENT);
+    assert_eq!(found.severity, k816::diagnostic::Severity::Warning);
+    assert!(
+        map.span_text(found.primary.span)
+            .starts_with("; disable interrupts")
+    );
+    let fix = found.fixes.first().expect("a fix");
+    assert_eq!(fix.applicability, Applicability::MaybeIncorrect);
+    assert_eq!(map.span_text(fix.edits[0].span), ";");
+    assert_eq!(fix.edits[0].replacement, "//");
+}
+
+#[test]
+fn a_semicolon_separating_statements_is_not_a_comment() {
+    for source in [
+        "func main @a8 @i8 { nop ; nop }\n",
+        // One word after the separator is a call, and may well be one.
+        "func inc_x @a8 @i8 { x++ }\nfunc main @a8 @i8 { nop ; inc_x }\n",
+        // Two calls with something else after them on the line are code.
+        "func a_ @a8 @i8 { nop }\nfunc b_ @a8 @i8 { nop }\nfunc main @a8 @i8 { nop ; a_ b_ x++ }\n",
+        // A trailing terminator, as the original's sources write it.
+        "const MARK = 0x27 ;\nfunc main @a8 @i8 {\n    a = #MARK ;\n    return ;\n}\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("sep.k816", source);
+        let result = parse_source(map.file(id), None);
+        assert_eq!(result.diagnostics, Vec::new(), "{source}");
+    }
+}
+
+#[test]
+fn a_ca65_directive_is_named_with_what_k816_writes() {
+    // A statement directive with a token-for-token spelling: a fix.
+    let (map, found) = ca65_diagnostic(
+        "func main {\n    .a8\n    lda #1\n}\n",
+        DiagnosticCode::CA65_DIRECTIVE,
+    );
+    assert_eq!(map.span_text(found.primary.span), ".a8");
+    let fix = found.fixes.first().expect("a fix");
+    assert_eq!(fix.applicability, Applicability::MachineApplicable);
+    assert_eq!(fix.edits[0].replacement, "@a8");
+
+    // A top-level directive whose K816 form is advice.
+    let (map, found) = ca65_diagnostic(
+        ".segment \"CODE\"\nfunc main @a8 @i8 {\n    nop\n}\n",
+        DiagnosticCode::CA65_DIRECTIVE,
+    );
+    assert_eq!(map.span_text(found.primary.span), ".segment");
+    assert!(
+        found
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("segment CODE")),
+        "{found:?}"
+    );
+    assert!(found.fixes.is_empty());
+
+    // A data directive inside a block, which is not at the start of its line.
+    let (map, found) = ca65_diagnostic("data t { .byte 1 2 }\n", DiagnosticCode::CA65_DIRECTIVE);
+    assert_eq!(map.span_text(found.primary.span), ".byte");
+
+    // A directive K816 does without: the line goes.
+    let (_, found) = ca65_diagnostic(
+        ".export main\nfunc main @a8 @i8 {\n    nop\n}\n",
+        DiagnosticCode::CA65_DIRECTIVE,
+    );
+    let fix = found.fixes.first().expect("a fix");
+    assert_eq!(fix.title, "delete the line");
+    assert_eq!(fix.edits[0].replacement, "");
+
+    // A directive the table does not know is still named, and pointed at
+    // the guide.
+    let (map, found) = ca65_diagnostic(".fopt compiler, \"x\"\n", DiagnosticCode::CA65_DIRECTIVE);
+    assert_eq!(map.span_text(found.primary.span), ".fopt");
+    assert_eq!(
+        found.docs.as_ref().map(|docs| docs.0.as_str()),
+        Some("doc/ca65-to-k816.md")
+    );
+}
+
+#[test]
+fn the_scope_operator_is_a_field_dot_or_nothing() {
+    let (map, found) = ca65_diagnostic(
+        "var RIA[ .op :byte ] = $FFC0\nfunc main @a8 @i8 {\n    sta RIA::op\n}\n",
+        DiagnosticCode::CA65_SCOPE_OPERATOR,
+    );
+    assert_eq!(map.span_text(found.primary.span), "::");
+    let fix = found.fixes.first().expect("a fix");
+    assert_eq!(fix.applicability, Applicability::MachineApplicable);
+    assert_eq!(fix.edits[0].replacement, ".");
+
+    // As a global prefix there is nothing to write.
+    let (map, found) = ca65_diagnostic(
+        "func main @a8 @i8 {\n    jsr ::foo\n}\n",
+        DiagnosticCode::CA65_SCOPE_OPERATOR,
+    );
+    assert_eq!(map.span_text(found.primary.span), "::");
+    let fix = found.fixes.first().expect("a fix");
+    assert_eq!(fix.title, "delete `::`");
+    assert_eq!(fix.edits[0].replacement, "");
+}
+
+#[test]
+fn address_byte_operators_are_spelled_with_an_ampersand() {
+    let (map, found) = ca65_diagnostic(
+        "var addr = $1234\nfunc main @a8 @i8 {\n    lda #<addr\n}\n",
+        DiagnosticCode::CA65_ADDRESS_BYTE,
+    );
+    assert_eq!(map.span_text(found.primary.span), "#<");
+    assert_eq!(found.fixes[0].edits[0].replacement, "#&<");
+
+    let (map, found) = ca65_diagnostic(
+        "var addr = $1234\nfunc main @a8 @i8 {\n    ldx #.hibyte(addr)\n}\n",
+        DiagnosticCode::CA65_ADDRESS_BYTE,
+    );
+    assert_eq!(map.span_text(found.primary.span), ".hibyte(");
+    assert_eq!(found.fixes[0].edits[0].replacement, "&>");
+
+    // The bank byte has no operator: the help says what to write and no
+    // fix claims otherwise.
+    let (map, found) = ca65_diagnostic(
+        "var far rom = $7E1234\nfunc main @a8 @i8 {\n    lda #^rom\n}\n",
+        DiagnosticCode::CA65_ADDRESS_BYTE,
+    );
+    assert_eq!(map.span_text(found.primary.span), "#^");
+    assert!(found.fixes.is_empty());
+    assert!(
+        found
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains(">> 16"))
+    );
+}
+
+#[test]
+fn sizeof_is_a_suffix() {
+    let (map, found) = ca65_diagnostic(
+        "var RIA[ .op :byte ] = $FFC0\nfunc main @a8 @i8 {\n    lda #.sizeof(RIA)\n}\n",
+        DiagnosticCode::CA65_SIZEOF,
+    );
+    assert_eq!(map.span_text(found.primary.span), ".sizeof(RIA)");
+    assert_eq!(found.fixes[0].edits[0].replacement, "RIA:sizeof");
+}
+
+#[test]
+fn a_cheap_local_is_renamed_at_every_use() {
+    let source = "func main @a8 @i8 {\n@loop:\n    dex\n    bne @loop\n}\n";
+    let (map, found) = ca65_diagnostic(source, DiagnosticCode::CA65_CHEAP_LOCAL);
+    assert_eq!(map.span_text(found.primary.span), "@loop");
+    let fix = found.fixes.first().expect("a fix");
+    assert_eq!(fix.applicability, Applicability::MachineApplicable);
+    assert_eq!(
+        fix.edits.len(),
+        2,
+        "the definition and the branch: {:?}",
+        fix.edits
+    );
+
+    // Applied, the program parses: the fix renames the use the caret was
+    // not on, which is what makes it machine-applicable.
+    let mut fixed = source.to_owned();
+    let mut edits = fix.edits.clone();
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.start));
+    for edit in edits {
+        fixed.replace_range(
+            edit.span.start as usize..edit.span.end as usize,
+            &edit.replacement,
+        );
+    }
+    assert_eq!(
+        fixed,
+        "func main @a8 @i8 {\n.loop:\n    dex\n    bne .loop\n}\n"
+    );
+    let mut map = SourceMap::new();
+    let id = map.add_file("fixed.k816", fixed);
+    assert_eq!(parse_source(map.file(id), None).diagnostics, Vec::new());
+
+    // A width annotation is not a cheap local.
+    let mut map = SourceMap::new();
+    let id = map.add_file("width.k816", "func main @a8 @i8 {\n    @a16 { nop }\n}\n");
+    assert_eq!(parse_source(map.file(id), None).diagnostics, Vec::new());
+}
+
+#[test]
+fn code_outside_a_section_is_told_to_open_one() {
+    let (map, found) = ca65_diagnostic(
+        "main:\n    nop\n    rts\n",
+        DiagnosticCode::CA65_CODE_OUTSIDE_SECTION,
+    );
+    assert_eq!(map.span_text(found.primary.span), "main:");
+    assert!(
+        found
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("func main {")),
+        "{found:?}"
+    );
+    assert!(found.fixes.is_empty());
+}

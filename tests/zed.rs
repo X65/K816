@@ -399,7 +399,7 @@ fn the_extension_crate_is_its_own_workspace() {
 
 /// The query files Zed reads from `languages/K816/`, and so the whole set: a
 /// file not listed is one no gate holds to anything.
-const ZED_QUERIES: &[&str] = &["highlights", "injections", "brackets", "indents"];
+const ZED_QUERIES: &[&str] = &["highlights", "injections", "brackets", "indents", "outline"];
 
 /// The queries Zed reads unchanged. Zed reads queries only from the
 /// extension's own directory, so these are copies — and a copy is a second
@@ -505,30 +505,43 @@ fn every_zed_query_compiles() {
         names(language_dir(), "indents"),
         BTreeSet::from(["indent".to_owned(), "end".to_owned()])
     );
+    assert_eq!(
+        names(language_dir(), "outline"),
+        BTreeSet::from(["item".to_owned(), "name".to_owned(), "context".to_owned()])
+    );
 }
 
-/// Every capture `query` yields over every source in the corpus.
+/// Every source in the corpus, once each, in a stable order.
+fn corpus_sources() -> Vec<(String, String)> {
+    let mut seen = BTreeSet::new();
+    for set in corpus_files::corpus() {
+        seen.extend(set.files);
+    }
+    assert!(seen.len() > 100, "the corpus has {} sources", seen.len());
+    seen.into_iter()
+        .map(|path| (path.to_string_lossy().into_owned(), read(path)))
+        .collect()
+}
+
+/// Every capture `query` yields over `sources`.
 ///
-/// Spans carry the file they are in, so one sorted list over the whole corpus
-/// compares as exactly as a list per file.
-fn corpus_captures(query: &str) -> Vec<Capture> {
+/// Spans carry the file they are in, so one sorted list over every source
+/// compares as exactly as a list per file. Both queries of a comparison are
+/// run over one `SourceMap`, so their file ids agree.
+fn captures_over(query: &str, sources: &[(String, String)]) -> Vec<Capture> {
     let query = Query::compile(query).expect("the query compiles");
     let mut map = SourceMap::new();
     let mut found = Vec::new();
-    let mut seen = BTreeSet::new();
-    for set in corpus_files::corpus() {
-        for path in set.files {
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-            let source = read(path.clone());
-            let file = map.add_file(path.to_string_lossy(), source.clone());
-            let parse = parse_source(map.file(file), None);
-            found.extend(query.captures(&parse.tree, file, &source));
-        }
+    for (name, source) in sources {
+        let file = map.add_file(name.as_str(), source.clone());
+        let parse = parse_source(map.file(file), None);
+        found.extend(query.captures(&parse.tree, file, source));
     }
-    assert!(seen.len() > 100, "the corpus has {} sources", seen.len());
     found
+}
+
+fn corpus_captures(query: &str) -> Vec<Capture> {
+    captures_over(query, &corpus_sources())
 }
 
 /// The spans of every capture named `name`, sorted.
@@ -610,4 +623,212 @@ fn the_zed_indent_query_indents_what_the_grammars_does() {
              that construct's own last delimiter"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The outline
+// ---------------------------------------------------------------------------
+
+/// Every form the outline lists, written once — including the two spellings
+/// of a function, the keyworded `func main` that must not be listed twice,
+/// and each `extern`.
+const EVERY_DEFINITION: &str = "\
+const ROWS = 24, COLS
+var RESULT :word, dp ptr
+data table { 1 2 3 }
+data { entry: 4 }
+binary blob = \"blob.bin\"
+evalfunc twice(n) [ n * 2 ]
+extern func _puts
+extern far func rom_entry
+extern var dp counter
+extern const LIMIT
+far func helper {
+loop:
+    rts
+}
+naked isr { rti }
+main { }
+func main { }
+";
+
+/// Zed's outline lists the definitions `tags.scm` lists — the same names, at
+/// the same items — over the corpus and over one source holding every form.
+#[test]
+fn the_outline_lists_the_definitions_the_tags_query_lists() {
+    let mut sources = corpus_sources();
+    sources.push((
+        "every-definition.k816".to_owned(),
+        EVERY_DEFINITION.to_owned(),
+    ));
+
+    // A form the parser recovered from is not the form it claims to be.
+    let mut map = SourceMap::new();
+    let file = map.add_file("every-definition.k816", EVERY_DEFINITION);
+    assert_eq!(parse_source(map.file(file), None).diagnostics, Vec::new());
+
+    let outline_query = read(language_dir().join("outline.scm"));
+    let outline = captures_over(&outline_query, &sources);
+    let tags = captures_over(&read(grammar_queries().join("tags.scm")), &sources);
+
+    // `tags.scm` also captures call sites; its definitions are the patterns
+    // that capture a `definition.*`, and `@name` is shared between the two.
+    let defining: BTreeSet<usize> = tags
+        .iter()
+        .filter(|capture| capture.name.starts_with("definition."))
+        .map(|capture| capture.pattern)
+        .collect();
+    let definitions: Vec<Capture> = tags
+        .into_iter()
+        .filter(|capture| defining.contains(&capture.pattern))
+        .collect();
+
+    let mut tagged = spans_named(&definitions, "definition.function");
+    tagged.extend(spans_named(&definitions, "definition.variable"));
+    tagged.extend(spans_named(&definitions, "definition.constant"));
+    tagged.sort();
+    tagged.dedup();
+
+    let items = spans_named(&outline, "item");
+    assert_eq!(
+        items, tagged,
+        "the outline lists different items from tags.scm"
+    );
+    assert_eq!(
+        spans_named(&outline, "name"),
+        spans_named(&definitions, "name"),
+        "the outline names different things from tags.scm"
+    );
+
+    // One match per item: two patterns matching one declaration would list
+    // it twice, and the deduplication above would hide that.
+    let mut matched: BTreeMap<k816::source::Span, BTreeSet<usize>> = BTreeMap::new();
+    for capture in outline.iter().filter(|capture| capture.name == "item") {
+        matched
+            .entry(capture.span)
+            .or_default()
+            .insert(capture.pattern);
+    }
+    for (span, patterns) in &matched {
+        assert_eq!(
+            patterns.len(),
+            1,
+            "{span:?} is listed by patterns {patterns:?}"
+        );
+    }
+
+    // And every pattern lists something, so none of them is untested.
+    let patterns = top_level_patterns(&outline_query);
+    let used: BTreeSet<usize> = matched.values().flatten().copied().collect();
+    assert_eq!(
+        used,
+        (0..patterns).collect::<BTreeSet<_>>(),
+        "an outline pattern matched nothing"
+    );
+}
+
+/// What Zed prints for each item — its `@context` and `@name` in source order
+/// — for the source holding every form.
+#[test]
+fn the_outline_says_what_each_definition_is() {
+    let outline = captures_over(
+        &read(language_dir().join("outline.scm")),
+        &[(
+            "every-definition.k816".to_owned(),
+            EVERY_DEFINITION.to_owned(),
+        )],
+    );
+    let text = |span: k816::source::Span| &EVERY_DEFINITION[span.start as usize..span.end as usize];
+    let items: Vec<&Capture> = outline
+        .iter()
+        .filter(|capture| capture.name == "item")
+        .collect();
+    let labels: Vec<String> = items
+        .iter()
+        .map(|item| {
+            let inside = |span: k816::source::Span| {
+                span.start >= item.span.start && span.end <= item.span.end
+            };
+            // A part of a nested item belongs to that item, not this one.
+            let nested = |span: k816::source::Span| {
+                items.iter().any(|other| {
+                    other.span != item.span
+                        && inside(other.span)
+                        && span.start >= other.span.start
+                        && span.end <= other.span.end
+                })
+            };
+            outline
+                .iter()
+                .filter(|part| part.pattern == item.pattern)
+                .filter(|part| part.name == "context" || part.name == "name")
+                .filter(|part| inside(part.span) && !nested(part.span))
+                .map(|part| text(part.span))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "ROWS",
+            "COLS",
+            "RESULT",
+            "ptr",
+            "data table",
+            "entry",
+            "binary blob",
+            "evalfunc twice",
+            "func _puts",
+            "far func rom_entry",
+            "var counter",
+            "const LIMIT",
+            "far func helper",
+            "loop",
+            "naked isr",
+            "main",
+            "func main",
+        ]
+    );
+}
+
+/// How many patterns a query file holds: its top-level parenthesized forms,
+/// outside comments and strings. Enough for a file written as one form per
+/// pattern, which is every file here — none uses a top-level `[ … ]`.
+fn top_level_patterns(query: &str) -> usize {
+    let mut depth = 0usize;
+    let mut patterns = 0;
+    let mut chars = query.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ';' => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '"' => {
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            '(' => {
+                if depth == 0 {
+                    patterns += 1;
+                }
+                depth += 1;
+            }
+            ')' => depth -= 1,
+            '[' if depth == 0 => panic!("a top-level alternation is not counted"),
+            _ => {}
+        }
+    }
+    patterns
 }

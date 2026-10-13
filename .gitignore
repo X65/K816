@@ -4,3 +4,6 @@ examples/fullstack/*.s
 examples/fullstack/*.o
 examples/fullstack/*.bin
 examples/k65/atari-xl/*/main.xex
+editors/zed-k816/target/
+editors/zed-k816/grammars/
+editors/zed-k816/*.wasm

@@ -1,0 +1,28 @@
+# The Zed extension for K816 (sub-plan L, `plans/11-zed-extension.md`).
+#
+# `tests/zed.rs` reads this file: the grammar entry must name the repository
+# `tree-sitter-k65/tree-sitter.json` names, and the pinned `rev` must be a
+# commit whose generated parser hashes to `tree-sitter-k65/generated.lock` —
+# so the parser Zed compiles is the parser `k816 lsp` runs.  A grammar
+# regeneration is therefore two commits: regenerate and refresh the lock,
+# then bump `rev` here to that commit.  Zed clones `rev` from GitHub, so the
+# first must be pushed before a dev install can use it.
+
+id = "k816"
+name = "K816"
+version = "0.1.0"
+schema_version = 1
+authors = ["Tomasz Sterna (smokku)"]
+description = "K816 and K65 for the 65816: highlighting, outline, indentation, and the k816 language server"
+repository = "https://github.com/X65/K816"
+
+# The key is the grammar's name: Zed links the symbol `tree_sitter_<key>`,
+# and the generated parser defines `tree_sitter_k65`.
+[grammars.k65]
+repository = "https://github.com/X65/K816"
+rev = "17221843ed15023b383ee3cfc1a5ebd2e2557a98"
+path = "tree-sitter-k65"
+
+[language_servers.k816]
+name = "K816"
+languages = ["K816"]

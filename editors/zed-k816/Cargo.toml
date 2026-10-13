@@ -1,0 +1,23 @@
+# The extension's Rust half: one function that tells Zed how to start
+# `k816 lsp`.  Zed builds it for wasm32-wasip2 when the extension is
+# installed; `cargo fmt` and `cargo clippy` check it on the host with
+# `--manifest-path editors/zed-k816/Cargo.toml`.
+
+[package]
+name = "zed_k816"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "0BSD"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "=0.7.0"
+
+# Its own root.  The k816 package above this directory is not a workspace,
+# and this crate must never become a member of one: it targets wasm32-wasip2,
+# and the compiler's `cargo test` has no reason to build it.
+[workspace]

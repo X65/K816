@@ -39,6 +39,11 @@ use std::path::{Path, PathBuf};
 use k816::parser::parse_source;
 use k816::source::SourceMap;
 
+#[path = "common/fingerprint.rs"]
+mod fingerprint;
+
+use fingerprint::fingerprint;
+
 /// The Tree-sitter CLI release the committed artifacts were generated with.
 const CLI_VERSION: &str = "0.26";
 
@@ -58,17 +63,6 @@ fn grammar_dir() -> PathBuf {
 // ---------------------------------------------------------------------------
 // Generation fingerprint
 // ---------------------------------------------------------------------------
-
-/// FNV-1a (64-bit). A staleness detector, not a security primitive: it only
-/// has to change when a file changes, and it keeps the test dependency-free.
-fn fingerprint(bytes: &[u8]) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
-}
 
 fn current_lock() -> String {
     let mut lock = String::from(

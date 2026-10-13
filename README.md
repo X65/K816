@@ -343,6 +343,31 @@ are served `textDocument/semanticTokens`, which the server answers by running
 that same query and refining what only the symbol table knows. No TextMate
 grammar is shipped (`doc/tree-sitter.md`).
 
+**Zed has an extension in this repository**, `editors/zed-k816/`. Install it
+with Zed's `zed: install dev extension` command and pick that directory. Zed
+compiles the grammar at the commit the extension pins and starts `k816 lsp`
+from your `PATH`, so build it first with `make -C .. k816`. Options go in
+Zed's `settings.json`, under the server's own keys:
+
+```json
+{
+  "lsp": {
+    "k816": {
+      "binary": { "path": "/path/to/cc65/bin/k816", "arguments": ["lsp"] },
+      "initialization_options": { "strict-k65": false, "entry": "native,a8,i8" }
+    }
+  },
+  "languages": {
+    "K816": { "formatter": "language_server" }
+  }
+}
+```
+
+`binary` is optional when `k816` is on the `PATH` your login shell sets. When
+it is given, `arguments` has to stay beside `path`: Zed starts a configured
+binary with those arguments alone, and without `lsp` that is the compiler,
+which waits for a file while the editor waits for the server.
+
 **Not offered**, deliberately: inlay hints, code lens, folding ranges, and
 signature help. The [K816 Language
 Support](https://marketplace.visualstudio.com/items?itemName=X65-Project.vscode-k816)

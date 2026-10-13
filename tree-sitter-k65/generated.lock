@@ -6,6 +6,10 @@
 # `tree-sitter-k65/`, then refresh this file with
 # `UPDATE_GENERATED_LOCK=1 cargo test --test corpus`.
 #
+# `editors/zed-k816/extension.toml` pins a commit whose files must hash
+# to these values (`tests/zed.rs`), so after regenerating, commit, then
+# move that `rev` to the commit — a regeneration is two commits.
+#
 # Hashes are FNV-1a/64 over the raw file bytes.
 
 tree-sitter-cli = 0.26

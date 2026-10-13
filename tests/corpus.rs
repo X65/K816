@@ -74,6 +74,10 @@ fn current_lock() -> String {
          # `tree-sitter-k65/`, then refresh this file with\n\
          # `UPDATE_GENERATED_LOCK=1 cargo test --test corpus`.\n\
          #\n\
+         # `editors/zed-k816/extension.toml` pins a commit whose files must hash\n\
+         # to these values (`tests/zed.rs`), so after regenerating, commit, then\n\
+         # move that `rev` to the commit — a regeneration is two commits.\n\
+         #\n\
          # Hashes are FNV-1a/64 over the raw file bytes.\n\n",
     );
     lock.push_str(&format!("tree-sitter-cli = {CLI_VERSION}\n"));

@@ -657,6 +657,76 @@ fn fenced_blocks(text: &str, language: &str) -> Vec<String> {
     blocks
 }
 
+/// The Zed settings the README shows are settings the server takes.
+///
+/// A snippet that names a key the server does not read, or a value it
+/// refuses, is copied into an editor and silently does nothing. And a
+/// `binary.path` without `["lsp"]` beside it starts the compiler instead of
+/// the server: Zed passes a configured binary its configured arguments and
+/// nothing else.
+#[test]
+fn the_readme_zed_settings_are_what_the_server_reads() {
+    use k816::abi::EntryEnvironment;
+    use k816::lsp::config;
+
+    let section = readme_section("Editor support");
+    let blocks = fenced_blocks(&section, "json");
+    assert_eq!(blocks.len(), 1, "one Zed settings block in Editor support");
+    let settings: serde_json::Value =
+        serde_json::from_str(&blocks[0]).expect("the README's Zed settings are JSON");
+
+    let server = &settings["lsp"]["k816"];
+    let options = &server["initialization_options"];
+    let entry = options[config::ENTRY]
+        .as_str()
+        .expect("the snippet states an entry");
+    let strict = options[config::STRICT_K65]
+        .as_bool()
+        .expect("the snippet states strict-k65");
+
+    // Start from the opposite of what the snippet says, so a key that was
+    // ignored rather than applied cannot pass by matching a default.
+    let mut applied = k816::Options {
+        strict_k65: !strict,
+        entry: EntryEnvironment::parse("native,a16,i16").expect("a spelling"),
+        ..k816::Options::default()
+    };
+    if applied.entry == EntryEnvironment::parse(entry).expect("the snippet's entry parses") {
+        applied.entry = EntryEnvironment::parse("native,a8,i8").expect("a spelling");
+    }
+    let messages = config::apply(&mut applied, options);
+    assert_eq!(
+        messages,
+        Vec::new(),
+        "the server has something to say about the snippet"
+    );
+    assert_eq!(applied.strict_k65, strict);
+    assert_eq!(applied.entry, EntryEnvironment::parse(entry).unwrap());
+
+    if let Some(binary) = server.get("binary") {
+        assert_eq!(
+            binary["arguments"],
+            serde_json::json!(["lsp"]),
+            "a configured binary is started with these arguments and no others"
+        );
+    }
+
+    let language = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("editors/zed-k816/languages/K816/config.toml"),
+    )
+    .expect("read the Zed language config");
+    let name = language
+        .lines()
+        .find_map(|line| line.strip_prefix("name = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("the language config names its language");
+    assert!(
+        settings["languages"].get(name).is_some(),
+        "the snippet's language settings are keyed by the language's name, `{name}`"
+    );
+}
+
 /// The usage block in the README is the usage text the binary prints.
 ///
 /// Not "describes the same commands" — the same bytes. A paraphrase is what

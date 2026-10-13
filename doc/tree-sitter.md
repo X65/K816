@@ -44,6 +44,8 @@ Tree-sitter grammars are written declaratively and generate a C parser. The same
 
 The Rust toolchain is only needed while developing or regenerating the grammar. Generated `parser.c` should be committed.
 
+`generated.lock` records a hash of each generated file, and `cargo test` fails when the committed files and the lock disagree. The Zed extension in `editors/zed-k816/` pins the grammar by commit, and a second gate holds the pinned commit to the same lock, so the parser Zed compiles is the one the server runs. A commit cannot name its own hash, so **a grammar regeneration is two commits**: regenerate and refresh the lock, then move the extension's `rev` to that commit. The first is red on the pin gate until the second lands, and the two are pushed together.
+
 ### 2. Tree-sitter produces a CST, not the semantic AST
 
 The compiler pipeline becomes:
@@ -227,6 +229,9 @@ There are two formats and no third:
 * **`queries/highlights.scm`**, which Helix, Neovim, Zed and Emacs read
   directly. Tree-sitter highlighting is defined through query captures over
   syntax nodes. [Official highlighting documentation](https://tree-sitter.github.io/tree-sitter/3-syntax-highlighting.html)
+  The Zed extension in `editors/zed-k816/` reads a copy, because Zed reads
+  queries only from an extension's own directory, and `tests/zed.rs` holds
+  the copy to this file byte for byte.
 * **`textDocument/semanticTokens`**, for editors that do not read
   Tree-sitter queries — VS Code among them. The server answers it by running
   *that same file* over the document's tree and mapping each capture onto the

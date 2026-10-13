@@ -116,6 +116,41 @@ fn generated_artifacts_match_the_grammar() {
     );
 }
 
+/// The repository the grammar lives in, as every manifest that names it says.
+const GRAMMAR_REPOSITORY: &str = "https://github.com/X65/K816";
+
+/// `tree-sitter.json` is what a Tree-sitter tool — and an editor extension
+/// that clones the grammar — reads to learn where the grammar comes from and
+/// under what licence. It is not fingerprinted, so nothing else would notice
+/// it naming the cc65 fork, or a licence the project does not use; both were
+/// true until sub-plan L.
+#[test]
+fn the_grammar_manifest_names_this_repository_and_its_license() {
+    let text = std::fs::read_to_string(grammar_dir().join("tree-sitter.json"))
+        .expect("read tree-sitter.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&text).expect("tree-sitter.json is JSON");
+
+    let grammar = &manifest["grammars"][0];
+    assert_eq!(grammar["name"], "k65", "the symbol is `tree_sitter_k65`");
+    assert_eq!(grammar["file-types"], serde_json::json!(["k65", "k816"]));
+
+    assert_eq!(manifest["metadata"]["license"], "0BSD");
+    let license = std::fs::read_to_string(grammar_dir().join("../LICENSE")).expect("read LICENSE");
+    assert!(
+        license.contains(
+            "Permission to use, copy, modify, and/or distribute this software for any\n\
+             purpose with or without fee is hereby granted."
+        ),
+        "LICENSE is no longer the 0BSD text tree-sitter.json claims"
+    );
+
+    assert_eq!(
+        manifest["metadata"]["links"]["repository"], GRAMMAR_REPOSITORY,
+        "the grammar lives in X65/K816, not in the cc65 fork that carries it as a submodule"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Corpus runner
 // ---------------------------------------------------------------------------

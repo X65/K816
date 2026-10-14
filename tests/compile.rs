@@ -4388,3 +4388,58 @@ fn a_native_operand_may_name_an_inline_place_alias_but_not_a_value_alias() {
         "{found:?}"
     );
 }
+
+/// A width statement written directly after a label is emitted.
+///
+/// The width model anchored every `Set` that follows a label as the
+/// *label's* bridge, but only a label lowers after-label bridges, and a mode
+/// statement's bridge is filed under its own statement: `entry: @a16` lost
+/// its `rep` while the immediates after it were still sized sixteen bits
+/// wide. ca65 refused the result where an immediate overflowed eight bits
+/// and, where it did not, assembled code that runs at the old width.
+/// Found building a kernel whose entry label is followed by `@a16 @i16`.
+#[test]
+fn a_width_statement_right_after_a_label_establishes_its_width() {
+    let source = "\
+func work @a8 @i8 {
+entry:
+    @a16 @i16
+    lda #$1234
+    ldx #$5678
+}
+naked boot {
+    jmp entry
+}
+";
+    for optimize in [false, true] {
+        let options = Options {
+            optimize,
+            ..Options::default()
+        };
+        let (bytes, assembly) = compile_and_link(
+            if optimize {
+                "label-width-opt"
+            } else {
+                "label-width"
+            },
+            "label-width.k816",
+            source,
+            &options,
+        );
+        // rep #$20 ; rep #$10 (or one rep #$30) ; lda #$1234 ; ldx #$5678 ; rts ; jmp entry
+        let expected_head: &[u8] = if optimize {
+            &[0xC2, 0x30]
+        } else {
+            &[0xC2, 0x20, 0xC2, 0x10]
+        };
+        assert!(
+            bytes.starts_with(expected_head),
+            "optimize={optimize}: the width statement was not emitted\n{assembly}"
+        );
+        let rest = &bytes[expected_head.len()..];
+        assert!(
+            rest.starts_with(&[0xA9, 0x34, 0x12, 0xA2, 0x78, 0x56, 0x60]),
+            "optimize={optimize}: immediates not 16-bit after the label\n{assembly}"
+        );
+    }
+}

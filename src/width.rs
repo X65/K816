@@ -1733,10 +1733,22 @@ fn record_bridges(
         }
         let (axes, anchor, reason) = match &node.transfer {
             Transfer::Set(axes) => {
-                // A width established right after a label is the label
+                // A width established right after a label *by the label* —
+                // decision 6's pending annotation, which `label_statement`
+                // files under the label's own statement — is the label
                 // bridge, and its adjacency to the label operation is what
                 // marks it fixed for the optimizer.
-                if index > 0 && nodes[index - 1].label.is_some() {
+                //
+                // A mode statement the author wrote *after* the label is not
+                // that. It is filed under its own statement, and lowering
+                // emits an after-label bridge only while lowering a label,
+                // so anchoring it there dropped it: `entry: @a16` lost its
+                // `rep` while the immediates after it were still sized
+                // sixteen bits wide.
+                if index > 0
+                    && nodes[index - 1].label.is_some()
+                    && nodes[index - 1].statement == node.statement
+                {
                     (*axes, BridgeAnchor::AfterLabel, Reason::LabelBridge)
                 } else if blocks.iter().any(|block| block.enter == index) {
                     (*axes, BridgeAnchor::Before, Reason::BlockEnter)

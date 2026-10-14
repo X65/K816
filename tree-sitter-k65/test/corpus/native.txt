@@ -435,12 +435,13 @@ func main {
         mnemonic: (mnemonic)))))
 
 ================================================================================
-A repeat count belongs to its mnemonic whatever the line before holds
+A repeat count belongs to the mnemonic on its line, whatever the line before holds
 ================================================================================
 
 func main {
   tya // the comment on the line before is what used to flip it
   lsr * 3
+  nop * 3
   nop
   * 3
 }
@@ -459,4 +460,138 @@ func main {
         repeat: (number))
       (native_instruction
         mnemonic: (mnemonic)
-        repeat: (number)))))
+        repeat: (number))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (hla_nop
+        count: (number)))))
+
+================================================================================
+A bare call on the line after an instruction is a call
+================================================================================
+
+func main {
+  pla
+  task_init
+  stz lock
+  epilogue
+  lda foo
+  bar
+  lda foo,x
+  bar
+  lda #1
+  bar
+  jmp (vector)
+  bar
+  lda [pointer],y
+  bar
+  asl // a comment ends the line too
+  bar
+  mvn 1,2
+  bar
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic))
+      (bare_call
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (bare_call
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (bare_call
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (bare_call
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (bare_call
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (indirect
+          value: (identifier)))
+      (bare_call
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (long_indirect
+          value: (identifier)
+          outer_index: (index_register)))
+      (bare_call
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (line_comment)
+      (bare_call
+        target: (identifier))
+      (block_move
+        mnemonic: (mnemonic)
+        source: (number)
+        destination: (number))
+      (bare_call
+        target: (identifier)))))
+
+================================================================================
+An instruction and what follows it on one line parse as they always did
+================================================================================
+
+func main {
+  clc adc #1
+  lda dp foo
+  lda foo bar
+  @a8 { nop }
+  pla /* a block comment */ task_init
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)))
+      (width_block
+        width: (width_annotation)
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        (block_comment)
+        operand: (address
+          value: (identifier))))))

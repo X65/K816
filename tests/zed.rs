@@ -364,7 +364,7 @@ fn the_pinned_grammar_is_the_committed_grammar() {
         );
         checked += 1;
     }
-    assert_eq!(checked, 4, "generated.lock lists four artifacts");
+    assert_eq!(checked, 5, "generated.lock lists five artifacts");
 }
 
 /// The extension's crate is its own workspace root, so it is never built by

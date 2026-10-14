@@ -25,6 +25,7 @@ tree-sitter-k65/
 ├── tree-sitter.json
 ├── src/
 │   ├── parser.c
+│   ├── scanner.c
 │   ├── grammar.json
 │   └── node-types.json
 ├── queries/
@@ -42,7 +43,7 @@ tree-sitter-k65/
 
 Tree-sitter grammars are written declaratively and generate a C parser. The same generated parser can be consumed through both the native C API and official Rust bindings. The C compiler therefore does not acquire a Rust dependency. [Tree-sitter’s parsing runtime has a native C API](https://tree-sitter.github.io/tree-sitter/using-parsers/), and a generated parser can be embedded directly alongside the runtime’s `lib.c`. [Official build instructions](https://tree-sitter.github.io/tree-sitter/using-parsers/1-getting-started.html)
 
-The Rust toolchain is only needed while developing or regenerating the grammar. Generated `parser.c` should be committed.
+The Rust toolchain is only needed while developing or regenerating the grammar. Generated `parser.c` should be committed. `scanner.c` is the one hand-written C file: it produces a zero-width token at a line break after a raw mnemonic or its operand, because a mnemonic may stand alone and the next line may be a bare call, and whether a line ended is the one thing a grammar whose extras include every newline cannot see.
 
 `generated.lock` records a hash of each generated file, and `cargo test` fails when the committed files and the lock disagree. The Zed extension in `editors/zed-k816/` pins the grammar by commit, and a second gate holds the pinned commit to the same lock, so the parser Zed compiles is the one the server runs. A commit cannot name its own hash, so **a grammar regeneration is two commits**: regenerate and refresh the lock, then move the extension's `rev` to that commit. The first is red on the pin gate until the second lands, and the two are pushed together.
 

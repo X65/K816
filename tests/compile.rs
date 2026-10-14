@@ -762,6 +762,47 @@ fn a_rep_before_an_immediate_widens_it() {
     );
 }
 
+/// A bare call on the line after an instruction is a call, whatever shape
+/// the instruction took.
+///
+/// Raw mnemonics may stand alone, and K65 is newline-insensitive, so `pla`
+/// followed by `g` on the next line read as `pla g` and `stz lock` followed by
+/// `g` as `stz` under an address prefix named `lock`. The grammar ends a raw
+/// instruction at a line break now (`tree-sitter-k65/src/scanner.c`); the
+/// bytes are the claim, because a reading that kept the instruction and lost
+/// the call would compile to nothing at all for the call.
+#[test]
+fn a_bare_call_on_the_line_after_an_instruction_is_a_call() {
+    let bytes = linked(
+        "bare-call-after-instruction",
+        "bare-call.k816",
+        "var lock = $10\n\
+         func g {\n    nop\n}\n\
+         func main @a8 @i8 {\n\
+         \x20   pla\n    g\n\
+         \x20   stz lock\n    g\n\
+         \x20   lda lock,x\n    g\n\
+         \x20   asl // a comment ends the line too\n    g\n\
+         \x20   lda #1\n    g\n\
+         }\n",
+    );
+    // `g` at $8000 is nop, rts; `main` follows at $8002.
+    let call = [0x20, 0x00, 0x80];
+    let mut expected = vec![0xEA, 0x60];
+    for instruction in [
+        &[0x68][..],
+        &[0x64, 0x10],
+        &[0xB5, 0x10],
+        &[0x0A],
+        &[0xA9, 0x01],
+    ] {
+        expected.extend_from_slice(instruction);
+        expected.extend_from_slice(&call);
+    }
+    expected.push(0x60);
+    assert_eq!(bytes, expected, "{bytes:02X?}");
+}
+
 /// Module defaults reach the encoded length: the same `#1` is three bytes in
 /// the inheriting function and two in the one that overrides.
 #[test]

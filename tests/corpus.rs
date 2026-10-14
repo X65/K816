@@ -48,12 +48,14 @@ use fingerprint::fingerprint;
 const CLI_VERSION: &str = "0.26";
 
 /// Generated files whose contents the fingerprint covers, plus the grammar
-/// they are generated from.
-const FINGERPRINTED: [&str; 4] = [
+/// they are generated from and the external scanner compiled beside them —
+/// hand-written, but part of the parser Zed builds from the pinned commit.
+const FINGERPRINTED: [&str; 5] = [
     "grammar.js",
     "src/parser.c",
     "src/grammar.json",
     "src/node-types.json",
+    "src/scanner.c",
 ];
 
 fn grammar_dir() -> PathBuf {

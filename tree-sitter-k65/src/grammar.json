@@ -3046,6 +3046,18 @@
                 "type": "SYMBOL",
                 "name": "_operand"
               }
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "_line_end"
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
             }
           ]
         },
@@ -3088,6 +3100,23 @@
                   "type": "BLANK"
                 }
               ]
+            }
+          ]
+        },
+        {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "mnemonic",
+              "content": {
+                "type": "SYMBOL",
+                "name": "mnemonic"
+              }
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_line_end"
             }
           ]
         }
@@ -7140,7 +7169,16 @@
     ]
   ],
   "precedences": [],
-  "externals": [],
+  "externals": [
+    {
+      "type": "SYMBOL",
+      "name": "_line_end"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_error_sentinel"
+    }
+  ],
   "inline": [],
   "supertypes": [],
   "reserved": {

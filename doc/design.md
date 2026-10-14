@@ -85,6 +85,7 @@ k816/
     tree-sitter.json
     src/
       parser.c
+      scanner.c
       grammar.json
       node-types.json
     queries/
@@ -138,8 +139,9 @@ k816/
 
 `tree-sitter-k65/` is a top-level directory, not a second Cargo package. The
 generated parser (`parser.c`) and its metadata are committed and compiled by
-`build.rs` during the ordinary Cargo build; grammar regeneration is a
-maintainer operation, never part of a normal checkout build.
+`build.rs` during the ordinary Cargo build, with the hand-written external
+scanner (`scanner.c`) beside it; grammar regeneration is a maintainer
+operation, never part of a normal checkout build.
 
 This does not prohibit modules from being substantial. It prohibits turning every internal boundary into a published crate.
 

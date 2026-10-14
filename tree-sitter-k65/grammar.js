@@ -161,6 +161,16 @@ export default grammar({
 
   extras: $ => [/\s/, $.line_comment, $.block_comment],
 
+  // `src/scanner.c`. `_line_end` is zero-width, and produced only where a
+  // line break comes before the next token: the one place K816 cares where a
+  // line ends is after a raw mnemonic or its operand, because a mnemonic may
+  // stand alone and the next line may be a bare call. Only the readings that
+  // end the instruction there accept it, so a reading that would carry on
+  // across the break dies at it, and nothing written on one line parses
+  // differently. `_error_sentinel` is never produced; it is how the scanner
+  // knows the parser is recovering.
+  externals: $ => [$._line_end, $._error_sentinel],
+
   // Words that never lex as an identifier. Without this, recovery from a
   // malformed statement swallows the keyword that starts the *next* one —
   // `a = =` followed by `return` would take `return` as the operand it is
@@ -1078,13 +1088,26 @@ export default grammar({
     // *before* changed the state: `tya // c` then `lsr * 3` assembled one
     // shift and three NOPs. The dynamic precedence makes the repeat win
     // wherever both readings survive, whatever precedes it.
+    //
+    // Neither reading takes anything from the next line. A mnemonic may stand
+    // alone, so with line breaks invisible `pla` followed by `task_init` on
+    // the next line was one instruction with an operand, `stz lock` followed
+    // by `epi` was `stz` with an address prefix `lock`, and `nop` followed by
+    // `* 3` was three NOPs rather than one and a wait. `_line_end` is
+    // produced only at a line break, and is accepted only where the
+    // instruction is complete.
     native_instruction: $ =>
       choice(
-        seq(field('mnemonic', $.mnemonic), field('operand', $._operand)),
+        seq(
+          field('mnemonic', $.mnemonic),
+          field('operand', $._operand),
+          optional($._line_end),
+        ),
         seq(
           field('mnemonic', $.mnemonic),
           optional(prec.dynamic(5, seq('*', field('repeat', $._expression)))),
         ),
+        seq(field('mnemonic', $.mnemonic), $._line_end),
       ),
 
     mnemonic: _ =>
@@ -1142,10 +1165,10 @@ export default grammar({
         ),
         // `lda dp addr` is a prefixed operand, not `lda dp` followed by a
         // bare call to `addr`, so the prefixed reading outranks the
-        // prefix-less one wherever both parse. The reverse case — an
-        // instruction with a plain operand followed by a bare call, as in
-        // `lda foo` then `bar` — is genuinely ambiguous and resolves the same
-        // way; write `call bar` or a `;` separator to force the split.
+        // prefix-less one wherever both parse. After a raw mnemonic the
+        // reverse case — `lda foo` then `bar` on the next line — is decided
+        // by the line break (`native_instruction`); in the HLA forms it
+        // resolves the same way, and `call bar` or a `;` forces the split.
         seq(
           field('encoding', $._address_encoding),
           field('value', $._expression),

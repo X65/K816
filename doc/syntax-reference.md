@@ -1817,6 +1817,25 @@ In addition to the classical 6502 modes, the K65 operand grammar exposes these 6
 
 Operand rule for **raw mnemonics**: `#expr` is immediate, while an unprefixed value operand (`lda 0`, `lda addr`, `lda expr`) is an address-mode operand. Bare `const` names and const-rooted expressions are rejected in address position because `const` names values, not memory locations — the two stack-relative forms above being the exception, since their operand is an offset rather than an address; use `#CONST` for an immediate, declare a `var`/label for memory access, or attach an address-encoding prefix (`lda dp 0`, `lda abs 0`, `lda far 0`) when a numeric literal should force a specific address width. The address-of operators `&&label` and `&&&label` are the intentional exception: they produce immediate relocations even without `#`.
 
+**A raw instruction ends at the end of its line.** K65 is newline-insensitive and raw mnemonics are K816's, and a mnemonic may stand alone — so with line breaks invisible, `pla` with a bare call on the next line read as `pla` taking the call's name as its operand, and `stz lock` above one read `lock` as an address-encoding prefix. Neither the operand, an encoding prefix's value, nor a repeat's `* N` is taken from the next line; a line comment ends the line as a newline does, and what is written on one line parses as it always did:
+
+```k65
+var lock = $10
+
+func epilogue {
+    nop
+}
+
+func work @a8 @i8 {
+    pla
+    epilogue        // a call, not an operand of `pla`
+    stz lock
+    epilogue        // a call, not `stz` under a prefix named `lock`
+    nop
+    * 3             // three NOPs of its own: this is not `nop`'s count
+}
+```
+
 A **section's own name** is not an address operand either (`K816-E0115`). `lda target` where `target` is a `func` or a `naked` section is refused, and the reason is the address rather than the load: a body is an operation stream the optimizer rewrites — a mode operation folded, a redundant load coalesced, a dead store dropped — so the offset of its first byte is not one the compiler can promise to keep, and `--no-opt` alone would move it. To read a code byte, put a **label** in the body and load through that; the label is the position the author placed, and it is what survives a rewritten body:
 
 ```k65

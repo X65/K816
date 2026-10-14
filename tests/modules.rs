@@ -820,6 +820,47 @@ fn a_borrowed_body_selects_a_field_its_expander_can_see() {
     );
 }
 
+/// A widthless `inline` another unit declares runs at each use site's width,
+/// and the declaring unit's module default is a contract it carries.
+///
+/// The copy into the expanding unit is what makes a borrowed `inline` local,
+/// so the use-site rule reaches it the same way — and the defining unit's
+/// file-top `@i16` still travels with the copy as a stated axis, which is the
+/// one the use site is bridged to.
+#[test]
+fn a_borrowed_widthless_inline_runs_at_each_use_sites_width() {
+    let mut map = SourceMap::new();
+    map.add_file(
+        "generic.k816",
+        "inline add (#n) {\n    clc\n    adc #n\n}\n",
+    );
+    map.add_file("indexed.k816", "@i16\n\ninline count {\n    ldx #1\n}\n");
+    let entry = map.add_file(
+        "main.k816",
+        "import \"generic.k816\"\nimport \"indexed.k816\"\n\n\
+         func narrow @a8 @i8 {\n    add #4\n    count\n}\n\
+         func broad @a16 @i8 {\n    add #4\n}\n",
+    );
+    let result = k816::compile_to_ca65(
+        &map,
+        entry,
+        &k816::Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
+    assert_eq!(result.diagnostics, vec![], "a borrowed widthless inline");
+    let assembly = result.assembly.expect("compiles");
+    for expected in [
+        "adc     #$04",
+        "adc     #$0004",
+        "rep     #$10",
+        "ldx     #$0001",
+    ] {
+        assert!(assembly.contains(expected), "`{expected}` in:\n{assembly}");
+    }
+}
+
 /// A `const` another unit *defines* leaves no `.import`, exactly as a local
 /// one does.
 ///

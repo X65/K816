@@ -29,6 +29,7 @@
 //! both source forms so native/HLA equivalence covers them too. Whether
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use crate::ast::{AstFile, FunctionKind, ItemKind, ReturnKind, StatementKind};
@@ -39,7 +40,7 @@ use crate::hla;
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
     AnchorId, AxisState, DataOp, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState,
-    Operand, Origin, Reason, RegisterWidth, SegmentName,
+    Operand, Origin, Reason, RegisterWidth, SegmentName, WidthContract,
 };
 use crate::resolve;
 use crate::resolve::{AnonymousBlocks, Resolver};
@@ -85,7 +86,7 @@ fn fill_code_subblocks<'a>(
             function_name: String::new(),
             unit: unit.to_owned(),
             anonymous,
-            widths: widths(ordinal),
+            widths: widths(ordinal).map(Cow::Borrowed),
             ops: Vec::new(),
             checked_calls: Vec::new(),
             nocross: Vec::new(),
@@ -205,7 +206,7 @@ pub fn lower_unit(
             function_name: func.name.text.clone(),
             unit: unit.to_owned(),
             anonymous: &mut anonymous,
-            widths: model.width(info.symbol),
+            widths: model.width(info.symbol).map(Cow::Borrowed),
             ops: Vec::new(),
             checked_calls: Vec::new(),
             nocross: Vec::new(),
@@ -633,8 +634,10 @@ struct Lowering<'a> {
     anonymous: &'a mut AnonymousBlocks,
     /// The width the model tracks at each statement. Lowering *looks up* the
     /// answer and never computes one, which is what keeps it from disagreeing
-    /// with analysis about how wide an immediate is.
-    widths: Option<&'a crate::width::WidthAnalysis>,
+    /// with analysis about how wide an immediate is — with one exception, an
+    /// `inline` that leaves an axis to its use site, whose body has no width
+    /// on that axis until it is expanded (`Lowering::expansion_widths`).
+    widths: Option<Cow<'a, crate::width::WidthAnalysis>>,
     ops: Vec<KOp>,
     /// Calls that stated a register flow, for the damage scan after lowering.
     checked_calls: Vec<CheckedCall>,
@@ -894,6 +897,7 @@ impl<'a> Lowering<'a> {
     fn split_taken_edges(&mut self, statement: &crate::ast::Statement, start: usize, span: Span) {
         let restores: Vec<Bridge> = self
             .widths
+            .as_deref()
             .map(|analysis| {
                 analysis
                     .bridges(statement.id)
@@ -1435,7 +1439,10 @@ impl<'a> Lowering<'a> {
     /// nothing left to set up — generating a `REP` here would be K816
     /// deciding an ABI it does not own.
     fn entry(&mut self, span: Span) {
-        let entry = self.widths.map_or_else(ModeState::unknown, |a| a.entry);
+        let entry = self
+            .widths
+            .as_deref()
+            .map_or_else(ModeState::unknown, |a| a.entry);
         self.assume(entry, span, Reason::EntryContract);
     }
 
@@ -1465,6 +1472,7 @@ impl<'a> Lowering<'a> {
         let mut state = self.widths_at(statement);
         let bridges: Vec<Bridge> = self
             .widths
+            .as_deref()
             .map(|analysis| {
                 analysis
                     .bridges(statement.id)
@@ -1489,6 +1497,7 @@ impl<'a> Lowering<'a> {
     fn bridges(&mut self, statement: &crate::ast::Statement, anchor: BridgeAnchor) {
         let bridges: Vec<Bridge> = self
             .widths
+            .as_deref()
             .map(|analysis| {
                 analysis
                     .bridges(statement.id)
@@ -1516,6 +1525,7 @@ impl<'a> Lowering<'a> {
     /// The state after `statement`, as the model concluded it.
     fn widths_after(&self, statement: &crate::ast::Statement) -> Option<ModeState> {
         self.widths
+            .as_deref()
             .and_then(|analysis| analysis.after(statement.id))
     }
 
@@ -1528,6 +1538,7 @@ impl<'a> Lowering<'a> {
     fn widths_at(&mut self, statement: &crate::ast::Statement) -> ModeState {
         match self
             .widths
+            .as_deref()
             .and_then(|analysis| analysis.before(statement.id))
         {
             Some(state) => state,
@@ -1970,7 +1981,7 @@ impl<'a> Lowering<'a> {
         // call — which is what lets the body be lowered once against its own
         // contract (sub-plan E, decision 12).
         if self.model.symbols.kind(symbol) == SymbolKind::Inline {
-            self.expand(statement, target, symbol, arguments);
+            self.expand(statement, target, symbol, arguments, before);
             return self.claim_exit(statement, symbol, before);
         }
         if checked {
@@ -2059,6 +2070,7 @@ impl<'a> Lowering<'a> {
         target: &crate::ast::Name,
         section: SymbolId,
         arguments: &[crate::ast::CallArgument],
+        before: ModeState,
     ) {
         let Some(func) = self.section(section) else {
             return self.skipped(statement.span, "an `inline` with no body");
@@ -2106,7 +2118,14 @@ impl<'a> Lowering<'a> {
         // The body is lowered with the bindings in force, so the one operand
         // classifier sizes an alias-bearing operand the same way it sizes
         // every other — against the widths the section's own contract
-        // establishes, which is what the use site bridged to.
+        // establishes, which is what the use site bridged to, and on an axis
+        // the contract leaves open, against the use site's own.
+        let widths = match self.deferred_contract(section) {
+            Some(contract) => Some(Cow::Owned(
+                self.expansion_widths(func, section, contract, before),
+            )),
+            None => self.model.width(section).map(Cow::Borrowed),
+        };
         let mut body = Lowering {
             file: self.file,
             model: self.model,
@@ -2114,7 +2133,7 @@ impl<'a> Lowering<'a> {
             function_name: self.model.symbols.name(section).to_owned(),
             unit: self.unit.clone(),
             anonymous: self.anonymous,
-            widths: self.model.width(section),
+            widths,
             ops: Vec::new(),
             checked_calls: Vec::new(),
             nocross: Vec::new(),
@@ -2162,6 +2181,56 @@ impl<'a> Lowering<'a> {
         self.ops.extend(expand::splice(ops, &mut self.anchors));
     }
 
+    /// An `inline`'s contract, when it leaves an axis to its use site.
+    ///
+    /// An axis the section does not state — itself, or by the module default
+    /// above it — is the use site's: the body is expanded in place and runs at
+    /// whatever width it lands in (`plans/13-ca65-converter.md` decision 3).
+    fn deferred_contract(&self, section: SymbolId) -> Option<WidthContract> {
+        let info = self
+            .model
+            .functions
+            .iter()
+            .find(|info| info.symbol == section)?;
+        (info.contract.a.is_none() || info.contract.i.is_none()).then_some(info.contract)
+    }
+
+    /// The widths of one expansion of a section that leaves an axis open.
+    ///
+    /// The section's own analysis has the open axis unknown from entry, which
+    /// is the truth about the declaration and says nothing about this use. So
+    /// the solver runs again over the body, from what the section states and,
+    /// on each axis it does not, from `before` — the use site's widths after
+    /// its bridges. Its diagnostics are the declaration's, already reported
+    /// there; what this use adds is reported by the lowering that reads it.
+    fn expansion_widths(
+        &self,
+        func: &crate::ast::Function,
+        section: SymbolId,
+        contract: WidthContract,
+        before: ModeState,
+    ) -> crate::width::WidthAnalysis {
+        let mut entry = ModeState::from_contract(contract, before.e);
+        if contract.a.is_none() {
+            entry.a = before.a;
+        }
+        if contract.i.is_none() {
+            entry.i = before.i;
+        }
+        let (analysis, _) = crate::width::analyze_function(
+            &func.body,
+            entry,
+            &crate::width::Context {
+                symbols: &self.model.symbols,
+                eval: &self.model.eval,
+                function: Some(section),
+                callees: &self.model.callees,
+                externally_reachable: &self.model.externally_reachable,
+            },
+        );
+        analysis
+    }
+
     /// The section `symbol` declares, as written.
     fn section(&self, symbol: SymbolId) -> Option<&'a crate::ast::Function> {
         let info = self
@@ -2188,6 +2257,7 @@ impl<'a> Lowering<'a> {
         };
         let assumed = self
             .widths
+            .as_deref()
             .is_some_and(|analysis| analysis.assumed_calls.contains(&statement.id));
         if after != before || assumed {
             let reason = if assumed {
@@ -2218,7 +2288,7 @@ impl<'a> Lowering<'a> {
             return;
         }
         let (Some(before), Some(after)) = (
-            self.widths.and_then(|a| a.before(statement.id)),
+            self.widths.as_deref().and_then(|a| a.before(statement.id)),
             self.widths_after(statement),
         ) else {
             return;
@@ -2245,6 +2315,7 @@ impl<'a> Lowering<'a> {
         // changes nothing.
         let assumed = self
             .widths
+            .as_deref()
             .is_some_and(|analysis| analysis.assumed_calls.contains(&statement.id));
         if carried != after || assumed {
             let reason = if assumed {
@@ -2311,11 +2382,12 @@ impl<'a> Lowering<'a> {
     /// statement with the same widths and accepted it, so lowering reaching a
     /// second answer means the two disagree. Inside an `inline` expansion it
     /// is not, and cannot be — the body was analyzed with its aliases
-    /// unbound, and only the use site knows what they stand for. There the
-    /// resolver's own complaint is the true one, and it is what the reader
-    /// needs (sub-plan E, decision 12).
+    /// unbound and, on an axis it leaves to its use site, with no width, and
+    /// only the use site knows what either stands for. There the resolver's
+    /// own complaint is the true one, and it is what the reader needs
+    /// (sub-plan E, decision 12; `plans/13-ca65-converter.md` decision 3).
     fn unclassified(&mut self, mut resolver: Resolver<'_>, span: Span, what: &str) {
-        if self.aliases.is_empty() {
+        if self.expanding.is_empty() {
             return self.skipped(span, what);
         }
         let reported = resolver.take_diagnostics();

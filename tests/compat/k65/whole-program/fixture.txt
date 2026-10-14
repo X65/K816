@@ -4,9 +4,7 @@ compare   diagnostics
 units     defs.k65 main.k65
 expect    defs.k65 K816-K65-0003
 expect    defs.k65 K816-E0101
-expect    defs.k65 K816-E0104
 expect    defs.k65 K816-E0101
-expect    defs.k65 K816-E0104
 expect    defs.k65 K816-E0101
 expect    main.k65 K816-K65-0003
 expect    main.k65 K816-K65-0001
@@ -17,8 +15,13 @@ expect    main.k65 K816-E0156
 expect    main.k65 K816-E0156
 expect    main.k65 K816-E0156
 
-Since G7: fourteen diagnostics, and still **no `K816-E0001`** - which was G2's
-done criterion and stays true.
+Since 2026-10-14: twelve diagnostics, and still **no `K816-E0001`** - which
+was G2's done criterion and stays true.  The two that went were `K816-E0104`s
+at the declarations of `blank` and `unblank`: an `inline` that states no
+width runs at its use site's, so `VBLANK = a = 2` is sized where it is
+expanded and not where it is written.  Both use sites in `main.k65` are
+`K816-E0156` already, for the TIA names below, so nothing new is reported
+there.
 
 The three `K816-E0156` are new and they are the honest half of a gap G7 closed.
 `main.k65` calls `wsync`, `blank` and `unblank`, which `defs.k65` declares, and
@@ -66,10 +69,8 @@ Three things went with G1's twenty-one at G2.
 The two `K816-K65-0003` are `bank core`, refused in both units (decision 10),
 and `K816-K65-0001` is `image` (decision 12's neighbour, G6's to keep refused).
 The `K816-E0101` are the TIA register names, which the original's A2600 system
-script declares before the first unit and K816 has no equivalent of; the
-`K816-E0104` are `lda` immediates in `inline` sections no annotated caller has
-reached yet.  Neither is a compatibility gap, and both are the environment's
-rather than the language's.
+script declares before the first unit and K816 has no equivalent of.  That is
+not a compatibility gap: it is the environment's rather than the language's.
 
 A whole K65 program, written for this corpus, in two units.
 

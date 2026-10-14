@@ -803,6 +803,79 @@ fn a_bare_call_on_the_line_after_an_instruction_is_a_call() {
     assert_eq!(bytes, expected, "{bytes:02X?}");
 }
 
+/// An `inline` that states no width on an axis runs at its use site's width
+/// on that axis.
+///
+/// The body is expanded in place, so there is no call for a contract to
+/// describe: `add #n` is a two-byte `adc` in an `@a8` function and a
+/// three-byte one in an `@a16` function, from one declaration. A width block
+/// inside the body restores to what the use site had, and an axis the
+/// `inline` *does* state is still a contract the use site is bridged to —
+/// `index` below states `@a8` and leaves the index registers to its caller.
+#[test]
+fn a_widthless_inline_runs_at_its_use_sites_width() {
+    let bytes = linked(
+        "inline-use-site-width",
+        "use-site.k816",
+        "inline add (#n) {\n    clc\n    adc #n\n}\n\
+         inline wide {\n    @a16 {\n        lda #$1234\n    }\n    lda #2\n}\n\
+         inline index @a8 {\n    lda #1\n    ldx #2\n}\n\
+         func narrow @a8 @i8 {\n    add #4\n    wide\n    index\n}\n\
+         func broad @a16 @i16 {\n    add #$1234\n    wide\n    index\n}\n",
+    );
+    let narrow: &[u8] = &[
+        0x18, 0x69, 0x04, // clc, adc #$04
+        0xC2, 0x20, 0xA9, 0x34, 0x12, 0xE2, 0x20, // rep, lda #$1234, sep
+        0xA9, 0x02, // lda #$02
+        0xA9, 0x01, 0xA2, 0x02, // lda #$01, ldx #$02
+        0x60,
+    ];
+    let broad: &[u8] = &[
+        0x18, 0x69, 0x34, 0x12, // clc, adc #$1234
+        0xA9, 0x34, 0x12, // lda #$1234: already sixteen, nothing to restore
+        0xA9, 0x02, 0x00, // lda #$0002
+        0xE2, 0x20, 0xA9, 0x01, // bridged to `index`'s @a8, lda #$01
+        0xA2, 0x02, 0x00, // ldx #$0002: the index axis is the caller's
+        0x60,
+    ];
+    assert_eq!(bytes, [narrow, broad].concat(), "{bytes:02X?}");
+}
+
+/// A widthless `inline` whose use site has no width either is `K816-E0104`
+/// at the use site, with the body's line beside it.
+///
+/// At the declaration there is nothing wrong: the body asks its user for a
+/// width. The complaint belongs where the request went unanswered.
+#[test]
+fn a_widthless_inline_at_a_widthless_use_site_is_reported_there() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "unsized.k816",
+        "inline one {\n    lda #1\n}\nfunc caller {\n    one\n}\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let reported: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code.0,
+                map.file(file).line_col(diagnostic.primary.span.start).line + 1,
+                diagnostic
+                    .secondary
+                    .iter()
+                    .map(|label| map.file(file).line_col(label.span.start).line + 1)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reported,
+        vec![("K816-E0104", 5, vec![2])],
+        "the use site on line 5, the body's immediate on line 2"
+    );
+}
+
 /// Module defaults reach the encoded length: the same `#1` is three bytes in
 /// the inheriting function and two in the one that overrides.
 #[test]

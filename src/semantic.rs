@@ -158,6 +158,13 @@ pub struct SemanticModel {
     /// reachable from an edge it cannot see. A global label nobody else names
     /// is an ordinary label to both.
     pub externally_reachable: BTreeSet<SymbolId>,
+    /// The contract of every callee this unit can see, once each exit is
+    /// classified — the map the stored analyses were solved against.
+    ///
+    /// Kept for the one analysis that cannot be solved at the declaration: an
+    /// `inline` that leaves an axis to its use site, which lowering solves
+    /// again for each expansion and has to solve against the same callees.
+    pub callees: BTreeMap<SymbolId, width::CalleeContract>,
     /// The width analysis of each `code { }` subblock of a top-level data
     /// block, keyed by where it sits.
     ///
@@ -2082,6 +2089,7 @@ impl Analysis {
                 self.model.widths.insert(info.symbol, analysis);
             }
         }
+        self.model.callees = callees;
     }
 
     /// Warns where K816 read the body, can see it may change width, and
@@ -2916,7 +2924,26 @@ impl Analysis {
     /// A resolver over this unit's symbols, scoped to the function being
     /// checked. Analysis owns the diagnostics it produces.
     fn resolver(&self) -> Resolver<'_> {
-        Resolver::new(&self.model.symbols, &self.model.eval).in_function(self.current_function)
+        let resolver =
+            Resolver::new(&self.model.symbols, &self.model.eval).in_function(self.current_function);
+        // An `inline` that states no width on an axis runs at its use site's,
+        // so an immediate it cannot size at the declaration is sized — or
+        // refused — where it is expanded.
+        let deferred = self.current_function.and_then(|function| {
+            (self.model.symbols.kind(function) == SymbolKind::Inline)
+                .then(|| {
+                    self.model
+                        .functions
+                        .iter()
+                        .find(|info| info.symbol == function)
+                })
+                .flatten()
+                .map(|info| (info.contract.a.is_none(), info.contract.i.is_none()))
+        });
+        match deferred {
+            Some((accumulator, index)) => resolver.deferring(accumulator, index),
+            None => resolver,
+        }
     }
 
     /// Records what a resolver run found into the model this analysis owns.

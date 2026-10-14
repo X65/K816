@@ -825,6 +825,12 @@ pub struct Resolver<'a> {
     /// What an `inline`'s aliases stand for, while an expansion is lowered.
     /// Empty everywhere else, including at the declaration.
     aliases: BTreeMap<SymbolId, KExpr>,
+    /// The axes, accumulator then index, whose width this body leaves to
+    /// the place it is expanded into: an `inline` that states none. An
+    /// immediate that cannot be sized on one is not this body's mistake
+    /// until a use site gives it no width either, which is where it is
+    /// reported (`plans/13-ca65-converter.md` decision 3).
+    deferred: (bool, bool),
 }
 
 impl<'a> Resolver<'a> {
@@ -840,7 +846,15 @@ impl<'a> Resolver<'a> {
             field_references: Vec::new(),
             pending_references: Vec::new(),
             aliases: BTreeMap::new(),
+            deferred: (false, false),
         }
+    }
+
+    /// Leaves the width of an axis to the use site, for the declaration of
+    /// an `inline` that does not state it.
+    pub fn deferring(mut self, accumulator: bool, index: bool) -> Self {
+        self.deferred = (accumulator, index);
+        self
     }
 
     /// Scopes local label resolution to `function`.
@@ -1993,8 +2007,14 @@ impl<'a> Resolver<'a> {
                 ),
                 Some(_) => {}
                 None => {
-                    let diagnostic = unknown_width(mnemonic, value.span, class, self.widths);
-                    self.report(diagnostic);
+                    let deferred = match class {
+                        crate::isa::ImmediateWidthClass::XDependent => self.deferred.1,
+                        _ => self.deferred.0,
+                    };
+                    if !deferred {
+                        let diagnostic = unknown_width(mnemonic, value.span, class, self.widths);
+                        self.report(diagnostic);
+                    }
                 }
             }
         }

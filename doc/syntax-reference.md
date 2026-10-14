@@ -3838,7 +3838,7 @@ Both instructions copy `C + 1` bytes (where `C` is the full 16-bit accumulator) 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
 
-Raw mnemonic: `mvn src_bank, dst_bank`. The compiler parses two comma-separated operands; fixture `syntax-native-native` shows `mvn 0,0`.
+Raw mnemonic: `mvn src_bank, dst_bank`. The compiler parses two comma-separated operands; fixture `syntax-native-native` shows `mvn 0,0`. The operands are bank *numbers*, and K816 emits them to ca65 as `mvn #src,#dst`: ca65's bare form reads each operand as an address and encodes its bank byte, so `mvn $01,$02` handed to ca65 as written would move between banks 0 and 0.
 
 ```none
 MVN  Block Move Negative (source < dest, copy ascending)

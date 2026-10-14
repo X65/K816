@@ -948,11 +948,13 @@ fn format_operand(
         // keeps the output assemblable while the internal error reports it.
         Operand::Anchor(_) => anchor.unwrap_or(":+").to_owned(),
         Operand::StackRelative(expr) => format!("{},s", format_operand_expr(expr, names)),
+        // With `#`, or ca65 reads each operand as an *address* and encodes
+        // its bank byte: `mvn $01,$02` assembles to banks 0 and 0.
         Operand::BlockMove {
             source,
             destination,
         } => format!(
-            "{},{}",
+            "#{},#{}",
             format_expr(source, names),
             format_expr(destination, names)
         ),

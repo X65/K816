@@ -329,7 +329,11 @@ func work @a8 @i16 {
             "per     work",
             "brk     $42",
             "cop     $7F",
-            "mvn     $01,$02",
+            // The banks keep their `#`: without it ca65 reads each operand
+            // as an address and encodes its bank byte, so `mvn $01,$02`
+            // would move between banks 0 and 0 (`tests/ca65_guide.rs` is
+            // what found this).
+            "mvn     #$01,#$02",
             "jml     [SCREEN]",
             "jmp     (SCREEN)",
             "jsr     a:work",

@@ -900,6 +900,44 @@ fn a_data_block_names_another_units_places() {
     }
 }
 
+/// A section read of another unit's data, through an `import`, answers from
+/// that unit's bytes.
+///
+/// An imported data label is in this unit's symbol table before this unit's
+/// own data is resolved — that is what lets a table name another unit's
+/// places — so the evaluator found it there and asked for it among *this*
+/// unit's sections, where it never is: "not assembled yet". A name the table
+/// holds as imported is another unit's, and is read from that unit's bytes.
+#[test]
+fn a_section_read_through_an_import_answers_from_the_other_units_bytes() {
+    let mut map = SourceMap::new();
+    map.add_file(
+        "defs.k816",
+        "data shared { 10 20 30 }
+",
+    );
+    let entry = map.add_file(
+        "main.k816",
+        "import \"defs.k816\"\n\ndata answers {\n  [ index(shared, 1) ]\n  [ size(shared) ]\n}\n\n\
+         func main @a8 @i8 {\n    lda answers\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(
+        result.diagnostics,
+        vec![],
+        "a read of another unit's section"
+    );
+    let assembly = result.assembly.expect("compiles");
+    assert!(
+        assembly.contains(".byte    $14"),
+        "index(shared, 1) is 20:\n{assembly}"
+    );
+    assert!(
+        assembly.contains(".byte    $03"),
+        "size(shared) is 3:\n{assembly}"
+    );
+}
+
 /// A `const` another unit *defines* leaves no `.import`, exactly as a local
 /// one does.
 ///

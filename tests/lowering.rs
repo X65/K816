@@ -665,6 +665,35 @@ func f @a8 {
     );
 }
 
+/// A conditional `goto` into a label with an entry width is switched in
+/// front of its branch, like a native one. The switch is the inner `goto`'s
+/// bridge, filed under the statement the conditional wraps; read only from
+/// the outer one, it was never emitted, while the model went on believing
+/// both paths had been switched — a sixteen-bit claim on an eight-bit CPU.
+#[test]
+fn a_conditional_goto_into_a_label_is_switched_in_front_of_its_branch() {
+    let text = "\
+func f @a8 @i8 {
+    c+? goto .wide
+    nop
+    @a16
+.wide:
+    lda #$1234
+}
+";
+    let ops = operations(text);
+    let branch = ops
+        .iter()
+        .position(|op| op == "bcs .wide")
+        .expect("the branch goes to the label itself");
+    assert_eq!(ops[branch - 1], "rep #$20", "{ops:?}");
+    assert_eq!(
+        ops.iter().filter(|op| *op == "rep #$20").count(),
+        1,
+        "{ops:?}"
+    );
+}
+
 /// The long form of a conditional `goto` — an inverted branch over a `jml` —
 /// is switched in front of the inverted branch, which is on both of the
 /// statement's paths, as the model has it. In front of the `jml` it would

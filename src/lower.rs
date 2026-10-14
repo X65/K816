@@ -665,6 +665,36 @@ struct Lowering<'a> {
     expanding: Vec<SymbolId>,
 }
 
+/// The label a transfer names, for the entry switch it may need.
+fn transfer_label(operand: &Option<Operand>) -> Option<SymbolId> {
+    match operand {
+        Some(Operand::Label(KExpr::Symbol(symbol)))
+        | Some(Operand::Address {
+            expr: KExpr::Symbol(symbol),
+            ..
+        }) => Some(*symbol),
+        _ => None,
+    }
+}
+
+/// The `SEP` or `REP` one bridge is, as an operation.
+fn width_switch_op(bridge: &Bridge, span: Span) -> KOp {
+    let mnemonic = match bridge.width {
+        RegisterWidth::W8 => Mnemonic::Sep,
+        RegisterWidth::W16 => Mnemonic::Rep,
+    };
+    KOp::new(
+        KOpKind::Instruction(Instruction::new(
+            mnemonic,
+            AddressingMode::Immediate,
+            Some(Operand::Immediate(KExpr::number(bridge.mask))),
+        )),
+        span,
+        Origin::CompilerGenerated,
+    )
+    .because(bridge.reason)
+}
+
 /// Moves a diagnostic from an expanded body to the use site that caused it.
 ///
 /// The body was written once and is correct on its own terms; what makes a
@@ -895,10 +925,10 @@ impl<'a> Lowering<'a> {
     /// emitted goes through the block's restore pad; a branch to a target the
     /// statement defines itself — the guard of a compound comparison — stays
     /// where it is, because it never leaves the block (sub-plan E, decision
-    /// 9). A label's entry switch goes only on the transfers into that label,
-    /// and in front of the transfer itself when it is unconditional and the
-    /// statement's last operation: no path but the transfer's runs there, so
-    /// the switch is a call-site bridge and needs no pad.
+    /// 9). A label's entry switch rides the same pad when the transfer into
+    /// the label also leaves a block, after the restore, and only on the
+    /// transfers into that label; otherwise it is the caller's, in front of
+    /// the statement.
     fn split_taken_edges(&mut self, statement: &crate::ast::Statement, start: usize, span: Span) {
         let edge = self.bridges_at(statement, BridgeAnchor::TakenEdge);
         if edge.is_empty() {
@@ -945,16 +975,6 @@ impl<'a> Lowering<'a> {
                 false
             }
         };
-        // The label a transfer names, for its entry switch.
-        let into = |operand: &Option<Operand>| match operand {
-            Some(Operand::Label(KExpr::Symbol(symbol)))
-            | Some(Operand::Address {
-                expr: KExpr::Symbol(symbol),
-                ..
-            }) => Some(*symbol),
-            _ => None,
-        };
-
         let mut outgoing: Vec<(usize, Option<Operand>, Vec<Bridge>)> = Vec::new();
         for (offset, op) in self.ops[start..].iter().enumerate() {
             let KOpKind::Instruction(instruction) = &op.kind else {
@@ -967,7 +987,7 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let mut bridges = restores.clone();
-            if let Some(label) = into(&instruction.operand) {
+            if let Some(label) = transfer_label(&instruction.operand) {
                 bridges.extend(
                     entries
                         .iter()
@@ -980,23 +1000,6 @@ impl<'a> Lowering<'a> {
             }
         }
         if outgoing.is_empty() {
-            return;
-        }
-
-        // The call-site form: one unconditional transfer, the statement's
-        // last operation, with only an entry switch to make.
-        if let [(index, _, bridges)] = outgoing.as_slice()
-            && *index + 1 == self.ops.len()
-            && restores.is_empty()
-            && matches!(&self.ops[*index].kind, KOpKind::Instruction(instruction)
-                if instruction.effects().control == ControlEffect::Jump)
-        {
-            let bridges = bridges.clone();
-            let transfer = self.ops.pop().expect("the transfer is the last operation");
-            for bridge in &bridges {
-                self.width_switch(bridge, span);
-            }
-            self.ops.push(transfer);
             return;
         }
 
@@ -1048,17 +1051,8 @@ impl<'a> Lowering<'a> {
 
     /// The `SEP` or `REP` one bridge is.
     fn width_switch(&mut self, bridge: &Bridge, span: Span) {
-        let mnemonic = match bridge.width {
-            RegisterWidth::W8 => Mnemonic::Sep,
-            RegisterWidth::W16 => Mnemonic::Rep,
-        };
-        self.generated_instruction(
-            mnemonic,
-            AddressingMode::Immediate,
-            Some(Operand::Immediate(KExpr::number(bridge.mask))),
-            span,
-            bridge.reason,
-        );
+        let op = width_switch_op(bridge, span);
+        self.ops.push(op);
     }
 
     /// Rewrites every branch the short form cannot reach.

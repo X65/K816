@@ -173,8 +173,8 @@ pub enum BridgeAnchor {
     /// branch — that would also run on the paths that stay — and cannot
     /// restore it after, where the code is dead. So the restore goes on the
     /// edge, and lowering splits the edge to give it somewhere to be
-    /// (sub-plan E, decision 9). A branch into a label with a stated entry
-    /// width is switched to it on the same edge, for the same reason.
+    /// (sub-plan E, decision 9). A branch that leaves a block for a label
+    /// with a stated entry width is switched to it there, after the restore.
     TakenEdge,
 }
 
@@ -779,26 +779,27 @@ impl Flattener<'_> {
         }
     }
 
-    /// Bridges every branch into a label with a stated entry width, on the
-    /// branch's own edge.
+    /// Bridges every branch into a label with a stated entry width, at the
+    /// branch.
     ///
     /// A width statement in front of a label makes the label an entry, as a
     /// header makes a function one: the path that falls into it runs the
     /// statement where it is written, and a branch that arrives at another
-    /// width is switched at the branch — never at the label, where the
-    /// switch would also run on every arrival that needed none.
+    /// width is switched by the branch — the caller — never at the label,
+    /// which cannot know its callers. The switch goes immediately before the
+    /// branch, as a call's bridge goes before the `jsr`, so the path that does
+    /// not branch continues at the width it set, as code after a bridged call
+    /// does; a caller that would rather not pay for it is already at the
+    /// width when it branches, and then nothing is emitted at all.
     ///
-    /// The edge gets a node of its own for the reason a block's restore
-    /// does: a conditional branch cannot switch the width before itself
-    /// without switching the path that does not branch. Lowering puts the
-    /// switch in front of an unconditional transfer instead, where there is
-    /// no such path, and a branch already at the label's width needs none.
+    /// A branch that also leaves a scoped width block reaches the label
+    /// through the block's restore on its taken edge, and is switched there,
+    /// after the restore: switched before the branch, the restore would undo
+    /// it.
     fn split_label_entries(&mut self) {
         if self.label_contracts.is_empty() {
             return;
         }
-        // The block exits' own nodes are among these: a branch that leaves a
-        // block for a label is restored first, then bridged.
         for index in 0..self.nodes.len() {
             let Some(Target::Node(target)) = self.nodes[index].control.target else {
                 continue;
@@ -806,6 +807,21 @@ impl Flattener<'_> {
             let Some(&(label, axes)) = self.label_contracts.get(&target) else {
                 continue;
             };
+            // A transfer that changes no width itself — every branch and jump
+            // — takes the switch as its own transfer, which is what applies
+            // it to both of its successors.
+            let neutral = matches!(
+                self.nodes[index].transfer,
+                Transfer::Identity
+                    | Transfer::Instruction {
+                        effect: WidthEffect::Unchanged,
+                        exchanges_emulation: false,
+                    }
+            );
+            if !self.nodes[index].edge_split && neutral {
+                self.nodes[index].transfer = Transfer::Enter { label, axes };
+                continue;
+            }
             let pad = self.nodes.len();
             self.nodes.push(Node {
                 edge_split: true,
@@ -1871,9 +1887,21 @@ fn record_bridges(
                 }
             }
             // The switch a branch into a label with a stated entry width
-            // needs, on that branch's edge.
+            // needs: in front of the branch, or on the edge a block's restore
+            // already split.
+            //
+            // Only a branch, a jump, a `goto` and a conditional `goto` name a
+            // label as a target, and each lowers to nothing but its transfer,
+            // so in front of the statement is in front of the transfer — and
+            // in front of the inverted branch of a conditional `goto`'s long
+            // form, which is what puts it on both of that statement's paths.
             Transfer::Enter { label, axes } => {
-                (*axes, BridgeAnchor::TakenEdge, Reason::LabelEntry(*label))
+                let anchor = if node.edge_split {
+                    BridgeAnchor::TakenEdge
+                } else {
+                    BridgeAnchor::Before
+                };
+                (*axes, anchor, Reason::LabelEntry(*label))
             }
             Transfer::Restore { enter, axes } => {
                 let saved = r#in[*enter];

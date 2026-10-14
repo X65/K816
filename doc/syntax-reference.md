@@ -543,9 +543,10 @@ A width statement written directly in front of a label, such as `@a8` on the
 line before `.loop:`, is the label's **entry width**. The label is entered like
 a function: every arrival is switched to that width where it leaves from. The
 path that falls into the label runs the statement where it is written, and a
-branch or `goto` arriving at another width is switched at the branch. Nothing
-runs at the label itself, so a loop whose back edge is already at the width pays
-nothing per iteration. A label with no width statement in front of it is a merge
+branch or `goto` arriving at another width is switched in front of the branch,
+as a call is bridged in front of its `jsr`, so the code after a conditional
+branch continues at the switched width too. Nothing runs at the label itself, so
+a loop whose back edge is already at the width pays nothing per iteration. A label with no width statement in front of it is a merge
 of whatever arrives. See `register-width-aware-syntax.md`, "A label's entry
 width".
 

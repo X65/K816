@@ -417,8 +417,8 @@ bne @wait           ; already at @a8: nothing to switch
 rep #$20
 ```
 
-A branch that arrives at another width is switched in front of it when it is
-unconditional, because no other path runs there:
+A branch that arrives at another width is switched in front of it, as a call is
+bridged in front of its `jsr`:
 
 ```k65
 func pick @a8 @i8 {
@@ -440,10 +440,9 @@ bra @wide
 lda #$1234
 ```
 
-A *conditional* branch cannot be switched in front of itself: the switch would
-also run on the path that does not branch. It is switched on its taken edge
-instead, through a landing pad, which is the split a branch leaving a scoped
-block gets ("Leaving a block by a branch"):
+A *conditional* branch is switched in front of it too, so both of its paths
+continue at the entry width, just as the code after a bridged call continues at
+the width the bridge set:
 
 ```k65
 func main @a8 @i8 {
@@ -457,21 +456,25 @@ func main @a8 @i8 {
 Generated output:
 
 ```asm
-bcs :+              ; the branch, to its pad
-jmp :++
-:
-rep #$20            ; bridge for .wide, on the taken edge
-jmp @wide
-:
-rep #$20            ; the fall-through enters .wide at @a16
-@wide:
+rep #$20            ; bridge for .wide
+bcs @wide
+@wide:              ; the fall-through is already at @a16
 lda #$0001
 ```
+
+The switch is the caller's because the label cannot know its callers, and the
+cost is the caller's too. A caller that does not want to pay for the switch sets
+the width itself before it branches, and then nothing is emitted. The one
+exception is a branch that also leaves a scoped width block: the block's
+restore runs on its taken edge ("Leaving a block by a branch") and would undo a
+switch made in front of it, so the switch rides the same landing pad, after the
+restore.
 
 The entry width covers the axes the statement names. An axis it leaves unnamed
 is the merge of the arrivals, as at any label. An arrival K816 cannot see, such
 as an indirect jump through a table, is trusted to arrive at the entry width,
-exactly as a function's callers are trusted to meet its header. The code after
+exactly as a function's callers are trusted to meet its header: the label cannot
+switch for a caller it does not know. The code after
 the label is assembled against that width. A label with no width statement in
 front of it has no entry width and is a merge point: arrivals that disagree make
 the width unknown there (`K816-E0104` at the first immediate that needs it).

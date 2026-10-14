@@ -588,14 +588,15 @@ fn operations(text: &str) -> Vec<String> {
 }
 
 /// A width statement in front of a label is the label's entry width, and
-/// the label is entered like a function: each arrival is switched before it
-/// arrives, and nothing runs at the label itself.
+/// the label is entered like a function: an arrival at another width is
+/// switched by the caller, in front of its branch, and nothing runs at the
+/// label itself.
 ///
-/// The path that falls into the label runs the statement where it is
-/// written. The `bcc` arrives at eight bits, so it is switched on its own
-/// edge — a pad, because a switch in front of a conditional branch would
-/// also run on the path that does not branch. What follows the label is the
-/// claim every arrival now agrees on.
+/// The `bcc` arrives at eight bits, so the switch goes in front of it, the
+/// way a call's bridge goes in front of its `jsr`: both of the branch's
+/// successors continue at sixteen bits, so the path that falls into the
+/// label needs no second switch, and what follows the label is the claim
+/// every arrival agrees on.
 #[test]
 fn a_label_is_entered_at_its_width_and_runs_no_bridge_of_its_own() {
     let text = "\
@@ -607,40 +608,25 @@ func main @a8 {
 }
 ";
     let ops = operations(text);
+    let branch = ops
+        .iter()
+        .position(|op| op == "bcc .target")
+        .expect("the branch goes to the label itself, with no pad");
+    assert_eq!(ops[branch - 1], "rep #$20", "the caller's switch: {ops:?}");
     let label = ops
         .iter()
         .position(|op| op == "label .target")
         .expect("the label was lowered");
     assert_eq!(
-        &ops[label - 1..label + 2],
-        [
-            // The fall-through's switch, where the statement was written.
-            "rep #$20".to_owned(),
-            "label .target".to_owned(),
-            // `@i8` and not unknown: this is the entry point, and what it
-            // did not annotate the environment provides.
-            "mode-assume @a16 @i8".to_owned(),
-        ],
-        "{ops:?}"
-    );
-    // The branch's own switch is on its edge, and nowhere else.
-    let branch = ops
-        .iter()
-        .position(|op| op.starts_with("bcc "))
-        .expect("the branch");
-    let pad = ops[branch].trim_start_matches("bcc ").to_owned();
-    let landing = ops
-        .iter()
-        .position(|op| *op == pad)
-        .expect("the pad the branch lands on");
-    assert_eq!(
-        &ops[landing + 1..landing + 3],
-        ["rep #$20".to_owned(), "jmp .target".to_owned()],
-        "{ops:?}"
+        ops[label + 1],
+        // `@i8` and not unknown: this is the entry point, and what it did
+        // not annotate the environment provides.
+        "mode-assume @a16 @i8",
+        "nothing between the label and its claim: {ops:?}"
     );
     assert_eq!(
         ops.iter().filter(|op| *op == "rep #$20").count(),
-        2,
+        1,
         "{ops:?}"
     );
 }
@@ -677,6 +663,30 @@ func f @a8 {
         ["sep #$20".to_owned(), "jmp .out".to_owned()],
         "{ops:?}"
     );
+}
+
+/// The long form of a conditional `goto` — an inverted branch over a `jml` —
+/// is switched in front of the inverted branch, which is on both of the
+/// statement's paths, as the model has it. In front of the `jml` it would
+/// run only when the branch is taken.
+#[test]
+fn a_long_conditional_goto_is_switched_in_front_of_its_inverted_branch() {
+    let text = "\
+func f @a8 @i8 {
+    c+? goto far .wide
+    nop
+    @a16
+.wide:
+    lda #$1234
+}
+";
+    let ops = operations(text);
+    let inverted = ops
+        .iter()
+        .position(|op| op.starts_with("bcc "))
+        .expect("the inverted branch");
+    assert_eq!(ops[inverted - 1], "rep #$20", "{ops:?}");
+    assert!(ops[inverted + 1].starts_with("jml "), "{ops:?}");
 }
 
 /// The bridge covers exactly the axes that need it: a label all of whose

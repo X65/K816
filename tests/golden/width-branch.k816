@@ -34,7 +34,7 @@ func taken @a8 {
 // An annotation in front of the label resolves a merge that would otherwise
 // be unknown: it is the label's entry width, the fall-through arrives there
 // by the `rep`, and the `bcc`, which arrives at eight bits, is switched to
-// sixteen on its own edge.
+// sixteen in front of it, as a call is bridged in front of its `jsr`.
 func resolved @a8 {
     bcc .after
     rep #$20

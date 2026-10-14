@@ -131,7 +131,10 @@ fn the_grammar_manifest_names_this_repository_and_its_license() {
 
     let grammar = &manifest["grammars"][0];
     assert_eq!(grammar["name"], "k65", "the symbol is `tree_sitter_k65`");
-    assert_eq!(grammar["file-types"], serde_json::json!(["k65", "k816"]));
+    assert_eq!(
+        grammar["file-types"],
+        serde_json::json!(["k65", "k816", "kk"])
+    );
 
     assert_eq!(manifest["metadata"]["license"], "0BSD");
     let license = std::fs::read_to_string(grammar_dir().join("../LICENSE")).expect("read LICENSE");

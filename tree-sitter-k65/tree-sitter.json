@@ -7,7 +7,7 @@
       "title": "K65",
       "scope": "source.k65",
       "path": ".",
-      "file-types": ["k65", "k816"],
+      "file-types": ["k65", "k816", "kk"],
       "injection-regex": "^k(65|816)$"
     }
   ],

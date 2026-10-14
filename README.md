@@ -229,9 +229,10 @@ config, and a `Makefile`.
 ## Building with cl65
 
 You do not have to run the three tools yourself. `cl65`, the cc65 driver,
-knows the pipeline: it compiles a `.k816` or `.k65` file with `k816`,
-assembles what `k816` emits with `ca65`, and links the objects with `ld65`.
-One installation provides all four, and `cl65` finds them beside itself.
+knows the pipeline: it compiles a `.k816`, `.k65` or `.kk` file with
+`k816`, assembles what `k816` emits with `ca65`, and links the objects with
+`ld65`. One installation provides all four, and `cl65` finds them beside
+itself.
 
 ```bash
 cl65 -t none --no-target-lib -C fullstack.cfg -o fullstack.bin startup.asm main.k816

@@ -9,7 +9,7 @@
 
 name = "K816"
 grammar = "k65"
-path_suffixes = ["k816", "k65"]
+path_suffixes = ["k816", "k65", "kk"]
 line_comments = ["// "]
 block_comment = { start = "/*", prefix = "", end = "*/", tab_size = 1 }
 tab_size = 4

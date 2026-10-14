@@ -400,15 +400,16 @@ fn two_units_that_import_each_other_link_to_the_manual_image() {
     assert!(!by_hand.is_empty(), "the pair linked to nothing");
 }
 
-/// `.k65` and `.k816` are one language and one compiler.
+/// `.k65`, `.k816` and `.kk` are one language and one compiler.
 ///
-/// The extension policy (`plans/feature-manifest.md` §5) is that both
-/// spellings are accepted by the same parser with no per-extension dialect,
-/// and `cl65` maps both onto one file type for that reason. The two units are
-/// the pair above, one of them renamed: the image is the same bytes, which is
-/// what "no dialect switch" means when a build states it.
+/// The extension policy (`plans/feature-manifest.md` §5) is that every
+/// spelling is accepted by the same parser with no per-extension dialect,
+/// and `cl65` maps all of them onto one file type for that reason. The two
+/// units are the pair above, renamed to the other two extensions: the image
+/// is the same bytes, which is what "no dialect switch" means when a build
+/// states it.
 #[test]
-fn the_two_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
+fn the_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
     let directory = work_dir("driver-mixed-extensions");
     let golden = root().join("tests/golden");
     let config = root().join("tests/driver.cfg");
@@ -416,10 +417,7 @@ fn the_two_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
     // The rename is the point, so the copies are the fixture. Nothing is
     // added under `tests/golden/`: this is a scratch copy of a program that
     // is already in the corpus.
-    let renamed = vec![
-        directory.join("mixed-a.k65"),
-        directory.join("mixed-b.k816"),
-    ];
+    let renamed = vec![directory.join("mixed-a.k65"), directory.join("mixed-b.kk")];
     for (source, destination) in ["unit-a.k816", "unit-b.k816"].iter().zip(&renamed) {
         // Rewritten rather than copied, because the units name each other in
         // their own text now: a renamed unit's `import` has to be renamed
@@ -428,7 +426,7 @@ fn the_two_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
         let text = std::fs::read_to_string(golden.join(source))
             .expect("read a unit")
             .replace("unit-a.k816", "mixed-a.k65")
-            .replace("unit-b.k816", "mixed-b.k816");
+            .replace("unit-b.k816", "mixed-b.kk");
         std::fs::write(destination, text).expect("stage a renamed unit");
     }
 
@@ -446,7 +444,7 @@ fn the_two_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
     assert_eq!(
         through_driver,
         build_through_driver(&original, &units, &config, &[]),
-        "renaming a unit from .k816 to .k65 changed the program"
+        "renaming the units to .k65 and .kk changed the program"
     );
 }
 

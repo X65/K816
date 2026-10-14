@@ -333,10 +333,10 @@ impl Database {
             .map(|span| span.typed)
     }
 
-    /// The K816 source a module was compiled from, if it was: the `.k816`
-    /// or `.k65` file its assembly's `.dbg` lines name. A K816 unit reaches
-    /// ld65 as a `.s`, so its module's own file is the assembly and its
-    /// labels are defined on the assembly's lines; the file table is what
+    /// The K816 source a module was compiled from, if it was: the `.k816`,
+    /// `.k65` or `.kk` file its assembly's `.dbg` lines name. A K816 unit
+    /// reaches ld65 as a `.s`, so its module's own file is the assembly and
+    /// its labels are defined on the assembly's lines; the file table is what
     /// still says where it came from.
     fn k816_source(&self, module: u64) -> Option<&str> {
         self.files
@@ -578,7 +578,7 @@ fn select(db: &Database, request: &Request) -> Result<(Vec<Symbol>, Vec<String>)
 fn is_k816_unit(file: &str) -> bool {
     Path::new(file)
         .extension()
-        .is_some_and(|extension| extension == "k816" || extension == "k65")
+        .is_some_and(|extension| matches!(extension.to_str(), Some("k816" | "k65" | "kk")))
 }
 
 /// The declaration for one symbol.
@@ -861,6 +861,16 @@ mod tests {
             "a.k816"
         );
         assert_eq!(relative(Path::new(""), Path::new("a.k816")), "a.k816");
+    }
+
+    #[test]
+    fn every_k816_extension_names_a_k816_unit() {
+        for file in ["src/a.k816", "src/a.k65", "src/a.kk"] {
+            assert!(is_k816_unit(file), "{file} is a K816 source");
+        }
+        for file in ["src/a.s", "src/a.asm", "src/a.k", "src/kk"] {
+            assert!(!is_k816_unit(file), "{file} is not a K816 source");
+        }
     }
 
     #[test]

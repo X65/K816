@@ -31,9 +31,10 @@ func taken @a8 {
     lda #$01
 }
 
-// An annotation at the label resolves a merge that would otherwise be
-// unknown: the two arrivals disagree, and the bridge establishes 16-bit for
-// both of them.
+// An annotation in front of the label resolves a merge that would otherwise
+// be unknown: it is the label's entry width, the fall-through arrives there
+// by the `rep`, and the `bcc`, which arrives at eight bits, is switched to
+// sixteen on its own edge.
 func resolved @a8 {
     bcc .after
     rep #$20

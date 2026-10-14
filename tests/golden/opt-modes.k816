@@ -63,11 +63,12 @@ func carry_bit @a8 @i8 {
     nop
 }
 
-// **Decision 7.** A label-anchored bridge is fixed and is never eliminated:
-// the arrivals it exists for are branches from states F is not looking at, so
-// liveness below the label says nothing about them. Mode changes *before* it
-// are still eliminated — the `sep #$20` here is redundant on every path that
-// reaches the bridge.
+// **Decision 7, as the label rule reads now.** A width statement in front of
+// a label states the label's entry width, as a header states a function's:
+// the path that falls into the label runs it where it is written, and a
+// branch arriving at another width is switched at the branch. The back edge
+// here arrives at sixteen bits already and carries nothing, and the
+// `sep #$20` above the `rep` is dead on the only path through it.
 func label_bridge @a8 @i8 {
     sep #$20
     @a16

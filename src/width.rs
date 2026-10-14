@@ -163,11 +163,6 @@ pub struct Bridge {
 pub enum BridgeAnchor {
     /// Immediately before the statement's own operations.
     Before,
-    /// Immediately after the label operation, so that arrivals by branch get
-    /// it too (`doc/register-width-aware-syntax.md`, "Label-site bridging").
-    /// The adjacency is load-bearing: it is how the optimizer recognizes a
-    /// fixed label bridge it must not eliminate.
-    AfterLabel,
     /// At the end of the statement's own operations — a width block's
     /// restore.
     After,
@@ -178,7 +173,8 @@ pub enum BridgeAnchor {
     /// branch — that would also run on the paths that stay — and cannot
     /// restore it after, where the code is dead. So the restore goes on the
     /// edge, and lowering splits the edge to give it somewhere to be
-    /// (sub-plan E, decision 9).
+    /// (sub-plan E, decision 9). A branch into a label with a stated entry
+    /// width is switched to it on the same edge, for the same reason.
     TakenEdge,
 }
 
@@ -272,6 +268,13 @@ enum Transfer {
     },
     /// Establish the annotated widths.
     Set(WidthContract),
+    /// Establish a label's entry widths on the edge of a branch into it:
+    /// the switch a caller of the label needs, made at the call site
+    /// ([`Flattener::split_label_entries`]).
+    Enter {
+        label: SymbolId,
+        axes: WidthContract,
+    },
     /// Restore the axes a width block changed to the fact at its entry node,
     /// the touched bit included: a block that widens and restores leaves the
     /// axis exactly as it found it.
@@ -341,7 +344,7 @@ struct Node {
     transfer: Transfer,
     control: Control,
     /// Set when this node *is* the label definition, so the solver knows
-    /// where a label bridge goes and which merges to claim.
+    /// which merges to claim and which labels an unnamed transfer reaches.
     label: Option<SymbolId>,
     /// True when this node's label is visible outside the function, and so
     /// may be branched to from code K816 is not looking at.
@@ -566,6 +569,7 @@ pub fn analyze_function(
         needs: WidthNeeds::default(),
         callees: Vec::new(),
         target_uses: HashMap::new(),
+        label_contracts: HashMap::new(),
     };
     flattener.block(body);
     let mut graph = flattener.finish();
@@ -623,6 +627,9 @@ struct Flattener<'a> {
     callees: Vec<SymbolId>,
     /// How often each label was the named target of a branch or a jump.
     target_uses: HashMap<SymbolId, usize>,
+    /// The label nodes a width statement in front of them gives an entry
+    /// width, by node.
+    label_contracts: HashMap<usize, (SymbolId, WidthContract)>,
 }
 
 /// The flattened graph plus everything the solver needs beside it.
@@ -637,6 +644,8 @@ struct Graph {
     target_uses: HashMap<SymbolId, usize>,
     /// Local labels no unnamed transfer can reach ([`confined_labels`]).
     confined: BTreeSet<SymbolId>,
+    /// The labels with a stated entry width, by node.
+    label_contracts: HashMap<usize, (SymbolId, WidthContract)>,
     diagnostics: Vec<Diagnostic>,
     needs: WidthNeeds,
     callees: Vec<SymbolId>,
@@ -691,12 +700,14 @@ impl Flattener<'_> {
             self.nodes[index].last_of_statement = true;
         }
         self.split_block_exits();
+        self.split_label_entries();
         Graph {
             nodes: self.nodes,
             blocks: self.blocks,
             opaque_transfer,
             target_uses: self.target_uses,
             confined: BTreeSet::new(),
+            label_contracts: self.label_contracts,
             diagnostics: self.diagnostics,
             needs: self.needs,
             callees: self.callees,
@@ -768,6 +779,52 @@ impl Flattener<'_> {
         }
     }
 
+    /// Bridges every branch into a label with a stated entry width, on the
+    /// branch's own edge.
+    ///
+    /// A width statement in front of a label makes the label an entry, as a
+    /// header makes a function one: the path that falls into it runs the
+    /// statement where it is written, and a branch that arrives at another
+    /// width is switched at the branch — never at the label, where the
+    /// switch would also run on every arrival that needed none.
+    ///
+    /// The edge gets a node of its own for the reason a block's restore
+    /// does: a conditional branch cannot switch the width before itself
+    /// without switching the path that does not branch. Lowering puts the
+    /// switch in front of an unconditional transfer instead, where there is
+    /// no such path, and a branch already at the label's width needs none.
+    fn split_label_entries(&mut self) {
+        if self.label_contracts.is_empty() {
+            return;
+        }
+        // The block exits' own nodes are among these: a branch that leaves a
+        // block for a label is restored first, then bridged.
+        for index in 0..self.nodes.len() {
+            let Some(Target::Node(target)) = self.nodes[index].control.target else {
+                continue;
+            };
+            let Some(&(label, axes)) = self.label_contracts.get(&target) else {
+                continue;
+            };
+            let pad = self.nodes.len();
+            self.nodes.push(Node {
+                edge_split: true,
+                statement: self.nodes[index].statement,
+                span: self.nodes[index].span,
+                transfer: Transfer::Enter { label, axes },
+                control: Control {
+                    fall_through: false,
+                    target: Some(Target::Node(target)),
+                    returns: false,
+                },
+                label: None,
+                label_is_global: false,
+                last_of_statement: false,
+            });
+            self.nodes[index].control.target = Some(Target::Node(pad));
+        }
+    }
+
     fn push(
         &mut self,
         statement: StmtId,
@@ -791,8 +848,10 @@ impl Flattener<'_> {
     fn block(&mut self, block: &Block) {
         let mut statements = block.statements.iter().peekable();
         while let Some(statement) = statements.next() {
-            // Decision 6: an annotated mode pending in front of a label is
-            // established *after* the label, so arrivals by branch get it too.
+            // Decision 6: a width statement in front of a label states the
+            // label's entry width. It runs where it is written, on the path
+            // that falls into the label; every branch to the label is
+            // switched to it on its own edge (`split_label_entries`).
             if let StatementKind::ModeSet(annotations) = &statement.kind
                 && let Some(next) = statements.peek()
                 && matches!(next.kind, StatementKind::Label(_))
@@ -801,11 +860,11 @@ impl Flattener<'_> {
                 self.push(
                     statement.id,
                     statement.span,
-                    Transfer::Identity,
+                    Transfer::Set(axes),
                     Control::fall_through(),
                 );
                 let label = statements.next().expect("peeked");
-                self.label_statement(label, Some((statement.id, axes)));
+                self.label_statement(label, Some(axes));
                 continue;
             }
             self.statement(statement);
@@ -1021,9 +1080,9 @@ impl Flattener<'_> {
         }
     }
 
-    /// A label definition, optionally carrying the bridge a preceding mode
-    /// set handed it (decision 6).
-    fn label_statement(&mut self, statement: &Statement, pending: Option<(StmtId, WidthContract)>) {
+    /// A label definition, optionally with the entry width a width statement
+    /// in front of it states (decision 6).
+    fn label_statement(&mut self, statement: &Statement, entry: Option<WidthContract>) {
         let StatementKind::Label(label) = &statement.kind else {
             unreachable!("only called for a label statement");
         };
@@ -1052,14 +1111,9 @@ impl Flattener<'_> {
         });
         if let Some(symbol) = symbol {
             self.labels.insert(symbol, node);
-        }
-        if let Some((_, axes)) = pending {
-            self.push(
-                statement.id,
-                statement.span,
-                Transfer::Set(axes),
-                Control::fall_through(),
-            );
+            if let Some(axes) = entry {
+                self.label_contracts.insert(node, (symbol, axes));
+            }
         }
     }
 
@@ -1412,7 +1466,14 @@ fn solve(
             incoming = incoming.join(out[*predecessor]);
         }
         if opaque_labels[index] {
-            incoming = incoming.join(opaque_arrival());
+            // An arrival K816 cannot see — an indirect jump, another unit —
+            // is trusted to meet a stated entry width, as a function's
+            // callers are trusted to meet its header.
+            let arrival = match graph.label_contracts.get(&index) {
+                Some(&(_, axes)) => apply(&Transfer::Set(axes), opaque_arrival(), &r#in, callees),
+                None => opaque_arrival(),
+            };
+            incoming = incoming.join(arrival);
         }
         let produced = apply(&nodes[index].transfer, incoming, &r#in, callees);
         if incoming == r#in[index] && produced == out[index] {
@@ -1497,7 +1558,7 @@ fn apply(
             effect,
             exchanges_emulation,
         } => apply_effect(incoming, effect, exchanges_emulation),
-        Transfer::Set(axes) => {
+        Transfer::Set(axes) | Transfer::Enter { axes, .. } => {
             let mut fact = incoming;
             // An annotation is a user assertion, so it establishes its width
             // outright rather than through the emulation state — that is the
@@ -1803,28 +1864,16 @@ fn record_bridges(
         }
         let (axes, anchor, reason) = match &node.transfer {
             Transfer::Set(axes) => {
-                // A width established right after a label *by the label* —
-                // decision 6's pending annotation, which `label_statement`
-                // files under the label's own statement — is the label
-                // bridge, and its adjacency to the label operation is what
-                // marks it fixed for the optimizer.
-                //
-                // A mode statement the author wrote *after* the label is not
-                // that. It is filed under its own statement, and lowering
-                // emits an after-label bridge only while lowering a label,
-                // so anchoring it there dropped it: `entry: @a16` lost its
-                // `rep` while the immediates after it were still sized
-                // sixteen bits wide.
-                if index > 0
-                    && nodes[index - 1].label.is_some()
-                    && nodes[index - 1].statement == node.statement
-                {
-                    (*axes, BridgeAnchor::AfterLabel, Reason::LabelBridge)
-                } else if blocks.iter().any(|block| block.enter == index) {
+                if blocks.iter().any(|block| block.enter == index) {
                     (*axes, BridgeAnchor::Before, Reason::BlockEnter)
                 } else {
                     (*axes, BridgeAnchor::Before, Reason::ModeSet)
                 }
+            }
+            // The switch a branch into a label with a stated entry width
+            // needs, on that branch's edge.
+            Transfer::Enter { label, axes } => {
+                (*axes, BridgeAnchor::TakenEdge, Reason::LabelEntry(*label))
             }
             Transfer::Restore { enter, axes } => {
                 let saved = r#in[*enter];

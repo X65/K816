@@ -284,6 +284,30 @@ func main @a8 @i8 {
     );
 }
 
+/// A label with an entry width is entered like a function, and an arrival
+/// K816 cannot see is trusted to meet it, as a function's callers are trusted
+/// to meet its header. The dispatch can land on `.handler` — the table holds
+/// its address — and the code after it is sized at the width stated in front
+/// of it rather than at the unknown one an unnamed arrival brings.
+#[test]
+fn an_unnamed_arrival_at_a_label_with_an_entry_width_is_trusted_to_meet_it() {
+    let source = "\
+var table = $0300
+
+func main @a8 @i8 {
+    ldx #&<.handler
+    jmp (table,x)
+    @a16
+.handler:
+    lda #$1234
+}
+";
+    let (_, _, diagnostics) = analyze(source);
+    assert_eq!(error_codes(&diagnostics), Vec::<&str>::new());
+    // Statements: ldx, jmp, the width statement, .handler, lda.
+    assert_eq!(before(source, "main", 4).0, known(RegisterWidth::W16));
+}
+
 /// The same loop with its label's address taken: the address can reach the
 /// table, the dispatch can land on the label from any width, and the
 /// immediate after it is unsizeable again. A global label is reachable from

@@ -441,15 +441,18 @@ func caller @a8 @i8 {
 // Decisions 7, 8, and 10
 // ---------------------------------------------------------------------------
 
-/// A label-anchored bridge is fixed and is never eliminated, while an
-/// eliminable change above it goes.
+/// A label's entry width runs where its width statement is written, and a
+/// back edge already at that width carries no switch, while an eliminable
+/// change above the statement goes.
 ///
-/// The document says so in as many words: "This label-anchored `REP`/`SEP` is
-/// treated as fixed and is not removed by dead mode elimination. Redundant
-/// mode switches before that fixed label bridge are still eliminated."
+/// The bridge used to sit *after* the label, fixed, so every arrival ran it —
+/// the back edge of a loop on every iteration. A label is entered like a
+/// function: what is fixed is the width it is entered at, and the switch
+/// belongs to whichever arrival does not already have it.
 #[test]
-fn a_fixed_label_bridge_survives_while_the_change_above_it_goes() {
+fn a_label_entry_width_runs_before_the_label_and_not_on_the_back_edge() {
     let (model, program, _) = optimized(MODES);
+    let ops = &function(&program, &model, "label_bridge").ops;
     assert_eq!(
         instructions(&program, &model, "label_bridge"),
         vec![
@@ -458,28 +461,52 @@ fn a_fixed_label_bridge_survives_while_the_change_above_it_goes() {
             (Mnemonic::Bcc, None),
             (Mnemonic::Rts, None),
         ],
-        "the `sep #$20` above the bridge goes; the bridge stays"
+        "the `sep #$20` above the statement goes; the statement's `rep` stays"
     );
+    // The last label: the first is the function's own name.
+    let label = ops
+        .iter()
+        .rposition(|op| matches!(op.kind, KOpKind::Label(_)))
+        .expect("the label");
+    let rep = ops
+        .iter()
+        .position(|op| matches!(&op.kind, KOpKind::Instruction(instruction) if instruction.mnemonic == Mnemonic::Rep))
+        .expect("the `rep`");
+    assert!(
+        rep < label,
+        "the `rep` runs before the label, on the fall-through"
+    );
+    assert_eq!(ops[rep].reason, Some(Reason::ModeSet));
 }
 
-/// The bridge F may not remove is recognized by its recorded reason, and the
-/// adjacency `postmortem.md` §D.5 calls normative is asserted separately.
-///
-/// The order at a label is `Label`, then the bridge *immediately* after it
-/// with nothing between, then `ModeAssumption`. F uses the reason; insert
-/// anything between them and the reason still identifies the bridge, but the
-/// invariant every other reader depends on is broken.
+/// A branch that arrives at a label at another width than its entry width is
+/// switched at the branch — in front of it, when nothing but the branch runs
+/// there — and the switch survives F because the label's code reads the
+/// width it establishes.
 #[test]
-fn the_fixed_bridge_is_named_by_its_reason_and_sits_next_to_its_label() {
-    let (model, program, _) = optimized(MODES);
-    let ops = &function(&program, &model, "label_bridge").ops;
-    let bridge = ops
+fn a_branch_into_a_label_is_switched_at_the_branch() {
+    let source =
+        "func f @a8 @i8 {\n    lda #$12\n    bra .wide\n    @a16\n.wide:\n    lda #$1234\n}\n";
+    let (model, program, _) = optimized(source);
+    let ops = &function(&program, &model, "f").ops;
+    let rep = ops
         .iter()
-        .position(|op| op.reason == Some(Reason::LabelBridge))
-        .expect("a label bridge");
-    assert!(matches!(ops[bridge - 1].kind, KOpKind::Label(_)));
-    assert!(matches!(ops[bridge + 1].kind, KOpKind::ModeAssumption(_)));
-    assert_eq!(ops[bridge].origin, Origin::CompilerGenerated);
+        .position(|op| matches!(op.reason, Some(Reason::LabelEntry(_))))
+        .expect("the switch for `.wide`");
+    assert!(
+        matches!(&ops[rep + 1].kind, KOpKind::Instruction(instruction) if instruction.mnemonic == Mnemonic::Bra),
+        "the switch sits in front of the branch"
+    );
+    assert_eq!(
+        instructions(&program, &model, "f"),
+        vec![
+            (Mnemonic::Lda, Some(0x12)),
+            (Mnemonic::Rep, Some(0x20)),
+            (Mnemonic::Bra, None),
+            (Mnemonic::Lda, Some(0x1234)),
+            (Mnemonic::Rts, None),
+        ]
+    );
 }
 
 /// Mask-bit stripping leaves every bit that is not a width alone.

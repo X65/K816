@@ -113,9 +113,10 @@ pub enum Reason {
     BlockEnter,
     /// Restoring the width a scoped block changed.
     BlockRestore,
-    /// Establishing an annotated width at a label, so that arrivals by
-    /// branch get it too.
-    LabelBridge,
+    /// Switching a branch to the entry width a width statement in front of
+    /// its target label states: the label is entered like a function, and
+    /// the caller is what bridges.
+    LabelEntry(SymbolId),
     /// The width every path to a label agrees on.
     LabelMerge,
     /// Satisfying a callee's entry contract before transferring to it.
@@ -173,7 +174,7 @@ impl Reason {
             Self::ModeSet
                 | Self::BlockEnter
                 | Self::BlockRestore
-                | Self::LabelBridge
+                | Self::LabelEntry(_)
                 | Self::CallBridge(_)
         )
     }
@@ -187,7 +188,7 @@ impl Reason {
             Self::ModeSet => "the width set here".to_owned(),
             Self::BlockEnter => "entering the width block".to_owned(),
             Self::BlockRestore => "restoring the width the block changed".to_owned(),
-            Self::LabelBridge => "the width established at this label".to_owned(),
+            Self::LabelEntry(label) => format!("bridge for {}", name(label)),
             Self::LabelMerge => "the width every path to this label agrees on".to_owned(),
             Self::CallBridge(callee) => format!("bridge for {}", name(callee)),
             Self::CalleeExit(callee) => format!("{}'s exit contract", name(callee)),

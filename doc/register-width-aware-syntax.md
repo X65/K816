@@ -376,17 +376,80 @@ Genuinely *divergent* exit modes — different `Fixed` widths on different
 reachable returns — are still rejected as a hard error at the callee site.
 The `Unknown ⇒ Preserve` rule never silently masks that.
 
-### Label-site bridging
+### A label's entry width
 
-`goto`/branch transfers to labels use label-anchored bridging: when the target
-label has a known mode, the compiler emits minimal `REP`/`SEP` at the label
-site itself, immediately after the label definition.
+A width statement written directly in front of a label states the label's
+**entry width**, the way a header states a function's. The label is then
+entered like a function: every arrival has to arrive at that width, and the
+compiler makes each one do so *where it leaves from*, the way it bridges a
+call to its callee. The label itself runs nothing.
+
+- The path that falls into the label runs the statement where it is written.
+- A branch, `goto` or jump already at the entry width carries nothing.
+- One at another width, or at a width K816 does not know, is switched at the
+  branch.
+
+The common case is a loop, whose back edge is already at the loop's width:
+
+```k65
+var RDY = $FFE0
+
+func poll @a16 @i16 {
+    tax
+    @a8
+.wait:
+    bit RDY
+    dex
+    bne .wait
+    @a16
+}
+```
+
+Generated output:
+
+```asm
+tax
+sep #$20            ; the fall-through enters .wait at @a8
+@wait:
+bit a:RDY
+dex
+bne @wait           ; already at @a8: nothing to switch
+rep #$20
+```
+
+A branch that arrives at another width is switched in front of it when it is
+unconditional, because no other path runs there:
+
+```k65
+func pick @a8 @i8 {
+    lda #$12
+    bra .wide
+    @a16
+.wide:
+    lda #$1234
+}
+```
+
+Generated output:
+
+```asm
+lda #$12
+rep #$20            ; bridge for .wide
+bra @wide
+@wide:
+lda #$1234
+```
+
+A *conditional* branch cannot be switched in front of itself: the switch would
+also run on the path that does not branch. It is switched on its taken edge
+instead, through a landing pad, which is the split a branch leaving a scoped
+block gets ("Leaving a block by a branch"):
 
 ```k65
 func main @a8 @i8 {
-    c+? goto .loop
+    bcs .wide
     @a16
-.loop:
+.wide:
     lda #1
 }
 ```
@@ -394,14 +457,28 @@ func main @a8 @i8 {
 Generated output:
 
 ```asm
-bcs .loop
-rep #$20
+bcs :+              ; the branch, to its pad
+jmp :++
+:
+rep #$20            ; bridge for .wide, on the taken edge
+jmp @wide
+:
+rep #$20            ; the fall-through enters .wide at @a16
+@wide:
 lda #$0001
 ```
 
-This label-anchored `REP`/`SEP` is treated as fixed and is not removed by dead
-mode elimination. Redundant mode switches before that fixed label bridge are
-still eliminated.
+The entry width covers the axes the statement names. An axis it leaves unnamed
+is the merge of the arrivals, as at any label. An arrival K816 cannot see, such
+as an indirect jump through a table, is trusted to arrive at the entry width,
+exactly as a function's callers are trusted to meet its header. The code after
+the label is assembled against that width. A label with no width statement in
+front of it has no entry width and is a merge point: arrivals that disagree make
+the width unknown there (`K816-E0104` at the first immediate that needs it).
+
+A switch the compiler adds for an entry width is an ordinary mode change to the
+optimizer: dead mode elimination removes one that nothing reads, and none is
+fixed.
 
 ### A transfer K816 cannot name
 

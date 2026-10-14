@@ -587,15 +587,17 @@ fn operations(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The order at a label is normative, and the optimizer depends on it.
+/// A width statement in front of a label is the label's entry width, and
+/// the label is entered like a function: each arrival is switched before it
+/// arrives, and nothing runs at the label itself.
 ///
-/// The bridge is *immediately* after the label operation with nothing
-/// between: that adjacency is how a fixed label bridge is recognized and kept
-/// out of dead mode elimination. The assumption comes after the bridge,
-/// because it states the width that holds once the bridge has run — emitting
-/// it first would claim a width the next instruction then changes.
+/// The path that falls into the label runs the statement where it is
+/// written. The `bcc` arrives at eight bits, so it is switched on its own
+/// edge — a pad, because a switch in front of a conditional branch would
+/// also run on the path that does not branch. What follows the label is the
+/// claim every arrival now agrees on.
 #[test]
-fn a_label_bridge_sits_between_the_label_and_its_assumption() {
+fn a_label_is_entered_at_its_width_and_runs_no_bridge_of_its_own() {
     let text = "\
 func main @a8 {
     bcc .target
@@ -610,14 +612,35 @@ func main @a8 {
         .position(|op| op == "label .target")
         .expect("the label was lowered");
     assert_eq!(
-        &ops[label..label + 3],
+        &ops[label - 1..label + 2],
         [
-            "label .target".to_owned(),
+            // The fall-through's switch, where the statement was written.
             "rep #$20".to_owned(),
+            "label .target".to_owned(),
             // `@i8` and not unknown: this is the entry point, and what it
             // did not annotate the environment provides.
             "mode-assume @a16 @i8".to_owned(),
         ],
+        "{ops:?}"
+    );
+    // The branch's own switch is on its edge, and nowhere else.
+    let branch = ops
+        .iter()
+        .position(|op| op.starts_with("bcc "))
+        .expect("the branch");
+    let pad = ops[branch].trim_start_matches("bcc ").to_owned();
+    let landing = ops
+        .iter()
+        .position(|op| *op == pad)
+        .expect("the pad the branch lands on");
+    assert_eq!(
+        &ops[landing + 1..landing + 3],
+        ["rep #$20".to_owned(), "jmp .target".to_owned()],
+        "{ops:?}"
+    );
+    assert_eq!(
+        ops.iter().filter(|op| *op == "rep #$20").count(),
+        2,
         "{ops:?}"
     );
 }

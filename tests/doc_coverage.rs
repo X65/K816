@@ -344,22 +344,82 @@ func caller {
         entry: None,
     },
     Row {
-        // The document writes the branch as `c+? goto .loop`, which is
-        // sub-plan E's spelling of the native branch used here. The width
-        // behaviour — a bridge anchored at the label, so arrivals by branch
-        // get it too — is the same one.
-        section: "Label-site bridging",
+        // The loop: the fall-through's switch before the label, and nothing
+        // between the label and its first instruction or on the back edge.
+        section: "A label's entry width",
+        source: "\
+var RDY = $FFE0
+
+func poll @a16 @i16 {
+    tax
+    @a8
+.wait:
+    bit RDY
+    dex
+    bne .wait
+    @a16
+}
+",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[
+            "tax",
+            "sep     #$20",
+            "@wait:",
+            "bit     a:RDY",
+            "dex",
+            "bne     @wait",
+            "rep     #$20",
+        ],
+        diagnostic: None,
+        entry: None,
+    },
+    Row {
+        section: "A label's entry width",
+        source: "\
+func pick @a8 @i8 {
+    lda #$12
+    bra .wide
+    @a16
+.wide:
+    lda #$1234
+}
+",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[
+            "lda     #$12",
+            "rep     #$20",
+            "bra     @wide",
+            "@wide:",
+            "lda     #$1234",
+        ],
+        diagnostic: None,
+        entry: None,
+    },
+    Row {
+        section: "A label's entry width",
         source: "\
 func main @a8 @i8 {
-    bcs .loop
+    bcs .wide
     @a16
-.loop:
+.wide:
     lda #1
 }
 ",
         stage: Stage::Modelled,
         difference: "",
-        expected: &["bcs     @loop", "rep     #$20", "lda     #$0001"],
+        expected: &[
+            "bcs     :+",
+            "jmp     :++",
+            ":",
+            "rep     #$20",
+            "jmp     @wide",
+            ":",
+            "rep     #$20",
+            "@wide:",
+            "lda     #$0001",
+        ],
         diagnostic: None,
         entry: None,
     },

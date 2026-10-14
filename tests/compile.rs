@@ -737,11 +737,17 @@ fn a_skipped_mode_change_does_not_widen_the_immediate_after_the_label() {
         "the load after the label is the three-byte form: {bytes:02X?}"
     );
 
-    // `resolved`: the annotation at the label bridges both arrivals to 16-bit,
-    // so the load is three bytes and the bridge is adjacent to the label.
+    // `resolved`: the annotation in front of the label is its entry width.
+    // The fall-through arrives by the user's `rep #$20`; the `bcc` arrives at
+    // eight bits and is switched on its own edge — bcc to the pad (2), the
+    // jump over it (3), the pad's rep #$20 (2) and jump to the label (3) —
+    // so the load is three bytes on both paths and nothing runs at the label.
     assert_eq!(
         &bytes[19..],
-        &[0x90, 0x02, 0xC2, 0x20, 0xC2, 0x20, 0xA9, 0x02, 0x01, 0x60],
+        &[
+            0x90, 0x03, 0x4C, 0x1D, 0x80, 0xC2, 0x20, 0x4C, 0x1F, 0x80, 0xC2, 0x20, 0xA9, 0x02,
+            0x01, 0x60
+        ],
         "{bytes:02X?}"
     );
 }
@@ -2354,11 +2360,14 @@ fn the_optimized_branch_fixture_loses_only_what_no_path_depends_on() {
         &[0xA9, 0x01, 0xC2, 0x20, 0x80, 0x00, 0xA9, 0x01, 0x00, 0x60],
         "{bytes:02X?}"
     );
-    // `resolved`: bcc (2, now reaching two bytes nearer), the label bridge
-    // rep #$20 (2), lda #$0102 (3), rts (1).
+    // `resolved` is the unoptimized form: the pad's `rep` is what the `bcc`
+    // needs, the user's is what the fall-through needs, and the load reads M.
     assert_eq!(
         &bytes[17..],
-        &[0x90, 0x00, 0xC2, 0x20, 0xA9, 0x02, 0x01, 0x60],
+        &[
+            0x90, 0x03, 0x4C, 0x1B, 0x80, 0xC2, 0x20, 0x4C, 0x1D, 0x80, 0xC2, 0x20, 0xA9, 0x02,
+            0x01, 0x60
+        ],
         "{bytes:02X?}"
     );
 }
@@ -3170,9 +3179,9 @@ const FIXTURE_EFFECTS: &[Effect] = &[
     ),
     (
         "width-branch.k816",
-        &[("lda     #$01", 1), ("rep     #$20", 1)],
+        &[("lda     #$01", 1)],
         &[],
-        "the load a branch leaves behind, and a user `rep` a fixed label bridge re-establishes",
+        "the load a branch leaves behind",
     ),
     (
         "width-bridging.k816",

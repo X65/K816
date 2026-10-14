@@ -880,7 +880,8 @@ impl<'a> Lowering<'a> {
     }
 
     /// Gives a transfer that leaves a scoped width block somewhere to restore
-    /// it: the taken edge, which lowering has to create.
+    /// it, and one into a label with a stated entry width somewhere to switch
+    /// to it: the taken edge, which lowering has to create.
     ///
     /// ```text
     ///     bcc .out          ->      bcc .pad
@@ -891,11 +892,15 @@ impl<'a> Lowering<'a> {
     /// ```
     ///
     /// Every transfer the statement emitted whose target is *outside* what it
-    /// emitted goes through the pad; a branch to a target the statement
-    /// defines itself — the guard of a compound comparison — stays where it
-    /// is, because it never leaves the block (sub-plan E, decision 9).
+    /// emitted goes through the block's restore pad; a branch to a target the
+    /// statement defines itself — the guard of a compound comparison — stays
+    /// where it is, because it never leaves the block (sub-plan E, decision
+    /// 9). A label's entry switch goes only on the transfers into that label,
+    /// and in front of the transfer itself when it is unconditional and the
+    /// statement's last operation: no path but the transfer's runs there, so
+    /// the switch is a call-site bridge and needs no pad.
     fn split_taken_edges(&mut self, statement: &crate::ast::Statement, start: usize, span: Span) {
-        let restores: Vec<Bridge> = self
+        let edge: Vec<Bridge> = self
             .widths
             .as_deref()
             .map(|analysis| {
@@ -907,9 +912,12 @@ impl<'a> Lowering<'a> {
                     .collect()
             })
             .unwrap_or_default();
-        if restores.is_empty() {
+        if edge.is_empty() {
             return;
         }
+        let (entries, restores): (Vec<Bridge>, Vec<Bridge>) = edge
+            .into_iter()
+            .partition(|bridge| matches!(bridge.reason, Reason::LabelEntry(_)));
         // Targets the statement defines are internal to it; anything else
         // leaves.
         let internal: Vec<AnchorId> = self.ops[start..]
@@ -948,8 +956,17 @@ impl<'a> Lowering<'a> {
                 false
             }
         };
+        // The label a transfer names, for its entry switch.
+        let into = |operand: &Option<Operand>| match operand {
+            Some(Operand::Label(KExpr::Symbol(symbol)))
+            | Some(Operand::Address {
+                expr: KExpr::Symbol(symbol),
+                ..
+            }) => Some(*symbol),
+            _ => None,
+        };
 
-        let mut outgoing: Vec<(usize, Option<Operand>)> = Vec::new();
+        let mut outgoing: Vec<(usize, Option<Operand>, Vec<Bridge>)> = Vec::new();
         for (offset, op) in self.ops[start..].iter().enumerate() {
             let KOpKind::Instruction(instruction) = &op.kind else {
                 continue;
@@ -957,23 +974,52 @@ impl<'a> Lowering<'a> {
             if instruction.effects().control == ControlEffect::FallThrough {
                 continue;
             }
-            if leaves(&instruction.operand) {
-                outgoing.push((start + offset, instruction.operand.clone()));
+            if !leaves(&instruction.operand) {
+                continue;
+            }
+            let mut bridges = restores.clone();
+            if let Some(label) = into(&instruction.operand) {
+                bridges.extend(
+                    entries
+                        .iter()
+                        .filter(|bridge| bridge.reason == Reason::LabelEntry(label))
+                        .copied(),
+                );
+            }
+            if !bridges.is_empty() {
+                outgoing.push((start + offset, instruction.operand.clone(), bridges));
             }
         }
         if outgoing.is_empty() {
             return;
         }
 
+        // The call-site form: one unconditional transfer, the statement's
+        // last operation, with only an entry switch to make.
+        if let [(index, _, bridges)] = outgoing.as_slice()
+            && *index + 1 == self.ops.len()
+            && restores.is_empty()
+            && matches!(&self.ops[*index].kind, KOpKind::Instruction(instruction)
+                if instruction.effects().control == ControlEffect::Jump)
+        {
+            let bridges = bridges.clone();
+            let transfer = self.ops.pop().expect("the transfer is the last operation");
+            for bridge in &bridges {
+                self.width_switch(bridge, span);
+            }
+            self.ops.push(transfer);
+            return;
+        }
+
         // One pad per distinct target: two branches of a compound comparison
         // leave through the same edge and share the restore.
-        let mut pads: Vec<(Option<Operand>, AnchorId)> = Vec::new();
-        for (index, target) in outgoing {
-            let pad = match pads.iter().find(|(pad_target, _)| *pad_target == target) {
-                Some((_, pad)) => *pad,
+        let mut pads: Vec<(Option<Operand>, AnchorId, Vec<Bridge>)> = Vec::new();
+        for (index, target, bridges) in outgoing {
+            let pad = match pads.iter().find(|(pad_target, _, _)| *pad_target == target) {
+                Some((_, pad, _)) => *pad,
                 None => {
                     let pad = self.anchor();
-                    pads.push((target.clone(), pad));
+                    pads.push((target.clone(), pad, bridges));
                     pad
                 }
             };
@@ -995,20 +1041,10 @@ impl<'a> Lowering<'a> {
         if falls_through {
             self.jump_to(past, span, Some(Reason::SplitEdge));
         }
-        for (target, pad) in pads {
+        for (target, pad, bridges) in pads {
             self.place(pad, span);
-            for restore in &restores {
-                let mnemonic = match restore.width {
-                    RegisterWidth::W8 => Mnemonic::Sep,
-                    RegisterWidth::W16 => Mnemonic::Rep,
-                };
-                self.generated_instruction(
-                    mnemonic,
-                    AddressingMode::Immediate,
-                    Some(Operand::Immediate(KExpr::number(restore.mask))),
-                    span,
-                    restore.reason,
-                );
+            for bridge in &bridges {
+                self.width_switch(bridge, span);
             }
             self.expanded_instruction(
                 Mnemonic::Jmp,
@@ -1019,6 +1055,21 @@ impl<'a> Lowering<'a> {
             );
         }
         self.place(past, span);
+    }
+
+    /// The `SEP` or `REP` one bridge is.
+    fn width_switch(&mut self, bridge: &Bridge, span: Span) {
+        let mnemonic = match bridge.width {
+            RegisterWidth::W8 => Mnemonic::Sep,
+            RegisterWidth::W16 => Mnemonic::Rep,
+        };
+        self.generated_instruction(
+            mnemonic,
+            AddressingMode::Immediate,
+            Some(Operand::Immediate(KExpr::number(bridge.mask))),
+            span,
+            bridge.reason,
+        );
     }
 
     /// Rewrites every branch the short form cannot reach.
@@ -1556,8 +1607,8 @@ impl<'a> Lowering<'a> {
     fn statement(&mut self, statement: &crate::ast::Statement) {
         let span = statement.span;
         // Whatever the model decided to establish here runs before the
-        // statement's own operations, except at a label — where it runs after
-        // the label so that arrivals by branch get it too.
+        // statement's own operations; a switch on a branch's edge runs on
+        // that edge (`split_taken_edges`).
         self.bridges(statement, BridgeAnchor::Before);
         let start = self.ops.len();
         self.statement_kind(statement, span);
@@ -1824,14 +1875,10 @@ impl<'a> Lowering<'a> {
                     Some(symbol) => self.push(KOpKind::Label(symbol), span, Origin::User),
                     None => return self.skipped(span, "an undeclared label"),
                 }
-                // The order here is normative. The bridge is *immediately*
-                // after the label operation with nothing between, because that
-                // adjacency is how the optimizer recognizes a fixed label
-                // bridge it must not eliminate. The assumption comes after the
-                // bridge because it states the width that holds once the
-                // bridge has run; emitting it first would claim a width the
-                // next instruction then changes.
-                self.bridges(statement, BridgeAnchor::AfterLabel);
+                // Nothing is established here: every arrival was switched to
+                // the label's entry width before it arrived, the fall-through
+                // by the width statement in front of the label and each
+                // branch at the branch. What every path agrees on is stated.
                 if let Some(state) = self.widths_after(statement) {
                     self.assume(state, span, Reason::LabelMerge);
                 }

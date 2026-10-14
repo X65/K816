@@ -537,6 +537,18 @@ func draw_level {
 }
 ```
 
+### Register widths at a label
+
+A width statement written directly in front of a label, such as `@a8` on the
+line before `.loop:`, is the label's **entry width**. The label is entered like
+a function: every arrival is switched to that width where it leaves from. The
+path that falls into the label runs the statement where it is written, and a
+branch or `goto` arriving at another width is switched at the branch. Nothing
+runs at the label itself, so a loop whose back edge is already at the width pays
+nothing per iteration. A label with no width statement in front of it is a merge
+of whatever arrives. See `register-width-aware-syntax.md`, "A label's entry
+width".
+
 ## Segment Selection
 
 The 65816 has a linear 16MB address space. K816 does not divide it: `segment` emits a ca65 `.segment` directive and nothing more, and where a segment lands in memory is decided by the ld65 config the program is linked with. The active segment can be changed at any point in a file to place functions or data blocks within different segments.

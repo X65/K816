@@ -916,7 +916,7 @@ func work @a8 @i16 @20..113
 }
 
 /// The bare mode set is the statement `doc/register-width-aware-syntax.md`
-/// uses in its label-site bridging example, and it did not parse before.
+/// uses in its label entry width example, and it did not parse before.
 #[test]
 fn a_bare_mode_set_is_a_statement() {
     let source = "func main {\n  @a16\n.loop:\n  lda #1\n  @a8 @i16\n  nop\n}\n";

@@ -607,8 +607,8 @@ fn effects_of(op: &KOp) -> Option<Effects> {
 /// elimination possible at all — and, on its own, what would let passes 3 and
 /// 5 delete a mode instruction, since both already accept one as a removal
 /// candidate. They would do it with none of the guards a mode change needs: a
-/// published exit contract, a fixed label bridge, a live truncation, a mask
-/// carrying a non-width bit.
+/// published exit contract, a live truncation, a mask carrying a non-width
+/// bit.
 ///
 /// So the exclusion is stated once, here, and every pass but 1 and 2 consults
 /// it. It is the other half of the effect-table correction and landed in the
@@ -1542,14 +1542,6 @@ fn strip(
     let op = &ops[index];
     let (_, mask) = mode_mask(op)?;
     if flow.frozen[index] || !flow.reachable[flow.block_of[index]] {
-        return None;
-    }
-    // A label-anchored bridge is fixed and is never eliminated: the arrivals
-    // it exists for are branches from states F is not looking at, including
-    // from another unit, and liveness below the label says nothing about them
-    // (decision 7). Recognized by its recorded reason rather than by its
-    // position — the adjacency is asserted separately.
-    if op.reason == Some(Reason::LabelBridge) {
         return None;
     }
     let effects = effects_of(op)?;

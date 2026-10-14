@@ -62,6 +62,7 @@ fn main() -> ExitCode {
         Some("lsp") => lsp(&prog_name, &args[1..]),
         Some("fmt") => fmt(&prog_name, &args[1..]),
         Some("bind") => bind(&prog_name, &args[1..]),
+        Some("convert") => convert(&prog_name, &args[1..]),
         _ => {
             usage(&prog_name);
             ExitCode::FAILURE
@@ -94,6 +95,14 @@ fn usage(prog_name: &str) {
     eprintln!("                                       not; --layouts: every `.struct` as a field");
     eprintln!("                                       layout instead, --flat as one `var` per");
     eprintln!("                                       member of a `.struct` at an `.org`");
+    eprintln!("  convert [-I DIR]... [--out-dir DIR | -o OUT.kk] [--force] [--check] FILE...");
+    eprintln!("                                       convert ca65 sources to K816: each FILE");
+    eprintln!("                                       and every file it includes becomes a");
+    eprintln!("                                       `.kk` unit beside it, or under --out-dir.");
+    eprintln!("                                       -I DIR: where `.include` looks after the");
+    eprintln!("                                       including file's directory; --force:");
+    eprintln!("                                       replace a `.kk` that exists; --check:");
+    eprintln!("                                       compile what was written");
     eprintln!("  lsp [--strict-k65] [--entry AXES]    run the language server over stdio. The");
     eprintln!("                                       same options a build states, so an editor");
     eprintln!("                                       and a build agree; a client may also send");
@@ -142,6 +151,8 @@ enum Command {
     Fmt,
     /// `bind [--for FILE] [--all] [--layouts [--flat]] [-o OUT] DEBUGFILE`
     Bind,
+    /// `convert [-I DIR]... [--out-dir DIR | -o OUT] [--force] [--check] FILE...`
+    Convert,
 }
 
 impl Command {
@@ -150,7 +161,7 @@ impl Command {
         match self {
             Self::Compile => Some(("--no-opt", false)),
             Self::EmitIr => Some(("--after-opt", true)),
-            Self::Lsp | Self::Fmt | Self::Bind => None,
+            Self::Lsp | Self::Fmt | Self::Bind | Self::Convert => None,
         }
     }
 
@@ -166,7 +177,7 @@ impl Command {
 
     /// Whether the command reads *several* files rather than one.
     fn takes_many(self) -> bool {
-        matches!(self, Self::Fmt)
+        matches!(self, Self::Fmt | Self::Convert)
     }
 
     /// Whether the command can report what it read as a make dependency file.
@@ -188,6 +199,13 @@ struct CommandLine {
     /// `bind`'s own options: which module's imports, every export or only
     /// the used ones, and layouts instead of symbols.
     bind: k816::bind::Request,
+    /// `convert -I`: where `.include` looks after the including file's own
+    /// directory.
+    include_dirs: Vec<PathBuf>,
+    /// `convert --out-dir`: the tree the units are written into.
+    out_dir: Option<PathBuf>,
+    /// `convert --force`: replace a `.kk` that is already there.
+    force: bool,
     /// Print what the optimizer did, after the dump (`emit-ir --explain`).
     explain: bool,
     output: Option<PathBuf>,
@@ -223,6 +241,9 @@ fn parse_command_line(
     let mut explain = false;
     let mut check = false;
     let mut bind = k816::bind::Request::default();
+    let mut include_dirs: Vec<PathBuf> = Vec::new();
+    let mut out_dir: Option<PathBuf> = None;
+    let mut force = false;
     let mut dep_files: Vec<PathBuf> = Vec::new();
     let mut dep_target: Option<PathBuf> = None;
     let mut options = Options {
@@ -297,7 +318,33 @@ fn parse_command_line(
                 set_entry(prog_name, text, &mut options, message_format)?;
             }
             "--explain" if command == Command::EmitIr => explain = true,
-            "--check" if command == Command::Fmt => check = true,
+            "--check" if command == Command::Fmt || command == Command::Convert => check = true,
+            "--force" if command == Command::Convert => force = true,
+            "-I" | "--include-dir" if command == Command::Convert => match iter.next() {
+                Some(path) => include_dirs.push(PathBuf::from(path)),
+                None => {
+                    render::render_tool_error(
+                        prog_name,
+                        &format!("`{arg}` needs a directory"),
+                        message_format,
+                    );
+                    return Err(());
+                }
+            },
+            _ if command == Command::Convert && arg.starts_with("-I") && arg.len() > 2 => {
+                include_dirs.push(PathBuf::from(&arg[2..]));
+            }
+            "--out-dir" if command == Command::Convert => match iter.next() {
+                Some(path) => out_dir = Some(PathBuf::from(path)),
+                None => {
+                    render::render_tool_error(
+                        prog_name,
+                        "`--out-dir` needs a directory",
+                        message_format,
+                    );
+                    return Err(());
+                }
+            },
             "--for" if command == Command::Bind => match iter.next() {
                 Some(path) => bind.for_module = Some(PathBuf::from(path)),
                 None => {
@@ -351,6 +398,9 @@ fn parse_command_line(
         inputs,
         check,
         bind,
+        include_dirs,
+        out_dir,
+        force,
         explain,
         output,
         options,
@@ -581,6 +631,131 @@ fn bind(prog_name: &str, args: &[String]) -> ExitCode {
         None => print!("{generated}"),
     }
     ExitCode::SUCCESS
+}
+
+/// `k816 convert [-I DIR]... [--out-dir DIR | -o OUT] [--force] [--check] FILE...`
+///
+/// The conversion is the library's (`k816::convert`); this reads the files,
+/// says what it noted, and decides where each unit goes.
+fn convert(prog_name: &str, args: &[String]) -> ExitCode {
+    let Ok(command) = parse_command_line(prog_name, args, Command::Convert) else {
+        return ExitCode::FAILURE;
+    };
+    let request = k816::convert::Request {
+        inputs: command.inputs.clone(),
+        include_dirs: command.include_dirs.clone(),
+    };
+    let conversion =
+        match k816::convert::convert(&request, &|path| std::fs::read_to_string(path).ok()) {
+            Ok(conversion) => conversion,
+            Err(error) => {
+                render::render_tool_error(prog_name, &error, command.message_format);
+                return ExitCode::FAILURE;
+            }
+        };
+    for note in &conversion.notes {
+        eprintln!(
+            "{}:{}: note: {}",
+            note.path.display(),
+            note.line,
+            note.message
+        );
+    }
+    // Where each unit goes: beside its source, under `--out-dir` at the same
+    // place relative to the directory every unit is under — an included file
+    // can be outside the inputs' — or at `-o` for one.
+    // Absolute first, so that a relative input and an include found through
+    // an absolute `-I` still share a directory, and what is left under it is
+    // never itself absolute.
+    let absolute = |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let paths: Vec<PathBuf> = conversion
+        .units
+        .iter()
+        .map(|unit| absolute(&unit.path))
+        .collect();
+    let root = k816::convert::shared_directory(&paths);
+    let mut placed: Vec<(PathBuf, &k816::convert::Converted)> = Vec::new();
+    for unit in &conversion.units {
+        let path = match (&command.output, &command.out_dir) {
+            (Some(output), _) => {
+                if conversion.units.len() != 1 {
+                    render::render_tool_error(
+                        prog_name,
+                        &format!(
+                            "`-o` names one file, and the conversion wrote {} units; use `--out-dir`",
+                            conversion.units.len()
+                        ),
+                        command.message_format,
+                    );
+                    return ExitCode::FAILURE;
+                }
+                output.clone()
+            }
+            (None, Some(out_dir)) => {
+                let path = absolute(&unit.path);
+                out_dir.join(path.strip_prefix(&root).unwrap_or(&path))
+            }
+            (None, None) => unit.path.clone(),
+        };
+        placed.push((path, unit));
+    }
+    if !command.force
+        && let Some((existing, _)) = placed
+            .iter()
+            .find(|(path, _)| path.as_os_str() != "-" && path.exists())
+    {
+        render::render_tool_error(
+            prog_name,
+            &format!("{} exists; `--force` replaces it", existing.display()),
+            command.message_format,
+        );
+        return ExitCode::FAILURE;
+    }
+    for (path, unit) in &placed {
+        if path.as_os_str() == "-" {
+            print!("{}", unit.text);
+            continue;
+        }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            render::render_tool_error(
+                prog_name,
+                &format!("cannot create {}: {error}", parent.display()),
+                command.message_format,
+            );
+            return ExitCode::FAILURE;
+        }
+        if let Err(error) = std::fs::write(path, &unit.text) {
+            render::render_tool_error(
+                prog_name,
+                &format!("cannot write {}: {error}", path.display()),
+                command.message_format,
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    if !command.check {
+        return ExitCode::SUCCESS;
+    }
+    // `--check`: every unit compiled, against the others as written.
+    let mut map = SourceMap::new();
+    let files: Vec<_> = placed
+        .iter()
+        .map(|(path, unit)| map.add_file(path.display().to_string(), unit.text.clone()))
+        .collect();
+    let mut failed = false;
+    for file in files {
+        let result = compile_to_ca65(&map, file, &command.options);
+        failed |= result.assembly.is_none();
+        render::render_diagnostics(&map, &result.diagnostics, command.message_format);
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn compile(prog_name: &str, args: &[String]) -> ExitCode {

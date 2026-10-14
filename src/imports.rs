@@ -125,9 +125,65 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// `target` relative to the directory `base`, lexically: the string an
+/// `import` in a file inside `base` writes to reach it.
+pub fn relative(base: &Path, target: &Path) -> String {
+    // A relative path and an absolute one share no components until both
+    // are absolute: an input named on the command line, and a file an
+    // absolute include directory found.
+    let (base, target) = if base.is_absolute() == target.is_absolute() {
+        (base.to_path_buf(), target.to_path_buf())
+    } else {
+        let absolute =
+            |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        (absolute(base), absolute(target))
+    };
+    let base: Vec<Component<'_>> = base.components().collect();
+    let target: Vec<Component<'_>> = target.components().collect();
+    let shared = base
+        .iter()
+        .zip(target.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut parts: Vec<String> = Vec::new();
+    for _ in shared..base.len() {
+        parts.push("..".to_owned());
+    }
+    for component in &target[shared..] {
+        parts.push(component.as_os_str().to_string_lossy().into_owned());
+    }
+    parts.join("/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relative_base_reaches_an_absolute_target() {
+        let here = std::env::current_dir().expect("a working directory");
+        assert_eq!(
+            relative(Path::new("src/kernel"), &here.join("src/zp.k816")),
+            "../zp.k816"
+        );
+        assert_eq!(
+            relative(&here.join("src"), Path::new("src/hw/ria.k816")),
+            "hw/ria.k816"
+        );
+    }
+
+    #[test]
+    fn a_relative_path_walks_up_and_down() {
+        assert_eq!(
+            relative(Path::new("/p/src/kernel"), Path::new("/p/src/hw/ria.k816")),
+            "../hw/ria.k816"
+        );
+        assert_eq!(
+            relative(Path::new("/p/src"), Path::new("/p/src/a.k816")),
+            "a.k816"
+        );
+        assert_eq!(relative(Path::new(""), Path::new("a.k816")), "a.k816");
+    }
 
     #[test]
     fn a_path_resolves_against_the_importing_files_directory() {

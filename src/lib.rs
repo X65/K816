@@ -31,6 +31,7 @@ pub mod abi;
 pub mod ast;
 pub mod bind;
 pub mod compat;
+pub mod convert;
 pub mod diagnostic;
 pub mod effects;
 pub mod emit_ca65;

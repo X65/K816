@@ -152,6 +152,14 @@ Commands:
                                        not; --layouts: every `.struct` as a field
                                        layout instead, --flat as one `var` per
                                        member of a `.struct` at an `.org`
+  convert [-I DIR]... [--out-dir DIR | -o OUT.kk] [--force] [--check] FILE...
+                                       convert ca65 sources to K816: each FILE
+                                       and every file it includes becomes a
+                                       `.kk` unit beside it, or under --out-dir.
+                                       -I DIR: where `.include` looks after the
+                                       including file's directory; --force:
+                                       replace a `.kk` that exists; --check:
+                                       compile what was written
   lsp [--strict-k65] [--entry AXES]    run the language server over stdio. The
                                        same options a build states, so an editor
                                        and a build agree; a client may also send
@@ -401,11 +409,16 @@ still no project file, and there is nothing for one to say.
 
 ## Converting from ca65
 
-A ca65 program is carried over one file at a time: `cl65` compiles `.asm`
-and `.k816` alike and ld65 links the objects, so the program links at every
-step. [doc/ca65-to-k816.md](doc/ca65-to-k816.md) is the idiom table — what
-K816 writes where ca65 writes each thing, every pair assembled to the same
-bytes by a test — and the loop a file goes through. Three tools go with it:
+`k816 convert` converts a ca65 program: every `.asm`, and every `.inc` it
+includes, becomes a `.kk` unit with the program's shape kept — its
+segments, its routines in order, its comments — so that the build compares
+with the original's byte for byte. Each place it could not be faithful is
+a note. A program can also be carried over by hand, one file at a time:
+`cl65` compiles `.asm` and `.k816` alike and ld65 links the objects, so the
+program links at every step. [doc/ca65-to-k816.md](doc/ca65-to-k816.md) is
+the idiom table — what K816 writes where ca65 writes each thing, every pair
+assembled to the same bytes by a test, and converted to them — what the
+converter writes, and the loop a file goes through. Three tools go with it:
 
 - `k816 bind` writes the `extern` declarations a unit needs for the symbols
   ca65 modules still provide, from the debug file of the previous build, and

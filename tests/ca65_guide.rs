@@ -213,6 +213,63 @@ fn every_named_pair_assembles_to_the_same_image() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
+/// Every named ca65 listing, converted by `k816 convert`, links to the same
+/// bytes as the listing itself.
+///
+/// The guide's pairs say what K816 writes where ca65 writes each thing; the
+/// converter is the same table run by a program, so each pair's ca65 half is
+/// also the converter's input and the ca65 build its oracle. A pair the
+/// converter writes differently from the guide's own listing is fine — the
+/// bytes are the claim, not the spelling.
+#[test]
+fn every_named_ca65_listing_converts_to_the_same_image() {
+    let text = guide();
+    let root = work_dir("ca65-guide-converted");
+    let mut failures: Vec<String> = Vec::new();
+    let mut count = 0;
+    for block in blocks(&text) {
+        let (Some(name), "ca65") = (block.name.clone(), block.language.as_str()) else {
+            continue;
+        };
+        count += 1;
+        let dir = root.join(&name);
+        std::fs::create_dir_all(&dir).expect("create the listing's directory");
+        let asm = dir.join(format!("{name}.asm"));
+        std::fs::write(&asm, &block.body).expect("write the ca65 listing");
+        let expected = link(&asm, &format!("`ca65 {name}` (line {})", block.line));
+
+        let request = k816::convert::Request {
+            inputs: vec![asm.clone()],
+            include_dirs: Vec::new(),
+        };
+        let conversion =
+            k816::convert::convert(&request, &|path| std::fs::read_to_string(path).ok())
+                .unwrap_or_else(|error| panic!("`ca65 {name}` does not convert: {error}"));
+        assert_eq!(conversion.units.len(), 1, "`ca65 {name}` is one unit");
+        let unit = &conversion.units[0];
+        std::fs::write(&unit.path, &unit.text).expect("write the converted unit");
+        let assembly = compile(
+            &unit.path,
+            &format!("`ca65 {name}` converted (line {})", block.line),
+        );
+        let actual = link(&assembly, &format!("`ca65 {name}` converted"));
+        if expected != actual {
+            let trim =
+                |bytes: &[u8]| bytes.len() - bytes.iter().rev().take_while(|&&b| b == 0).count();
+            let shown = trim(&expected).max(trim(&actual));
+            failures.push(format!(
+                "`ca65 {name}` (line {}) converts to different bytes\nca65:\n{}\nconverted:\n{}\nas converted:\n{}",
+                block.line,
+                hex(&expected[..shown.min(expected.len())]),
+                hex(&actual[..shown.min(actual.len())]),
+                unit.text
+            ));
+        }
+    }
+    assert!(count >= 12, "the guide's ca65 listings were not found");
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
 /// A K816 listing without a partner still compiles: it is a claim too.
 #[test]
 fn every_unpaired_k816_listing_compiles() {

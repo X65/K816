@@ -457,7 +457,7 @@ pub fn bind(
     // from their bodies, which is better than anything written here.
     let mut imported: BTreeSet<String> = BTreeSet::new();
     for unit in imports {
-        imported.insert(relative(&base, Path::new(&unit)));
+        imported.insert(crate::imports::relative(&base, Path::new(&unit)));
     }
     if !imported.is_empty() {
         let _ = writeln!(out);
@@ -825,42 +825,9 @@ fn common_prefix<'a>(paths: impl Iterator<Item = &'a str>) -> String {
     }
 }
 
-/// `target` relative to the directory `base`, lexically: the string an
-/// `import` in a file inside `base` writes to reach it.
-fn relative(base: &Path, target: &Path) -> String {
-    let base: Vec<Component<'_>> = base.components().collect();
-    let target: Vec<Component<'_>> = target.components().collect();
-    let shared = base
-        .iter()
-        .zip(target.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let mut parts: Vec<String> = Vec::new();
-    for _ in shared..base.len() {
-        parts.push("..".to_owned());
-    }
-    for component in &target[shared..] {
-        parts.push(component.as_os_str().to_string_lossy().into_owned());
-    }
-    parts.join("/")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_relative_path_walks_up_and_down() {
-        assert_eq!(
-            relative(Path::new("/p/src/kernel"), Path::new("/p/src/hw/ria.k816")),
-            "../hw/ria.k816"
-        );
-        assert_eq!(
-            relative(Path::new("/p/src"), Path::new("/p/src/a.k816")),
-            "a.k816"
-        );
-        assert_eq!(relative(Path::new(""), Path::new("a.k816")), "a.k816");
-    }
 
     #[test]
     fn every_k816_extension_names_a_k816_unit() {

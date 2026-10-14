@@ -600,3 +600,47 @@ data D {
       (nocross_directive)
       (data_value
         value: (number)))))
+
+================================================================================
+A label ends a typed entry, and a comment does not
+================================================================================
+
+data state {
+  task: word 0
+  lock: word 0 // two bytes
+  name: "shell" 0
+  word 1 2 // a comment between values
+  3
+  done: far 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_label
+        name: (identifier))
+      (typed_entry
+        value: (number))
+      (data_label
+        name: (identifier))
+      (typed_entry
+        value: (number))
+      (line_comment)
+      (data_label
+        name: (identifier))
+      (data_value
+        value: (string))
+      (data_value
+        value: (number))
+      (typed_entry
+        value: (number)
+        value: (number)
+        (line_comment)
+        value: (number))
+      (data_label
+        name: (identifier))
+      (typed_entry
+        value: (number)))))

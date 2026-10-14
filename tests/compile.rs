@@ -4443,3 +4443,87 @@ naked boot {
         );
     }
 }
+
+/// A repeat count belongs to its mnemonic, whatever the line before holds.
+///
+/// `lsr * 3` and `lsr` followed by a three-NOP wait both parse, and the
+/// grammar left the choice to the parse state — so a `//` comment on the
+/// line before changed it, and `tya // c` then `lsr * 3` assembled one shift
+/// and three NOPs. Found converting `lsrx a, #3 -> a` in a kernel's CIO code.
+#[test]
+fn a_repeat_count_does_not_depend_on_a_comment_above_it() {
+    for (name, source) in [
+        ("plain", "func shifts @a8 @i8 {\n    tya\n    lsr * 3\n}\n"),
+        (
+            "comment",
+            "func shifts @a8 @i8 {\n    tya // c\n    lsr * 3\n}\n",
+        ),
+        (
+            "block",
+            "func shifts @a8 @i8 {\n    tya /* c */\n    lsr * 3\n}\n",
+        ),
+    ] {
+        let (bytes, assembly) = compile_and_link(
+            &format!("repeat-{name}"),
+            "repeat.k816",
+            source,
+            &Options::default(),
+        );
+        // tya ; lsr ; lsr ; lsr ; rts
+        assert_eq!(bytes, [0x98, 0x4A, 0x4A, 0x4A, 0x60], "{name}:\n{assembly}");
+    }
+}
+
+/// A label ends a typed entry.
+///
+/// `typed_entry` was `prec.right`, which decided at the value boundary that
+/// the next identifier was another value — one token before the `:` that
+/// says it is a label — so `a: word 0` followed by `b: word 0` did not
+/// parse. The manual has always said a label ends the entry. Greediness
+/// survives: values on the next line, and past a comment, still belong to
+/// the entry.
+#[test]
+fn a_label_ends_a_typed_entry_and_a_comment_does_not() {
+    let source = "\
+data state {
+    task: word $1234
+    lock: word 0 // two bytes
+    name: \"ab\" 0
+    word 1 2 // a comment between values
+    3
+}
+func reader @a16 @i16 {
+    lda lock
+    lda name
+}
+";
+    let (bytes, assembly) = compile_and_link(
+        "typed-label",
+        "typed-label.k816",
+        source,
+        &Options::default(),
+    );
+    // The second value is the debug database: both labels reached ld65 at
+    // the addresses the bytes below put them.
+    assert!(
+        assembly.contains("name=\"lock\"")
+            && assembly.contains("val=0x8002")
+            && assembly.contains("name=\"name\"")
+            && assembly.contains("val=0x8004"),
+        "{assembly}"
+    );
+    // The data block, then `reader`: `lda a:lock` and `lda a:name`, with the
+    // block linked at $8000 so lock is $8002 and name $8004.
+    assert_eq!(
+        &bytes[..13],
+        [
+            0x34, 0x12, 0x00, 0x00, b'a', b'b', 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00
+        ],
+        "{assembly}"
+    );
+    assert_eq!(
+        &bytes[13..],
+        [0xAD, 0x02, 0x80, 0xAD, 0x04, 0x80, 0x60],
+        "{assembly}"
+    );
+}

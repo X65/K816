@@ -433,3 +433,30 @@ func main {
         mnemonic: (mnemonic))
       (native_instruction
         mnemonic: (mnemonic)))))
+
+================================================================================
+A repeat count belongs to its mnemonic whatever the line before holds
+================================================================================
+
+func main {
+  tya // the comment on the line before is what used to flip it
+  lsr * 3
+  nop
+  * 3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic))
+      (line_comment)
+      (native_instruction
+        mnemonic: (mnemonic)
+        repeat: (number))
+      (native_instruction
+        mnemonic: (mnemonic)
+        repeat: (number)))))

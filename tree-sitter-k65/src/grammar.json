@@ -1620,52 +1620,52 @@
       ]
     },
     "typed_entry": {
-      "type": "PREC_RIGHT",
-      "value": 0,
-      "content": {
-        "type": "SEQ",
-        "members": [
-          {
-            "type": "FIELD",
-            "name": "type",
-            "content": {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "STRING",
-                  "value": "byte"
-                },
-                {
-                  "type": "STRING",
-                  "value": "word"
-                },
-                {
-                  "type": "STRING",
-                  "value": "far"
-                }
-              ]
-            }
-          },
-          {
-            "type": "REPEAT1",
-            "content": {
-              "type": "FIELD",
-              "name": "value",
-              "content": {
-                "type": "SYMBOL",
-                "name": "_data_atom"
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "type",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "byte"
+              },
+              {
+                "type": "STRING",
+                "value": "word"
+              },
+              {
+                "type": "STRING",
+                "value": "far"
               }
+            ]
+          }
+        },
+        {
+          "type": "REPEAT1",
+          "content": {
+            "type": "FIELD",
+            "name": "value",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_data_atom"
             }
           }
-        ]
-      }
+        }
+      ]
     },
     "data_value": {
-      "type": "FIELD",
-      "name": "value",
+      "type": "PREC_DYNAMIC",
+      "value": -1,
       "content": {
-        "type": "SYMBOL",
-        "name": "_data_atom"
+        "type": "FIELD",
+        "name": "value",
+        "content": {
+          "type": "SYMBOL",
+          "name": "_data_atom"
+        }
       }
     },
     "_data_atom": {
@@ -3064,21 +3064,25 @@
               "type": "CHOICE",
               "members": [
                 {
-                  "type": "SEQ",
-                  "members": [
-                    {
-                      "type": "STRING",
-                      "value": "*"
-                    },
-                    {
-                      "type": "FIELD",
-                      "name": "repeat",
-                      "content": {
-                        "type": "SYMBOL",
-                        "name": "_expression"
+                  "type": "PREC_DYNAMIC",
+                  "value": 5,
+                  "content": {
+                    "type": "SEQ",
+                    "members": [
+                      {
+                        "type": "STRING",
+                        "value": "*"
+                      },
+                      {
+                        "type": "FIELD",
+                        "name": "repeat",
+                        "content": {
+                          "type": "SYMBOL",
+                          "name": "_expression"
+                        }
                       }
-                    }
-                  ]
+                    ]
+                  }
                 },
                 {
                   "type": "BLANK"
@@ -7117,6 +7121,9 @@
     ],
     [
       "reserved_image_block"
+    ],
+    [
+      "typed_entry"
     ],
     [
       "address",

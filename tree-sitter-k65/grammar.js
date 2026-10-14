@@ -233,6 +233,10 @@ export default grammar({
     [$.nocross_directive, $.code_subblock],
     // The loose `image` argument run ends where the next entry begins.
     [$.reserved_image_block],
+    // A typed entry's values run on until something that is not a value; an
+    // identifier is a value unless a `:` follows it, one token later than
+    // the decision. See `typed_entry`.
+    [$.typed_entry],
     // `mem<<` on one line and `mem,x>>>` on the next are two shift
     // statements, not the single shift `(mem << mem,x) >>>`; likewise `* 5`
     // and `* COUNT` are two NOP counts, not `5 * COUNT`. Both readings are
@@ -666,26 +670,33 @@ export default grammar({
 
     // `byte 1 2 3`, `word main 0`, `far handler`. Values are atoms only: a
     // compound expression in a value list has to go through a `const`.
-    // A typed entry takes every value that follows it, and `prec.right` is
-    // what says so. Without it the parser has a choice at each value
-    // boundary — keep filling this entry, or end it and start an untyped
-    // one — and resolved it from whatever parse state preceded, so a
-    // *comment* earlier in the block decided whether `word 0 $1234 ptr` was
-    // three words or one word and two bytes.
     //
-    // Greedy is the only reading a newline-insensitive language can have:
-    // `word 1 2 3` and `word 1 2` followed by `3` on the next line are the
-    // same token sequence, so they cannot emit different bytes.
+    // A typed entry takes every value that follows it. Greedy is the only
+    // reading a newline-insensitive language can have: `word 1 2 3` and
+    // `word 1 2` followed by `3` on the next line are the same token
+    // sequence, so they cannot emit different bytes.
+    //
+    // It is *not* said with `prec.right`, which this rule used to carry.
+    // That decided the question at the value boundary, one token before the
+    // answer: in `a: word 0` followed by `b: word 0`, the `b` was shifted as a
+    // third value and the `:` after it had no parse, so a label could never
+    // follow a typed entry although the manual says a label ends one. The
+    // boundary is a declared conflict instead, so both readings are explored
+    // and the one that hits the `:` dies; where both survive, `data_value`'s
+    // negative dynamic precedence makes the greedy reading win. Leaving that
+    // choice to the parse state is what once let a *comment* earlier in the
+    // block decide whether `word 0 $1234 ptr` was three words or one word and
+    // two bytes, so the precedence is the part that must not go.
     typed_entry: $ =>
-      prec.right(
-        seq(
-          field('type', choice('byte', 'word', 'far')),
-          repeat1(field('value', $._data_atom)),
-        ),
+      seq(
+        field('type', choice('byte', 'word', 'far')),
+        repeat1(field('value', $._data_atom)),
       ),
 
-    // A value with no type keyword, which defaults to bytes.
-    data_value: $ => field('value', $._data_atom),
+    // A value with no type keyword, which defaults to bytes. Losing to a
+    // typed entry's continuation wherever both readings parse is what keeps
+    // a typed entry greedy (see `typed_entry`).
+    data_value: $ => prec.dynamic(-1, field('value', $._data_atom)),
 
     _data_atom: $ =>
       choice(
@@ -1060,12 +1071,19 @@ export default grammar({
     // `<mnemonic> * N` repeats an implied-mode instruction N times. It is only
     // available *without* an operand, which is what keeps `lda foo * 3` from
     // being ambiguous between a repeat and a multiplication in the operand.
+    //
+    // A count directly after a mnemonic is that mnemonic's. `lsr * 3` could
+    // also be `lsr` followed by a three-NOP wait, and both readings parse, so
+    // the choice was left to the parse state — and a `//` comment on the line
+    // *before* changed the state: `tya // c` then `lsr * 3` assembled one
+    // shift and three NOPs. The dynamic precedence makes the repeat win
+    // wherever both readings survive, whatever precedes it.
     native_instruction: $ =>
       choice(
         seq(field('mnemonic', $.mnemonic), field('operand', $._operand)),
         seq(
           field('mnemonic', $.mnemonic),
-          optional(seq('*', field('repeat', $._expression))),
+          optional(prec.dynamic(5, seq('*', field('repeat', $._expression)))),
         ),
       ),
 

@@ -848,6 +848,35 @@ fn a_body_that_touches_nothing_preserves_both_widths() {
     );
 }
 
+/// A branch out of a width block gets a node of its own for the restore,
+/// and those nodes go after the body's last one. Falling off the end of the
+/// body is still the return: read as a fall-through into the first restore
+/// node, the return was missed, `f` was taken to preserve the accumulator,
+/// and a caller at `@a16` sized `lda #$1234` for a width `f` had left at
+/// eight bits.
+#[test]
+fn the_return_after_a_block_a_branch_leaves_is_still_a_return() {
+    let source = "\
+func f {
+    rep #$20
+    @a8 {
+        bcc .out
+        nop
+    }
+.out:
+    sep #$20
+}
+";
+    assert_eq!(
+        exit_of(source, "f"),
+        (AxisExit::Fixed(RegisterWidth::W8), AxisExit::Preserve)
+    );
+    let (_, _, diagnostics) = analyze(&format!(
+        "{source}\nfunc g @a16 {{\n    f\n    lda #$1234\n}}\n"
+    ));
+    assert_eq!(error_codes(&diagnostics), vec!["K816-E0103"]);
+}
+
 #[test]
 fn a_body_that_sets_one_axis_fixes_it_and_preserves_the_other() {
     assert_eq!(

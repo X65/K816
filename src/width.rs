@@ -1348,9 +1348,16 @@ fn solve(
 ) -> (WidthAnalysis, Vec<Diagnostic>) {
     let nodes = &graph.nodes;
     let count = nodes.len();
+    // The body ends where the split edges begin. Those nodes go on the end
+    // and only their branches reach them, so the body's last node falls off
+    // the end of the function — its implicit return — and not into a pad.
+    let body_end = nodes
+        .iter()
+        .position(|node| node.edge_split)
+        .unwrap_or(count);
     let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (index, node) in nodes.iter().enumerate() {
-        if node.control.fall_through && index + 1 < count {
+        if node.control.fall_through && index + 1 < body_end {
             predecessors[index + 1].push(index);
         }
         if let Some(Target::Node(target)) = node.control.target {
@@ -1413,7 +1420,7 @@ fn solve(
         }
         r#in[index] = incoming;
         out[index] = produced;
-        if nodes[index].control.fall_through && index + 1 < count {
+        if nodes[index].control.fall_through && index + 1 < body_end {
             worklist.push(index + 1);
         }
         if let Some(Target::Node(target)) = nodes[index].control.target {
@@ -1448,7 +1455,9 @@ fn solve(
         // Falling off the end of the body is a return too — that is where
         // lowering's implicit `rts` goes.
         let leaves = node.control.returns
-            || (node.control.fall_through && index + 1 == count && node.control.target.is_none());
+            || (node.control.fall_through
+                && index + 1 == body_end
+                && node.control.target.is_none());
         if leaves {
             analysis.returns.push(ReturnSite {
                 state: out[index].mode,

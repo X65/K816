@@ -311,6 +311,38 @@ calls_wide:
     }
 }
 
+/// A call K816 bridges where the original did not is a note: the converted
+/// program sets the callee's width first, a `sep`/`rep` the ca65 build does
+/// not have, which is where the source called a routine at a width its own
+/// header does not state.
+#[test]
+fn a_call_that_will_be_bridged_is_noted() {
+    let source = "\
+.p816
+.code
+.a16
+wide:
+        lda #$1234
+        rts
+.a8
+narrow_caller:
+        lda #1
+        jsr wide
+        rts
+.a16
+wide_caller:
+        lda #1
+        jsr wide
+        rts
+";
+    let (_, notes) = one("convert-bridge", source);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains("`wide`") && notes[0].contains("`@a16` where the original is at `@a8`"),
+        "{notes:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The command
 // ---------------------------------------------------------------------------

@@ -2009,6 +2009,7 @@ impl Writer<'_> {
                 return vec![format!("// k816 convert: {why}: {}", line.text.trim())];
             }
         };
+        self.note_bridge(mnemonic, &shape, widths, line);
         let mut lines = Vec::new();
         if shape_has_here(&shape) {
             let label = unique(".here", &mut self.locals.values().cloned().collect());
@@ -2025,6 +2026,62 @@ impl Writer<'_> {
             }
         }
         lines
+    }
+
+    /// A call that K816 bridges where the original did not: the callee's
+    /// header states a width the call site does not have, so the converted
+    /// program sets it before the call — a `sep`/`rep` the ca65 build lacks,
+    /// and a place the source disagreed with itself.
+    fn note_bridge(&mut self, mnemonic: &str, shape: &Operand, widths: Widths, line: &Line) {
+        let Operand::Direct {
+            prefix: None,
+            expr,
+            index: None,
+        } = shape
+        else {
+            return;
+        };
+        if !matches!(mnemonic, "jsr" | "jsl") {
+            return;
+        }
+        let Some(name) = expr.name() else {
+            return;
+        };
+        if !self.is_section(name) {
+            return;
+        }
+        let callee = callee_header(self.program, self.unit, name, &mut Callees::default());
+        let mut differ = Vec::new();
+        for (axis, wanted, have, stated) in [
+            ("a", callee.a, widths.a, widths.a_stated),
+            ("i", callee.i, widths.i, widths.i_stated),
+        ] {
+            let Some(wanted) = wanted else {
+                continue;
+            };
+            if !stated {
+                differ.push(format!(
+                    "`@{axis}{}` where the original states none",
+                    wanted.bits()
+                ));
+            } else if have != wanted {
+                differ.push(format!(
+                    "`@{axis}{}` where the original is at `@{axis}{}`",
+                    wanted.bits(),
+                    have.bits()
+                ));
+            }
+        }
+        if !differ.is_empty() {
+            self.note(
+                line,
+                format!(
+                    "the call to `{name}` is bridged to {}, so the converted program sets the \
+                     width before it and the original does not",
+                    differ.join(" and ")
+                ),
+            );
+        }
     }
 
     fn render_instruction(

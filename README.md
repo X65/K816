@@ -395,6 +395,27 @@ what the author is looking at. Opening a file the server had already read
 keeps the identity it had, so nothing that pointed into it moves. There is
 still no project file, and there is nothing for one to say.
 
+## Converting from ca65
+
+A ca65 program is carried over one file at a time: `cl65` compiles `.asm`
+and `.k816` alike and ld65 links the objects, so the program links at every
+step. [doc/ca65-to-k816.md](doc/ca65-to-k816.md) is the idiom table — what
+K816 writes where ca65 writes each thing, every pair assembled to the same
+bytes by a test — and the loop a file goes through. Three tools go with it:
+
+- `k816 bind` writes the `extern` declarations a unit needs for the symbols
+  ca65 modules still provide, from the debug file of the previous build, and
+  `--layouts` writes every `.struct` as a field layout.
+- `tools/ca65-widths.py` reports the register widths a ca65 source assembled
+  each label with, as the K816 annotation, and every call whose widths
+  disagree with its target's.
+- `tools/k816-compare.py` lists which symbols' bytes changed between two
+  builds, both sides disassembled with the width flags tracked.
+
+The compiler names each ca65 idiom it meets in a K816 file — a `;` comment,
+a `.byte`, `RIA::op`, `#<addr`, `@loop` — with its own code (`K816-CA65-`)
+and the K816 spelling, in the editor as in the build.
+
 ## License
 
 K816 is licensed under the 0BSD License. See [LICENSE](LICENSE) for details.

@@ -76,6 +76,11 @@ pub fn visit_names(file: &AstFile, visit: &mut impl FnMut(&Name, NameRole)) {
     }
 }
 
+/// Visits every [`Name`] in one body, with the role of the slot it sits in.
+pub fn visit_block(block: &Block, visit: &mut impl FnMut(&Name, NameRole)) {
+    block_names(block, visit);
+}
+
 fn item_names(item: &Item, visit: &mut impl FnMut(&Name, NameRole)) {
     match &item.kind {
         ItemKind::Var(declaration) => var_names(declaration, visit),

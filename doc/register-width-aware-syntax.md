@@ -403,6 +403,33 @@ This label-anchored `REP`/`SEP` is treated as fixed and is not removed by dead
 mode elimination. Redundant mode switches before that fixed label bridge are
 still eliminated.
 
+### A transfer K816 cannot name
+
+`jmp (table,x)`, `goto (vec)` and a `call` through a variable land on an
+address K816 does not know. Such code arrives from a width nothing established,
+so a function holding one treats its labels as reachable from an unknown width
+— every global label, and every local label whose address the body took.
+
+A local label whose every use is a branch or a `goto` naming it keeps its
+width. An indirect transfer reaches a label only through the label's address,
+and a local label is scoped to its function, so if no immediate, data entry
+or memory operand in the body names it, no table holds it. A dispatcher, then,
+does not make the loops above it unsizeable:
+
+```k65
+var table = $0300
+
+func main @a8 @i8 {
+.again:
+    lda #1              // 8-bit: only `beq .again` arrives here
+    beq .again
+    jmp (table,x)
+}
+```
+
+With `ldx #&<.again` in the body, `.again` is reachable from the dispatch, the
+accumulator is unknown at the label, and `lda #1` is `K816-E0104`.
+
 ### Entry-point mode setup
 
 There is none. K816 generates no `REP`/`SEP` for an entry point, whatever it

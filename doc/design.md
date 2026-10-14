@@ -408,7 +408,7 @@ Effects should be derived from the instruction table, not copied into every `Op`
 
 Optimization should be conservative:
 
-* Labels are merge points, not barriers: control may *arrive* at one, which the block graph's successor relation expresses. A branch target the compiler cannot name is what makes every label in a function reachable from a state nothing established.
+* Labels are merge points, not barriers: control may *arrive* at one, which the block graph's successor relation expresses. A branch target the compiler cannot name is what makes the labels in a function reachable from a state nothing established — every global label, and every local one whose address left the branches that name it.
 * Calls and unknown operations clobber conservatively. A call returns — `JSR` is not a leaf of the graph — while remaining a dataflow barrier: the callee may read any register and any flag, including ones no contract names.
 * Memory-mapped I/O writes are always visible.
 * Stack operations are visible.

@@ -565,10 +565,45 @@ pub fn analyze_function(
         diagnostics: Vec::new(),
         needs: WidthNeeds::default(),
         callees: Vec::new(),
+        target_uses: HashMap::new(),
     };
     flattener.block(body);
-    let graph = flattener.finish();
+    let mut graph = flattener.finish();
+    graph.confined = confined_labels(body, symbols, function, &graph.target_uses);
     solve(graph, entry, callees)
+}
+
+/// The local labels a transfer K816 cannot name still cannot reach: those
+/// whose every use is as the named target of a branch or a jump.
+///
+/// An indirect jump lands on an address, so it can reach a label only if
+/// the label's address went somewhere — an immediate, a data entry, a
+/// memory operand. A local label is scoped to its section, so every use of
+/// it is in this body, and [`crate::names`] walks every name a body holds:
+/// a label used more often than this body's transfers named it has had its
+/// address taken, and stays reachable from an unknown width.
+fn confined_labels(
+    body: &Block,
+    symbols: &SymbolTable,
+    function: Option<SymbolId>,
+    target_uses: &HashMap<SymbolId, usize>,
+) -> BTreeSet<SymbolId> {
+    let Some(owner) = function else {
+        return BTreeSet::new();
+    };
+    let mut uses: HashMap<SymbolId, usize> = HashMap::new();
+    crate::names::visit_block(body, &mut |name, role| {
+        if role == crate::names::NameRole::Symbol
+            && name.text.starts_with('.')
+            && let Some(symbol) = symbols.lookup_local(owner, &name.text)
+        {
+            *uses.entry(symbol).or_default() += 1;
+        }
+    });
+    uses.into_iter()
+        .filter(|(symbol, count)| target_uses.get(symbol) == Some(count))
+        .map(|(symbol, _)| symbol)
+        .collect()
 }
 
 struct Flattener<'a> {
@@ -586,6 +621,8 @@ struct Flattener<'a> {
     diagnostics: Vec<Diagnostic>,
     needs: WidthNeeds,
     callees: Vec<SymbolId>,
+    /// How often each label was the named target of a branch or a jump.
+    target_uses: HashMap<SymbolId, usize>,
 }
 
 /// The flattened graph plus everything the solver needs beside it.
@@ -593,8 +630,13 @@ struct Graph {
     nodes: Vec<Node>,
     blocks: Vec<BlockRange>,
     /// True when some transfer in the function goes somewhere K816 cannot
-    /// name, which makes every label reachable from an unknown width.
+    /// name, which makes every label reachable from an unknown width — but
+    /// one in `confined`.
     opaque_transfer: bool,
+    /// How often each label was the named target of a branch or a jump.
+    target_uses: HashMap<SymbolId, usize>,
+    /// Local labels no unnamed transfer can reach ([`confined_labels`]).
+    confined: BTreeSet<SymbolId>,
     diagnostics: Vec<Diagnostic>,
     needs: WidthNeeds,
     callees: Vec<SymbolId>,
@@ -653,6 +695,8 @@ impl Flattener<'_> {
             nodes: self.nodes,
             blocks: self.blocks,
             opaque_transfer,
+            target_uses: self.target_uses,
+            confined: BTreeSet::new(),
             diagnostics: self.diagnostics,
             needs: self.needs,
             callees: self.callees,
@@ -836,6 +880,7 @@ impl Flattener<'_> {
             }
             StatementKind::Goto(goto) => {
                 let target = self.goto_target(goto);
+                self.count_target(target);
                 self.push(
                     id,
                     span,
@@ -1121,6 +1166,7 @@ impl Flattener<'_> {
             }
             ControlEffect::Branch | ControlEffect::Jump => {
                 let target = symbol.map_or(Target::Unknown, |symbol| self.named_target(symbol));
+                self.count_target(target);
                 self.push(
                     id,
                     span,
@@ -1250,6 +1296,13 @@ impl Flattener<'_> {
         }
     }
 
+    /// Counts a transfer naming a label, for [`confined_labels`].
+    fn count_target(&mut self, target: Target) {
+        if let Target::Label(symbol) = target {
+            *self.target_uses.entry(symbol).or_default() += 1;
+        }
+    }
+
     fn pending_break(&mut self, node: usize) {
         let depth = self.loops.len();
         self.break_fixups.push((node, depth));
@@ -1324,10 +1377,18 @@ fn solve(
     // Every label is reachable from an unknown width when the function
     // contains a transfer K816 cannot name, and a *global* label is reachable
     // from outside the function by definition. Conservative and loud beats
-    // plausible and silent.
+    // plausible and silent — except for a local label whose address never
+    // left the branches that name it, which no unnamed transfer can reach.
     let opaque_labels: Vec<bool> = nodes
         .iter()
-        .map(|node| node.label.is_some() && (graph.opaque_transfer || node.label_is_global))
+        .map(|node| {
+            node.label.is_some()
+                && (node.label_is_global
+                    || graph.opaque_transfer
+                        && node
+                            .label
+                            .is_none_or(|label| !graph.confined.contains(&label)))
+        })
         .collect();
 
     let mut worklist: Vec<usize> = (0..count).rev().collect();

@@ -259,6 +259,61 @@ func main @a8 {
     );
 }
 
+/// A transfer K816 cannot name lands on an address, so it reaches a label
+/// only if the label's address went somewhere. `jmp (table,x)` is the shape
+/// a ca65 dispatcher has, and a loop above it whose label only its own
+/// branch names is not a place the dispatch can arrive: the loop keeps the
+/// width its one named arrival brings.
+#[test]
+fn an_unnamed_transfer_cannot_reach_a_label_only_branches_name() {
+    let source = "\
+var table = $0300
+
+func main @a8 @i8 {
+.again:
+    lda #1
+    beq .again
+    jmp (table,x)
+}
+";
+    let (_, _, diagnostics) = analyze(source);
+    assert_eq!(error_codes(&diagnostics), Vec::<&str>::new());
+    assert_eq!(
+        before(source, "main", 1),
+        (known(RegisterWidth::W8), known(RegisterWidth::W8))
+    );
+}
+
+/// The same loop with its label's address taken: the address can reach the
+/// table, the dispatch can land on the label from any width, and the
+/// immediate after it is unsizeable again. A global label is reachable from
+/// outside the function whatever this body does with it, so only a local one
+/// earns the refinement.
+#[test]
+fn an_unnamed_transfer_reaches_a_label_whose_address_was_taken() {
+    let source = "\
+var table = $0300
+
+func main @a8 @i8 {
+.again:
+    lda #1
+    beq .again
+    ldx #&<.again
+    jmp (table,x)
+}
+";
+    let (_, _, diagnostics) = analyze(source);
+    assert_eq!(error_codes(&diagnostics), vec!["K816-E0104"]);
+    assert_eq!(
+        before(source, "main", 1),
+        (AxisState::Unknown, AxisState::Unknown)
+    );
+
+    let global = source.replace(".again", "again");
+    let (_, _, diagnostics) = analyze(&global.replace("    ldx #&<again\n", ""));
+    assert_eq!(error_codes(&diagnostics), vec!["K816-E0104"]);
+}
+
 // ---------------------------------------------------------------------------
 // Entry state
 // ---------------------------------------------------------------------------

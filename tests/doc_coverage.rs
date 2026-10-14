@@ -364,6 +364,46 @@ func main @a8 @i8 {
         entry: None,
     },
     Row {
+        section: "A transfer K816 cannot name",
+        // The listing's own program: the loop above the dispatch keeps the
+        // width its one named arrival brings.
+        source: "\
+var table = $0300
+
+func main @a8 @i8 {
+.again:
+    lda #1
+    beq .again
+    jmp (table,x)
+}
+",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &["lda     #$01", "beq     @again"],
+        diagnostic: None,
+        entry: None,
+    },
+    Row {
+        section: "A transfer K816 cannot name",
+        // And the sentence after it: the label's address taken.
+        source: "\
+var table = $0300
+
+func main @a8 @i8 {
+.again:
+    lda #1
+    beq .again
+    ldx #&<.again
+    jmp (table,x)
+}
+",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0104"),
+        entry: None,
+    },
+    Row {
         section: "Entry-point mode setup",
         // There is none, and the section says so: a module default that
         // reaches `main` is checked against the ABI like any annotation.

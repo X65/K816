@@ -4352,3 +4352,38 @@ fn a_stack_offset_links_as_the_number_it_names() {
         "lda $12,S / lda ($04,S),Y / rts: {bytes:02X?}"
     );
 }
+
+/// An `inline`'s place alias is a native operand like any variable, and a
+/// value alias in that position is told where its `#` went.
+///
+/// `sta where` on a `(a, #where)` parameter used to trip the section-name
+/// check's own assertion — a value alias is not a section and the check was
+/// written for one — which `doc/ca65-to-k816.md`'s macro pair found. The
+/// place form is what the guide shows, and it links to the same bytes as
+/// the ca65 macro it replaces.
+#[test]
+fn a_native_operand_may_name_an_inline_place_alias_but_not_a_value_alias() {
+    let place = "var out = $0200\ninline store @a8 (a, where) -> a {\n    sta where\n}\nfunc start @a8 @i8 {\n    lda #$42\n    store a, #out -> a\n}\n";
+    let mut map = SourceMap::new();
+    let file = map.add_file("place.k816", place);
+    let result = compile_to_ca65(&map, file, &Options::default());
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let assembly = result.assembly.expect("compiles");
+    assert!(assembly.contains("sta     a:out"), "{assembly}");
+
+    let value = place.replace("(a, where)", "(a, #where)");
+    let mut map = SourceMap::new();
+    let file = map.add_file("value.k816", value);
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let kinds: Vec<&str> = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(kinds, ["K816-E0115"], "{:?}", result.diagnostics);
+    let found = &result.diagnostics[0];
+    assert!(found.title.contains("`#where`"), "{}", found.title);
+    assert!(
+        found
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("without `#`")),
+        "{found:?}"
+    );
+}

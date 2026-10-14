@@ -3306,6 +3306,27 @@ impl Analysis {
             if matches!(symbol.kind, SymbolKind::Const { .. }) {
                 continue;
             }
+            // A `#name` alias stands for a value, and a native operand that
+            // stores to it or loads from it asked for a place: the fix is
+            // at the declaration, where the `#` was written.
+            if let SymbolKind::Alias { immediate: true } = symbol.kind {
+                let name = symbol.name.clone();
+                let declaration = symbol.declaration;
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SYMBOL_KIND_MISMATCH,
+                        format!("`{name}` is declared as a value (`#{name}`), not a place"),
+                        Label::new(site, "used as a memory operand"),
+                    )
+                    .with_secondary(Label::new(declaration, "declared here, with `#`"))
+                    .with_help(format!(
+                        "declare the parameter as `{name}` without `#` to stand for a \
+                         variable or address, or use `#{name}` here to read its value"
+                    ))
+                    .with_docs("doc/syntax-reference.md#how-an-alias-is-bound"),
+                );
+                continue;
+            }
             let name = symbol.name.clone();
             let declaration = symbol.declaration;
             // The kind it *is*, rather than the kind this check was written

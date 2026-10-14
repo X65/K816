@@ -1,0 +1,4 @@
+// The unit `kk-native.kk` imports. An `import` names a file, not a language,
+// so a `.kk` source reaches a `.k816` one the way it reaches any other.
+
+var dp total = $80

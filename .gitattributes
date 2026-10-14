@@ -1,0 +1,3 @@
+# GitHub Linguist reads `.kk` as Koka. A `.kk` here is a K816 source, which
+# Linguist has no entry for; Assembly is the nearest it has.
+*.kk linguist-language=Assembly

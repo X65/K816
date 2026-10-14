@@ -998,9 +998,9 @@ fn the_census_is_published_in_one_place() {
                     stack.push(entry);
                     continue;
                 }
-                let readable = entry
-                    .extension()
-                    .is_some_and(|ext| ext == "rs" || ext == "md" || ext == "k816" || ext == "k65");
+                let readable = entry.extension().is_some_and(|ext| {
+                    matches!(ext.to_str(), Some("rs" | "md" | "k816" | "k65" | "kk"))
+                });
                 if !readable {
                     continue;
                 }

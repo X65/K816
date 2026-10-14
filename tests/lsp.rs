@@ -1506,7 +1506,7 @@ fn names_inside_a_borrowed_inline_body_point_at_the_defining_unit() {
         let path = entry.expect("a fixture entry").path();
         if path
             .extension()
-            .is_none_or(|ext| ext != "k65" && ext != "k816")
+            .is_none_or(|ext| ext != "k65" && ext != "k816" && ext != "kk")
         {
             continue;
         }
@@ -2119,7 +2119,7 @@ fn the_editor_and_the_build_report_the_same_diagnostics() {
         .map(|entry| entry.path())
         .filter(|path| {
             path.extension()
-                .is_some_and(|extension| extension == "k816" || extension == "k65")
+                .is_some_and(|extension| matches!(extension.to_str(), Some("k816" | "k65" | "kk")))
         })
         .collect();
     entries.sort();

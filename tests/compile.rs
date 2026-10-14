@@ -3088,8 +3088,9 @@ fn no_golden_fixtures_optimized_output_changes_without_a_stated_reason() {
         .expect("read tests/golden")
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().to_string_lossy().into_owned();
-            (name.ends_with(".k816") && !SKIPPED.iter().any(|(skip, _)| *skip == name))
-                .then_some(name)
+            ((name.ends_with(".k816") || name.ends_with(".kk"))
+                && !SKIPPED.iter().any(|(skip, _)| *skip == name))
+            .then_some(name)
         })
         .collect();
     names.sort();

@@ -623,7 +623,9 @@ fn every_self_contained_fixture() -> Vec<String> {
         .expect("read tests/golden")
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".k816") || SKIPPED.iter().any(|(skip, _)| *skip == name) {
+            if !(name.ends_with(".k816") || name.ends_with(".kk"))
+                || SKIPPED.iter().any(|(skip, _)| *skip == name)
+            {
                 return None;
             }
             Some(name)

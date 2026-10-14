@@ -218,7 +218,7 @@ fn k816_files(database: &Database) -> BTreeMap<u64, String> {
         .iter()
         .filter_map(|record| {
             let name = record.get("name")?;
-            (name.ends_with(".k816") || name.ends_with(".k65"))
+            (name.ends_with(".k816") || name.ends_with(".k65") || name.ends_with(".kk"))
                 .then(|| Some((number(record, "id")?, name.clone())))?
         })
         .collect()
@@ -236,9 +236,9 @@ fn k816_modules(database: &Database) -> BTreeSet<u64> {
         .of("file")
         .iter()
         .filter(|record| {
-            record
-                .get("name")
-                .is_some_and(|name| name.ends_with(".k816") || name.ends_with(".k65"))
+            record.get("name").is_some_and(|name| {
+                name.ends_with(".k816") || name.ends_with(".k65") || name.ends_with(".kk")
+            })
         })
         .flat_map(|record| id_list(record, "mod"))
         .collect()

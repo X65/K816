@@ -1225,6 +1225,9 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
         ("import-main.k816", "the_import_pair_links_through_ld65"),
         ("import-lib.k816", "the_import_pair_links_through_ld65"),
         ("import-iface.k816", "the_import_pair_links_through_ld65"),
+        ("kk-k65.kk", "a_kk_source_takes_k65_and_full_k816_alike"),
+        ("kk-native.kk", "a_kk_source_takes_k65_and_full_k816_alike"),
+        ("kk-lib.k816", "a_kk_source_takes_k65_and_full_k816_alike"),
     ];
 
     /// The fixtures that cannot reach ca65, and why. Every one of them pins a
@@ -1251,7 +1254,7 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
         .expect("read tests/golden")
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().to_string_lossy().into_owned();
-            name.ends_with(".k816").then_some(name)
+            (name.ends_with(".k816") || name.ends_with(".kk")).then_some(name)
         })
         .collect();
     fixtures.sort();
@@ -1280,6 +1283,7 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
         "tests/compile.rs",
         "tests/fullstack.rs",
         "tests/emit_ca65.rs",
+        "tests/driver.rs",
     ]
     .iter()
     .map(|path| {

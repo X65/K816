@@ -448,6 +448,42 @@ fn the_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
     );
 }
 
+/// A `.kk` source takes both languages a `.k816` does.
+///
+/// `kk-k65.kk` is portable K65 and `kk-native.kk` is the same program in
+/// K816's native form, importing `kk-lib.k816` for its variable. `cl65` has
+/// to recognize the extension to build either, `--strict-k65` has to accept
+/// the first and refuse the second, and the two images have to be the same
+/// bytes - which is what "the extension is not a dialect" means here.
+#[test]
+fn a_kk_source_takes_k65_and_full_k816_alike() {
+    let golden = root().join("tests/golden");
+    let config = root().join("tests/driver.cfg");
+
+    let k65 = golden.join("kk-k65.kk");
+    let (stderr, ok) = compile_through_driver("driver-kk-strict", &k65, &["-Wk", "--strict-k65"]);
+    assert!(ok, "the K65 half is not portable K65:\n{stderr}");
+    let native = golden.join("kk-native.kk");
+    let (stderr, ok) =
+        compile_through_driver("driver-kk-strict", &native, &["-Wk", "--strict-k65"]);
+    assert!(!ok, "`--strict-k65` accepted the native half");
+    assert!(
+        stderr.contains("K816-E0160"),
+        "no extension was refused:\n{stderr}"
+    );
+
+    let directory = work_dir("driver-kk-k65");
+    let from_k65 = build_through_driver(&directory, &[k65], &config, &[]);
+    let directory = work_dir("driver-kk-native");
+    let units = vec![native, golden.join("kk-lib.k816")];
+    let from_native = build_through_driver(&directory, &units, &config, &[]);
+    assert!(!from_k65.is_empty(), "the K65 half linked to nothing");
+    assert_eq!(
+        from_native, from_k65,
+        "the two spellings of one program differ"
+    );
+}
+
 /// A `binary` entry survives the driver's intermediate landing elsewhere.
 ///
 /// K816 emits `.incbin` with the path the source wrote and checked it against

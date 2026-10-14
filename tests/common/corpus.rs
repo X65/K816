@@ -127,7 +127,7 @@ fn golden_sets() -> Vec<UnitSet> {
                 .to_string_lossy()
                 .into_owned()
         })
-        .filter(|name| name.ends_with(".k816") || name.ends_with(".k65"))
+        .filter(|name| name.ends_with(".k816") || name.ends_with(".k65") || name.ends_with(".kk"))
         .collect();
     names.sort();
 

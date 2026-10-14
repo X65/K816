@@ -1037,7 +1037,7 @@ fn fixture_source(fixture: &str) -> String {
                 .filter(|path| {
                     matches!(
                         path.extension().and_then(|e| e.to_str()),
-                        Some("k65") | Some("k816")
+                        Some("k65") | Some("k816") | Some("kk")
                     )
                 })
                 .collect();
@@ -2011,7 +2011,7 @@ fn strict_corpus() -> Vec<(String, Vec<String>)> {
         .filter(|path| {
             matches!(
                 path.extension().and_then(|e| e.to_str()),
-                Some("k65") | Some("k816")
+                Some("k65") | Some("k816") | Some("kk")
             )
         })
         .collect();

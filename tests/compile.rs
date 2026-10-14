@@ -2413,10 +2413,16 @@ fn the_optimized_loop_fixture_drops_the_mode_change_its_own_loop_undoes() {
 ///
 /// The fixture writes every transfer and every flag operation in a row, so
 /// most of them overwrite each other: `txa` before `tya`, `tyx` before `tsx`,
-/// `txs` before `tcs`, `clc` before `sec`, `cld` before `sed`, `cli` before
-/// `sei`. The `sep #$20` goes because the `rep #$20` on the next line
-/// establishes M without reading it — which is only visible once `SEP`/`REP`
-/// stop claiming to read every P flag.
+/// `clc` before `sec`, `cld` before `sed`. The `sep #$20` goes because the
+/// `rep #$20` on the next line establishes M without reading it — which is
+/// only visible once `SEP`/`REP` stop claiming to read every P flag.
+///
+/// `cli` before `sei` and `txs` before `tcs` **stay**, and this test used to
+/// assert that they went. `cli; sei` is the interrupt window — it lets a
+/// pending IRQ in between two instructions of a masked section — and an NMI
+/// between `txs` and `tcs` pushes at the stack pointer the `txs` set. The
+/// hardware reads `I` and `S` between instructions, which no stream liveness
+/// sees (`READ_BY_INTERRUPTS`, `src/optimize.rs`).
 ///
 /// The `lda #$01` in `stack_forms` goes because `pla` overwrites A below it.
 #[test]
@@ -2431,7 +2437,6 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
         vec![
             "clc",          // before `sec`
             "cld",          // before `sed`
-            "cli",          // before `sei`
             "lda     #$01", // before the `pla` in stack_forms
             // The implicit return after `control`'s unconditional `bra`. The
             // *user's* unreachable instructions below that branch — a `brl`,
@@ -2440,13 +2445,12 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
             "rts",
             "sep     #$20", // before the `rep #$20` on the next line
             "txa",          // before `tya`
-            "txs",          // before `tcs`
             "tyx",          // before `tsx`
         ],
         "{removed:?}"
     );
     assert_eq!(added, Vec::<String>::new());
-    assert_eq!(bytes, 2 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1);
+    assert_eq!(bytes, 1 + 1 + 2 + 1 + 2 + 1 + 1);
 }
 
 /// The mode fixture, at the bytes: two changes, and nothing else.
@@ -2879,12 +2883,11 @@ const FIXTURE_EFFECTS: &[Effect] = &[
             ("cpx     #$01", 2),
             ("sec", 2),
             ("sed", 2),
-            ("sei", 2),
             ("sep     #$10", 2),
             ("sep     #$20", 2),
         ],
         &[("sep     #$30", 2)],
-        "a flag set overwritten by the clear on the next line, twice over; two compares whose N, Z, and C the next compare rewrites; and the block restore folded. Every count is even: the shorthand half and the native half beside it are treated identically",
+        "a flag set overwritten by the clear on the next line, twice over — but not `sei` before `cli`, which the hardware reads between the two (`READ_BY_INTERRUPTS`); two compares whose N, Z, and C the next compare rewrites; and the block restore folded. Every count is even: the shorthand half and the native half beside it are treated identically",
     ),
     (
         "hla-chains.k816",
@@ -2903,16 +2906,14 @@ const FIXTURE_EFFECTS: &[Effect] = &[
         &[
             ("clc", 1),
             ("cld", 1),
-            ("cli", 1),
             ("lda     #$01", 1),
             ("rts", 1),
             ("sep     #$20", 1),
             ("txa", 1),
-            ("txs", 1),
             ("tyx", 1),
         ],
         &[],
-        "seven writes the next line overwrites, one redundant `sep`, and the implicit return after an unconditional `bra`",
+        "five writes the next line overwrites — not `cli` before `sei` nor `txs` before `tcs`, which the hardware reads between the two (`READ_BY_INTERRUPTS`) — one redundant `sep`, and the implicit return after an unconditional `bra`",
     ),
     (
         "native-reloc.k816",

@@ -1030,6 +1030,24 @@ fn liveness(
     live_after
 }
 
+/// The state the hardware reads between any two instructions.
+///
+/// No instruction in the stream reads these, so a liveness over the stream
+/// calls a write to them dead the moment a later instruction overwrites it or
+/// control reaches a place nothing follows — and that is wrong. An interrupt
+/// is accepted only while `I` is clear, so `cli` before an idle loop is the
+/// whole point of the loop; every interrupt, NMI included, pushes to memory
+/// at `S`, so the `txs` that publishes a new stack pointer is live until the
+/// `tcs` that replaces it; and `E` decides which vector an interrupt takes
+/// and what frame it pushes. `doc/design.md` §8 says stack operations are
+/// visible. This is what makes it true of the pass that subtracts writes.
+///
+/// Found by building a 65816 kernel: the optimizer deleted the `cli` at the
+/// end of its start-up, which would have left the scheduler's interrupt off
+/// for ever, and the `tyx`/`txs` pair of its system-call return, which moves
+/// the stack pointer over the frame it had just shifted.
+const READ_BY_INTERRUPTS: CpuState = CpuState::new(RegisterSet::S, FlagSet::I.union(FlagSet::E));
+
 /// True when the operation at `index` writes nothing anything reads, and has
 /// nothing else to leave behind.
 fn is_dead(
@@ -1054,7 +1072,9 @@ fn is_dead(
     if transfers[index].opaque || !effects.is_removal_candidate() || effects.writes.is_empty() {
         return false;
     }
-    !effects.writes.intersects(live_after[index])
+    !effects
+        .writes
+        .intersects(live_after[index].union(READ_BY_INTERRUPTS))
 }
 
 /// The state live before one operation, given what is live after it.

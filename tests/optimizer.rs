@@ -1307,3 +1307,55 @@ fn a_mask_that_writes_n_and_z_clears_the_flag_provenance() {
         ]
     );
 }
+
+/// A write the hardware reads between instructions is never dead.
+///
+/// No instruction in the stream reads `I`, `S` or `E`, so a liveness over the
+/// stream alone calls `cli` before an idle loop dead — nothing follows — and
+/// `txs` dead once a later `tcs` overwrites it. Both are wrong: an interrupt
+/// is accepted only while `I` is clear, every interrupt, NMI included, pushes
+/// at `S`, and `E` picks the vector and the frame. The optimizer deleted all
+/// three in a kernel's start-up and system-call return before this rule.
+#[test]
+fn a_write_the_hardware_reads_between_instructions_is_never_dead() {
+    let text = "\
+func start @a16 @i16 {
+    cli
+    {} always
+}
+naked trap_exit {
+    @a16 @i16
+    tyx
+    txs
+    ldx #$10
+    lda #$20
+    tcs
+    rti
+}
+func flip @a8 @i8 {
+    sec
+    xce
+    clc
+    xce
+    {} always
+}
+";
+    let (_, file, model, mut program) = lowered(text);
+    let log = run(&mut program, &model, file);
+    assert!(
+        mnemonics(&program, &model, "start").contains(&Mnemonic::Cli),
+        "`cli` before an idle loop was removed: {log:?}"
+    );
+    let exit = mnemonics(&program, &model, "trap_exit");
+    for kept in [Mnemonic::Tyx, Mnemonic::Txs, Mnemonic::Tcs] {
+        assert!(exit.contains(&kept), "{kept:?} was removed: {exit:?}");
+    }
+    assert_eq!(
+        mnemonics(&program, &model, "flip")
+            .iter()
+            .filter(|mnemonic| **mnemonic == Mnemonic::Xce)
+            .count(),
+        2,
+        "an `xce` was removed"
+    );
+}

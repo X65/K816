@@ -57,7 +57,8 @@ fn tool_path(name: &str) -> PathBuf {
 /// imports), returning stdout and the exit code.
 fn run_tool(python: &Path, name: &str, args: &[&str]) -> (String, i32) {
     let output = Command::new(python)
-        .arg("-I")
+        // Isolated, and without a bytecode cache beside the tool.
+        .args(["-I", "-B"])
         .arg(tool_path(name))
         .args(args)
         .output()
@@ -293,7 +294,7 @@ start:
         dbg = dbg.to_str().unwrap(),
     );
     let output = Command::new(&python)
-        .arg("-I")
+        .args(["-I", "-B"])
         .arg("-c")
         .arg(&snippet)
         .output()
@@ -448,4 +449,99 @@ emu:
     );
     assert_eq!(code, 0, "{report}");
     assert!(report.contains("Every call site agrees"), "{report}");
+}
+
+/// `--symbolic` compares meaning across builds whose layouts differ.
+///
+/// The same routines linked at other addresses — every absolute operand and
+/// every pointer in a table moved — compare equal, and a routine whose
+/// immediate is now assembled at another width does not, even though its
+/// instructions read alike. That second case is the defect a hand rewrite
+/// makes most: the width moved from a routine's body to its header, and a
+/// caller that does not bridge runs it at the old one.
+#[test]
+fn the_symbolic_comparison_sees_through_layout_and_not_through_width() {
+    let Some(python) = python() else {
+        eprintln!("python3 not found: the tools are not exercised on this machine");
+        return;
+    };
+    let program = |pad: usize, width: &str| {
+        format!(
+            "\
+.setcpu \"65816\"
+.export start
+.rodata
+.res {pad}
+table:  .addr start, check
+.code
+.res {pad}
+start:
+    rep #$30
+    .a16
+    .i16
+    lda table
+    jsr check
+    rts
+check:
+    {width}
+    cmp #$10
+    rts
+"
+        )
+    };
+    let base = build(
+        &work_dir("tools-symbolic-a"),
+        &[("p.asm", &program(0, "sep #$20\n    .a8"))],
+    );
+    let moved = build(
+        &work_dir("tools-symbolic-b"),
+        &[("p.asm", &program(37, "sep #$20\n    .a8"))],
+    );
+    let widened = build(
+        &work_dir("tools-symbolic-c"),
+        &[("p.asm", &program(37, "nop\n    nop"))],
+    );
+
+    let (report, code) = run_tool(
+        &python,
+        "k816-compare.py",
+        &[
+            "--symbolic",
+            base.to_str().unwrap(),
+            moved.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        code, 0,
+        "a moved layout is not a change in meaning:\n{report}"
+    );
+    assert!(report.contains("0 differ in meaning"), "{report}");
+
+    let (report, code) = run_tool(
+        &python,
+        "k816-compare.py",
+        &[
+            "--symbolic",
+            base.to_str().unwrap(),
+            widened.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 1, "{report}");
+    let check = report
+        .lines()
+        .skip_while(|line| !line.starts_with("check"))
+        .take(8)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(check.contains("DIFFERS"), "{report}");
+    assert!(
+        check.contains("CMP #$10  @a8") && check.contains("CMP #$10  @a16"),
+        "the width is not part of the comparison:\n{check}"
+    );
+    // `start` and `table` only moved.
+    assert!(!report.contains("start    "), "{report}");
+    assert!(
+        !report.lines().any(|line| line.starts_with("table")),
+        "{report}"
+    );
 }

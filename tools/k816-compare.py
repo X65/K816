@@ -85,6 +85,9 @@ class Database:
         self.segments = {}  # id -> dict
         self.symbols = []  # dicts with type=lab
         self.typed = set()  # (segment id, offset) of every span ca65 typed: data
+        self.boundaries = {}  # segment id -> set of offsets a span starts or ends at
+        self.all_symbols = []  # every sym record
+        self.scopes = {}  # id -> dict
         with open(path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 if "\t" not in line:
@@ -97,10 +100,20 @@ class Database:
                         fields[key] = value.strip('"')
                 if kind == "seg":
                     self.segments[parse_number(fields["id"])] = fields
-                elif kind == "sym" and fields.get("type") == "lab" and "seg" in fields:
-                    self.symbols.append(fields)
-                elif kind == "span" and "type" in fields:
-                    self.typed.add((parse_number(fields["seg"]), parse_number(fields["start"])))
+                elif kind == "sym":
+                    self.all_symbols.append(fields)
+                    if fields.get("type") == "lab" and "seg" in fields:
+                        self.symbols.append(fields)
+                elif kind == "scope":
+                    self.scopes[parse_number(fields["id"])] = fields
+                elif kind == "span":
+                    sid = parse_number(fields["seg"])
+                    start = parse_number(fields["start"])
+                    edges = self.boundaries.setdefault(sid, set())
+                    edges.add(start)
+                    edges.add(start + parse_number(fields["size"]))
+                    if "type" in fields:
+                        self.typed.add((sid, start))
         if not self.symbols:
             raise SystemExit(
                 "%s: the debug file names no symbols: assemble with `-g` (`cl65 -g`)" % path
@@ -259,25 +272,57 @@ def format_operand(mode, operand, address, length):
     return mode.replace("dp", text).replace("abs", text).replace("long", text).replace("sr", text + ",s")
 
 
-def disassemble(data, address, widths):
-    """Yields (address, bytes, text) over ``data``, tracking ``sep``/``rep``
-    in ``widths`` (mutated)."""
+def decode(data, address, widths, ends=None, states=None, forget=()):
+    """Yields (address, raw bytes, mnemonic, mode, operand bytes) over
+    ``data``, tracking ``sep``/``rep`` in ``widths`` (mutated). A last
+    instruction cut short by the end of ``data`` comes back with mnemonic
+    ``None``. When ``states`` is a list, the (M, X) widths each instruction
+    runs at are appended to it, ``None`` where nothing has said.
+
+    ``ends``, when given, is the set of addresses at which ca65 recorded a
+    line's bytes to end. A width-dependent immediate is then sized by
+    whichever reading ends on one of them, and the tracked flags are only
+    the tie-break: ca65 knew the width it assembled with, and the line
+    table is where it left the answer."""
     offset = 0
     while offset < len(data):
+        if address + offset in forget:
+            # Something branches here, from a state this straight-line
+            # reading did not follow.
+            widths.m = widths.x = None
         opcode = data[offset]
         name, mode = TABLE[opcode]
-        if mode == "immM":
-            size = 2 if widths.m == 16 else 1
-        elif mode == "immX":
-            size = 2 if widths.x == 16 else 1
+        if mode in ("immM", "immX"):
+            tracked = (widths.m if mode == "immM" else widths.x) == 16
+            size = 2 if tracked else 1
+            if ends is not None:
+                # A reading is ca65's if it ends on a line boundary and no
+                # boundary falls inside it: `lda #0` then `asl` ends a line
+                # after two bytes *and* after three, and only the first
+                # reading keeps the second line whole.
+                at = address + offset
+                fits = [
+                    n
+                    for n in (1, 2)
+                    if at + 1 + n in ends and not any(at + k in ends for k in range(2, 1 + n))
+                ]
+                if len(fits) == 1:
+                    size = fits[0]
+                    # The line table said which width ca65 assembled this
+                    # immediate at, so the flag is known from here on.
+                    if mode == "immM":
+                        widths.m = 8 * size
+                    else:
+                        widths.x = 8 * size
         else:
             size = OPERAND_BYTES[mode]
+        if states is not None:
+            states.append((widths.m, widths.x))
         raw = data[offset : offset + 1 + size]
         if len(raw) < 1 + size:
-            yield (address + offset, raw, "; %d trailing byte(s)" % len(raw))
+            yield (address + offset, raw, None, None, b"")
             return
         operand = raw[1:]
-        text = ("%s %s" % (name, format_operand(mode, operand, address + offset, 1 + size))).rstrip()
         if name in ("SEP", "REP") and operand:
             mask = operand[0]
             width = 8 if name == "SEP" else 16
@@ -285,8 +330,17 @@ def disassemble(data, address, widths):
                 widths.m = width
             if mask & 0x10:
                 widths.x = width
-        yield (address + offset, raw, text)
+        yield (address + offset, raw, name, mode, operand)
         offset += 1 + size
+
+
+def disassemble(data, address, widths, ends=None):
+    """Yields (address, bytes, text) over ``data``; see :func:`decode`."""
+    for at, raw, name, mode, operand in decode(data, address, widths, ends):
+        if name is None:
+            yield (at, raw, "; %d trailing byte(s)" % len(raw))
+            return
+        yield (at, raw, ("%s %s" % (name, format_operand(mode, operand, at, len(raw)))).rstrip())
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +362,414 @@ def listing(data, address, widths, is_data):
     return rows
 
 
+# ---------------------------------------------------------------------------
+# The symbolic comparison: two builds whose layouts differ
+# ---------------------------------------------------------------------------
+#
+# When a program is rewritten rather than edited, every segment moves and a
+# byte comparison says only that everything changed. What is still
+# comparable is meaning: the same routine, the same instructions, operands
+# that name the same thing. An operand names the same thing on both sides
+# when it is the same fixed number, or the same shared symbol plus the same
+# offset; a branch inside a routine names the same thing when it lands on
+# instructions the alignment paired. That is what this mode checks.
+
+BRANCH_MODES = ("rel", "rell")
+
+
+class Side:
+    """One build, read for meaning rather than for bytes."""
+
+    def __init__(self, db, image):
+        self.db = db
+        self.bytes = db.image_bytes(image)
+        self.segs = {}
+        for sid, seg in db.segments.items():
+            self.segs[sid] = (seg["name"], parse_number(seg["start"]), parse_number(seg["size"]), seg.get("type"))
+        self.ends = set()
+        for sid, offsets in db.boundaries.items():
+            if sid in self.segs:
+                base = self.segs[sid][1]
+                self.ends.update(base + offset for offset in offsets)
+        struct_scopes = {sid for sid, scope in db.scopes.items() if scope.get("type") == "struct"}
+        self.labels = {}  # name -> (address, segment id)
+        self.equates = {}  # name -> set of values
+        for sym in db.all_symbols:
+            name = sym["name"]
+            if name.startswith("@") or "val" not in sym:
+                continue
+            value = parse_number(sym["val"])
+            if sym.get("type") == "lab" and "seg" in sym:
+                self.labels.setdefault(name, (value, parse_number(sym["seg"])))
+            elif sym.get("type") == "equ" and parse_number(sym.get("scope", "0")) not in struct_scopes:
+                self.equates.setdefault(name, set()).add(value)
+
+    def named(self, common):
+        """Two sorted lists of (address, name) over the shared names, labels
+        and equates apart: the vocabulary an operand is spelled in. Kept
+        apart because a label is what an address *is*, and an equate below
+        a number is often a coincidence a reader should not be shown."""
+        labels = sorted((address, name) for name, (address, _) in self.labels.items() if name in common)
+        equates = sorted(
+            (next(iter(values)), name)
+            for name, values in self.equates.items()
+            if name in common and len(values) == 1
+        )
+        return (labels, equates)
+
+    def extents(self, shared, data_names=()):
+        """name -> (segment id, start, end): a label's bytes run to the next
+        label of its segment that both builds have, or that is data here.
+
+        Bounded by shared labels because a label only one side has — a
+        branch target the original named globally, a cheap local the
+        rewrite made of it — would otherwise cut one side's routine in two
+        and leave the other whole."""
+        by_segment = {}
+        for name, (address, sid) in self.labels.items():
+            if name in shared or self.is_data(name) or name in data_names:
+                by_segment.setdefault(sid, []).append((address, name))
+        out = {}
+        for sid, labels in by_segment.items():
+            _, start, size, _ = self.segs[sid]
+            labels.sort()
+            for index, (address, name) in enumerate(labels):
+                end = start + size
+                for later, _ in labels[index + 1 :]:
+                    if later > address:
+                        end = later
+                        break
+                out[name] = (sid, address, end)
+        return out
+
+    def is_data(self, name):
+        address, sid = self.labels[name]
+        _, start, _, kind = self.segs[sid]
+        return kind != "ro" or (sid, address - start) in self.db.typed
+
+    def data(self, sid, start, end):
+        _, base, _, _ = self.segs[sid]
+        return self.bytes.get(sid, b"")[start - base : end - base]
+
+
+def spell(named, value):
+    """The spellings a number has on one side: itself, and the nearest
+    shared label and the nearest shared equate at or below it, each plus
+    the offset. Two operands mean the same thing when any spelling is
+    common to both."""
+    return set(spellings(named, value))
+
+
+def spellings(named, value):
+    """``spell``'s set as a list in display order: the label spelling, the
+    number, the equate spelling."""
+    import bisect
+
+    out = []
+    labels, equates = named
+    for table in (labels, None, equates):
+        if table is None:
+            out.append("$%X" % value)
+            continue
+        index = bisect.bisect_right(table, (value, "\uffff")) - 1
+        if index >= 0:
+            address, name = table[index]
+            if value - address < 0x1000:
+                out.append("%s+%d" % (name, value - address) if value != address else name)
+    return out
+
+
+# The instructions whose effect the M flag decides, and those the X flag
+# decides. Their encoding is the same at either width; what they move is not.
+M_SENSITIVE = set("LDA STA ADC SBC AND ORA EOR CMP BIT INC DEC ASL LSR ROL ROR STZ TSB TRB PHA PLA TXA TYA".split())
+X_SENSITIVE = set("LDX LDY STX STY CPX CPY INX INY DEX DEY PHX PHY PLX PLY TAX TAY TSX TXY TYX".split())
+
+
+class Instruction:
+    def __init__(self, at, raw, name, mode, operand, named, start, end, state=(None, None)):
+        self.at = at
+        self.raw = raw
+        self.name = name
+        self.mode = mode
+        self.target = None
+        self.m, self.x = state
+        value = int.from_bytes(operand, "little") if operand else None
+        if mode in BRANCH_MODES:
+            span = 0x100 if mode == "rel" else 0x10000
+            delta = value - span if value >= span // 2 else value
+            target = (at + len(raw) + delta) & 0xFFFF
+            if start <= target < end:
+                self.target = target
+                order = ["local"]
+            else:
+                order = spellings(named, target)
+        elif mode is None or value is None:
+            order = []
+        elif mode == "move" or mode == "imm8" or len(operand) == 1 and mode.startswith("imm"):
+            order = ["$%X" % value]
+        elif mode.startswith("imm"):
+            # A 16-bit immediate is a number first; it is an address only
+            # when a label is exactly there.
+            order = spellings(named, value)
+            order.sort(key=lambda text: 0 if text in named_exactly(named, value) else 1 if text.startswith("$") else 2)
+        else:
+            order = spellings(named, value)
+            if mode.endswith((",x", ",y")) and value < 0x100:
+                # A small indexed operand is an offset from a base held in
+                # the register far more often than it is a zero-page name.
+                order.sort(key=lambda text: 0 if text.startswith("$") else 1)
+        self.spellings = set(order)
+        self.text = ("%s %s" % (name or "?", self.render(mode, order[0] if order else ""))).rstrip()
+        width = self.width()
+        if width:
+            self.text += "  @%s%d" % width
+
+    TEMPLATES = {
+        "dp": "{}", "dp,x": "{},x", "dp,y": "{},y", "(dp,x)": "({},x)", "(dp)": "({})",
+        "(dp),y": "({}),y", "[dp]": "[{}]", "[dp],y": "[{}],y", "sr": "{},s", "(sr),y": "({},s),y",
+        "abs": "{}", "abs,x": "{},x", "abs,y": "{},y", "(abs)": "({})", "(abs,x)": "({},x)",
+        "[abs]": "[{}]", "long": "f:{}", "long,x": "f:{},x",
+    }
+
+    @staticmethod
+    def render(mode, operand):
+        if mode in (None, "imp", "acc"):
+            return ""
+        if mode in ("imm8", "immM", "immX"):
+            return "#" + operand
+        if mode in BRANCH_MODES or mode == "move":
+            return operand
+        return Instruction.TEMPLATES[mode].format(operand)
+
+    def width(self):
+        """The register width this instruction's effect depends on, as
+        ("a", 8) or ("i", 16), or None when it depends on neither or
+        nothing has said."""
+        if self.name in M_SENSITIVE and self.m:
+            return ("a", self.m)
+        if self.name in X_SENSITIVE and self.x:
+            return ("i", self.x)
+        return None
+
+    def matches(self, other):
+        if self.name != other.name or self.mode != other.mode:
+            return False
+        if len(self.raw) != len(other.raw):
+            return False  # an immediate assembled at another width
+        mine, theirs = self.width(), other.width()
+        if mine and theirs and mine != theirs:
+            return False  # the same encoding, moving another number of bytes
+        if not self.spellings and not other.spellings:
+            return True  # implied operands: nothing to disagree about
+        return bool(self.spellings & other.spellings)
+
+
+def named_exactly(named, value):
+    labels, _ = named
+    return {name for address, name in labels if address == value}
+
+
+def routine(side, name, extent, named):
+    """A routine's instructions. The widths start unknown at the label —
+    nothing in a debug file says what a caller left — and become known at
+    the first `sep`/`rep` or immediate whose size ca65 recorded."""
+    sid, start, end = extent
+    rows = []
+    data = side.data(sid, start, end)
+    # First the branch targets inside the routine, so the widths can be
+    # forgotten where control arrives from somewhere a straight reading did
+    # not come from.
+    targets = set()
+    for at, raw, mnemonic, mode, operand in decode(data, start, Widths(None, None), side.ends):
+        if mode in BRANCH_MODES and operand:
+            value = int.from_bytes(operand, "little")
+            span = 0x100 if mode == "rel" else 0x10000
+            delta = value - span if value >= span // 2 else value
+            target = (at + len(raw) + delta) & 0xFFFF
+            if start <= target < end:
+                targets.add(target)
+    states = []
+    decoded = list(decode(data, start, Widths(None, None), side.ends, states, targets))
+    for (at, raw, mnemonic, mode, operand), state in zip(decoded, states + [(None, None)]):
+        rows.append(Instruction(at, raw, mnemonic, mode, operand, named, start, end, state))
+    return rows
+
+
+def align(left, right):
+    """The longest common subsequence under ``Instruction.matches``, as a
+    list of (i, j) pairs."""
+    n, m = len(left), len(right)
+    table = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            if left[i].matches(right[j]):
+                table[i][j] = table[i + 1][j + 1] + 1
+            else:
+                table[i][j] = max(table[i + 1][j], table[i][j + 1])
+    pairs = []
+    i = j = 0
+    while i < n and j < m:
+        if left[i].matches(right[j]):
+            pairs.append((i, j))
+            i += 1
+            j += 1
+        elif table[i + 1][j] >= table[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return pairs
+
+
+def compare_routine(left, right):
+    """The alignment as a list of rows: ('=', l, r), ('-', l, None),
+    ('+', None, r), or ('~', l, r) for a paired instruction whose branch
+    lands on instructions the alignment did not pair."""
+    pairs = align(left, right)
+    paired = dict(pairs)
+    index_left = {row.at: k for k, row in enumerate(left)}
+    index_right = {row.at: k for k, row in enumerate(right)}
+    rows = []
+    i = j = 0
+    for pi, pj in pairs + [(len(left), len(right))]:
+        while i < pi:
+            rows.append(("-", left[i], None))
+            i += 1
+        while j < pj:
+            rows.append(("+", None, right[j]))
+            j += 1
+        if pi < len(left):
+            a, b = left[pi], right[pj]
+            kind = "="
+            if a.target is not None and b.target is not None:
+                ti, tj = index_left.get(a.target), index_right.get(b.target)
+                if ti is None or tj is None or paired.get(ti) != tj:
+                    kind = "~"
+            rows.append((kind, a, b))
+            i, j = pi + 1, pj + 1
+    return rows
+
+
+def compare_data(left, right, named_left, named_right):
+    """The first offset at which two data blocks differ in meaning, or
+    None. A word or a far address that spells the same shared name on both
+    sides is equal however far the layout moved it."""
+    i = 0
+    while i < max(len(left), len(right)):
+        if i < len(left) and i < len(right) and left[i] == right[i]:
+            i += 1
+            continue
+        moved = False
+        for start in (i - 1, i):
+            for width in (2, 3):
+                if start < 0 or start + width > min(len(left), len(right)):
+                    continue
+                a = int.from_bytes(left[start : start + width], "little")
+                b = int.from_bytes(right[start : start + width], "little")
+                symbolic_a = {text for text in spell(named_left, a) if not text.startswith("$")}
+                symbolic_b = {text for text in spell(named_right, b) if not text.startswith("$")}
+                # Only a label spelling vouches for a moved address: an
+                # equate below an arbitrary pair of bytes is a coincidence.
+                symbolic_a &= label_spellings(named_left, a)
+                symbolic_b &= label_spellings(named_right, b)
+                if symbolic_a & symbolic_b:
+                    i = start + width
+                    moved = True
+                    break
+            if moved:
+                break
+        if not moved:
+            return i
+    return None
+
+
+def label_spellings(named, value):
+    labels, _ = named
+    return set(spellings((labels, []), value)) - {"$%X" % value}
+
+
+def symbolic_main(args):
+    old = Side(Database(args.old), args.old_image)
+    new = Side(Database(args.new), args.new_image)
+    common = (set(old.labels) | set(old.equates)) & (set(new.labels) | set(new.equates))
+    named_old = old.named(common)
+    named_new = new.named(common)
+    shared = sorted(set(old.labels) & set(new.labels), key=lambda name: (old.labels[name][1], old.labels[name][0]))
+    extents_old = old.extents(set(shared))
+    extents_new = new.extents(set(shared))
+
+    differing = 0
+    report = []
+    for name in shared:
+        # Data when either side says so. ca65 leaves a span untyped for
+        # `.asciiz` and for a `.res` in a read-only segment, and a rewrite
+        # may reserve a variable in a segment the original kept writable;
+        # comparing bytes is right for both, and disassembling a string is
+        # wrong for either.
+        if old.is_data(name) or new.is_data(name):
+            sid, start, end = extents_old[name]
+            left = old.data(sid, start, end)
+            sid, start, end = extents_new[name]
+            right = new.data(sid, start, end)
+            if not left and not right:
+                continue
+            at = compare_data(left, right, named_old, named_new)
+            if at is None and len(left) == len(right):
+                if args.all:
+                    report.append("%-28s same       data, %d bytes" % (name, len(left)))
+                continue
+            differing += 1
+            where = "at byte %d" % at if at is not None else "in length"
+            report.append("%-28s DIFFERS    data %s: %d bytes -> %d bytes" % (name, where, len(left), len(right)))
+            if at is not None:
+                report.append("    old: %s" % " ".join("%02X" % b for b in left[max(0, at - 4) : at + 8]))
+                report.append("    new: %s" % " ".join("%02X" % b for b in right[max(0, at - 4) : at + 8]))
+            continue
+        left = routine(old, name, extents_old[name], named_old)
+        right = routine(new, name, extents_new[name], named_new)
+        rows = compare_routine(left, right)
+        changed = [k for k, row in enumerate(rows) if row[0] != "="]
+        if not changed:
+            if args.all:
+                report.append("%-28s same       %d instructions" % (name, len(left)))
+            continue
+        differing += 1
+        report.append("%-28s DIFFERS    %d -> %d instructions, %d rows differ" % (name, len(left), len(right), len(changed)))
+        shown = set()
+        for k in changed:
+            shown.update(range(max(0, k - args.context), min(len(rows), k + args.context + 1)))
+        last = -1
+        for k in sorted(shown):
+            if last >= 0 and k != last + 1:
+                report.append("        ...")
+            kind, a, b = rows[k]
+            mark = {"=": " ", "-": "-", "+": "+", "~": "~"}[kind]
+            report.append("    %s %-34s | %s" % (mark, a.text if a else "", b.text if b else ""))
+            last = k
+        report.append("")
+
+    only_old = sorted(set(old.labels) - set(new.labels))
+    only_new = sorted(set(new.labels) - set(old.labels))
+    constants = []
+    for name in sorted(set(old.equates) & set(new.equates)):
+        if old.equates[name] != new.equates[name]:
+            constants.append("  %-28s %s -> %s" % (name,
+                ", ".join("$%X" % v for v in sorted(old.equates[name])),
+                ", ".join("$%X" % v for v in sorted(new.equates[name]))))
+
+    print("\n".join(report))
+    if constants:
+        print("Constants whose values differ:")
+        print("\n".join(constants))
+        print()
+    if only_old:
+        print("Labels only in the old build (%d): %s" % (len(only_old), " ".join(only_old)))
+    if only_new:
+        print("Labels only in the new build (%d): %s" % (len(only_new), " ".join(only_new)))
+    print()
+    print("%d shared labels, %d differ in meaning; %d constants differ" % (len(shared), differing, len(constants)))
+    return 1 if differing or constants else 0
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("old", metavar="OLD.dbg")
@@ -317,7 +779,14 @@ def main(argv):
     parser.add_argument("--new-image", help="the new output file, if not beside its debug file")
     parser.add_argument("--context", type=int, default=3, help="instructions shown around a difference")
     parser.add_argument("--all", action="store_true", help="list identical symbols too")
+    parser.add_argument(
+        "--symbolic",
+        action="store_true",
+        help="compare meaning rather than bytes: for builds whose layouts differ",
+    )
     args = parser.parse_args(argv)
+    if args.symbolic:
+        return symbolic_main(args)
 
     old = Database(args.old)
     new = Database(args.new)

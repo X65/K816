@@ -7,3 +7,4 @@ examples/k65/atari-xl/*/main.xex
 editors/zed-k816/target/
 editors/zed-k816/grammars/
 editors/zed-k816/*.wasm
+__pycache__/

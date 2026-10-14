@@ -293,6 +293,17 @@ struct Access {
     /// The root symbol, when the path starts at a declared name.
     root: Option<SymbolId>,
     place: Place,
+    /// The root, when it is a name another unit declares and the import pass
+    /// has not put in the table yet (`SymbolTable::foreign_fact`).
+    fact: Option<Fact>,
+}
+
+/// A foreign name a path is rooted in before it has a symbol of its own.
+#[derive(Clone, Debug)]
+struct Fact {
+    name: String,
+    kind: SymbolKind,
+    declaration: Span,
 }
 
 /// What a path has reached, and what one more step would do to it.
@@ -376,10 +387,10 @@ fn abstract_has_no_storage(name: &str, span: Span, declaration: Span) -> Diagnos
 
 /// A `.field` step on something that has no fields to select from.
 ///
-/// `foreign` is the case that needs its own words: the name *was* declared
-/// with a field list, in another unit, and "has no fields" would look like a
-/// lie to anyone who can see that declaration. A layout does not cross a unit
-/// boundary, so what is true here is that the offsets are not this unit's.
+/// `foreign` is the case that needs its own words: the name is declared in
+/// another unit, and the reader looking for the field list has to look
+/// there. A layout crosses a direct `import` with its variable, so what is
+/// true here is that the declaration over there wrote none.
 fn selection_without_fields(
     base: &Expr,
     field: &Name,
@@ -394,16 +405,10 @@ fn selection_without_fields(
     .with_secondary(Label::new(base.span, "selected from here"))
     .with_docs("doc/symbolic-subscripts.md#declaration-syntax");
     if foreign {
-        return diagnostic
-            .with_note(
-                "this name is defined by another unit, and a field layout does not cross \
-                 a unit boundary: field offsets belong to the unit that computed them",
-            )
-            .with_help(
-                "declare the layout in this unit too — an `abstract var` is not a \
-                 definition, so both units may have one — or select the field where the \
-                 variable is declared",
-            );
+        return diagnostic.with_note(
+            "this name is defined by another unit, and its declaration there has no field \
+             list — `var NAME[ .lo :byte ]` — to select from",
+        );
     }
     diagnostic.with_note(
         "only a declaration written with a field list — `var NAME[ .lo :byte ]` — has \
@@ -1014,7 +1019,13 @@ impl<'a> Resolver<'a> {
                         self.pending_references.push((name.span, name.text.clone()));
                         Some(KExpr::number(value))
                     }
-                    None => None,
+                    // A pinned variable another unit declares is the same
+                    // kind of fact: its address was written where it was
+                    // declared (`plans/13-ca65-converter.md` decision 2).
+                    None => {
+                        let access = self.foreign_access(name, reported)?;
+                        self.address_of(&access, expr.span)
+                    }
                 }
             }
             ExprKind::LocalSymbol(name) => {
@@ -1163,7 +1174,10 @@ impl<'a> Resolver<'a> {
     fn access(&mut self, expr: &Expr) -> Option<Access> {
         match &expr.kind {
             ExprKind::Symbol(name) => {
-                let id = self.resolve(&name.text, name.span)?;
+                let reported = self.diagnostics.len();
+                let Some(id) = self.resolve(&name.text, name.span) else {
+                    return self.foreign_access(name, reported);
+                };
                 let place = self.place_of(id);
                 // A layout is not refused here: whether having no address is
                 // a problem depends on what the path is *for*, and
@@ -1177,6 +1191,7 @@ impl<'a> Resolver<'a> {
                     offset: 0,
                     root: Some(id),
                     place,
+                    fact: None,
                 })
             }
             ExprKind::Field(field) => {
@@ -1203,13 +1218,53 @@ impl<'a> Resolver<'a> {
                 offset: 0,
                 root: None,
                 place: Place::default(),
+                fact: None,
             }),
         }
     }
 
+    /// A path rooted in a name the table has missed, when another unit this
+    /// one sees declares it with a layout or at a pinned address.
+    ///
+    /// The same answer the symbol will give once the import pass has run:
+    /// the kind is the defining unit's, with its layout interned here. A
+    /// pinned base folds to its address; any other base has none to give, and
+    /// [`Self::address_of`] says so if the path is asked for one.
+    fn foreign_access(&mut self, name: &Name, reported: usize) -> Option<Access> {
+        let (kind, declaration) = self.symbols.foreign_fact(&name.text)?;
+        self.diagnostics.truncate(reported);
+        // The name is a symbol once the import pass runs, so the editor can
+        // still navigate to it — settled at the end of analysis, like the
+        // foreign `const` a fold reads the same way.
+        self.pending_references.push((name.span, name.text.clone()));
+        let base = match kind {
+            SymbolKind::Var {
+                address: Some(address),
+                ..
+            } => KExpr::number(address),
+            _ => KExpr::number(0),
+        };
+        Some(Access {
+            base,
+            offset: 0,
+            root: None,
+            place: self.place_of_kind(kind, declaration),
+            fact: Some(Fact {
+                name: name.text.clone(),
+                kind,
+                declaration,
+            }),
+        })
+    }
+
     /// What a declared name is, as an access path sees it.
     fn place_of(&self, id: SymbolId) -> Place {
-        match self.symbols.kind(id) {
+        self.place_of_kind(self.symbols.kind(id), self.symbols.symbol(id).declaration)
+    }
+
+    /// What a name of `kind`, declared at `declaration`, is to a path.
+    fn place_of_kind(&self, kind: SymbolKind, declaration: Span) -> Place {
+        match kind {
             SymbolKind::Var {
                 width,
                 element,
@@ -1218,7 +1273,7 @@ impl<'a> Resolver<'a> {
                 ..
             } => Place {
                 size: Some(element),
-                width: width.map(|width| (width, self.symbols.symbol(id).declaration)),
+                width: width.map(|width| (width, declaration)),
                 layout,
                 // Only `* count` gives a variable elements. Without one the
                 // bracket steps bytes and has nothing to be checked against,
@@ -1309,6 +1364,7 @@ impl<'a> Resolver<'a> {
             offset,
             root: base.root,
             place,
+            fact: base.fact,
         })
     }
 
@@ -1363,6 +1419,7 @@ impl<'a> Resolver<'a> {
             offset,
             root: base.root,
             place,
+            fact: base.fact,
         })
     }
 
@@ -1373,6 +1430,37 @@ impl<'a> Resolver<'a> {
     /// landed at zero return the base unchanged: `NAME + 0` assembles to the
     /// same bytes and reads like arithmetic nobody wrote.
     fn address_of(&mut self, access: &Access, span: Span) -> Option<KExpr> {
+        match &access.fact {
+            Some(Fact {
+                name,
+                kind: SymbolKind::AbstractVar { .. },
+                declaration,
+            }) => {
+                self.report(abstract_has_no_storage(name, span, *declaration));
+                return None;
+            }
+            // An allocated variable's address is ld65's, and a path reaches
+            // here before the import pass only from a declaration that needs
+            // the number now.
+            Some(Fact {
+                name,
+                kind: SymbolKind::Var { address: None, .. },
+                ..
+            }) => {
+                self.report(
+                    Diagnostic::error(
+                        DiagnosticCode::NOT_CONSTANT,
+                        "this address must be known at compile time",
+                        Label::new(span, "this value is not known until link time"),
+                    )
+                    .with_note(format!("`{name}` gets its address from ld65"))
+                    .with_help("use a numeric literal, a `const`, or a pinned variable here")
+                    .with_docs("doc/syntax-reference.md#constant-declaration"),
+                );
+                return None;
+            }
+            _ => {}
+        }
         if let Some(root) = access.root
             && matches!(self.symbols.kind(root), SymbolKind::AbstractVar { .. })
         {
@@ -1431,6 +1519,25 @@ impl<'a> Resolver<'a> {
             Some(value) => Some(value.get()),
             None => {
                 self.not_constant(expr, position, &folded);
+                None
+            }
+        }
+    }
+
+    /// A pinned variable's address, which may be written over another's.
+    ///
+    /// `var chargen = text + $0800` with `text` pinned is a compile-time
+    /// address: `text`'s is written in the source, so the sum is too. Only a
+    /// pinned variable stands in for its address here — a label, a section
+    /// and an allocated variable are placed by ld65 and stay refused, with
+    /// the note that says so (`plans/13-ca65-converter.md` decision 2).
+    pub fn address(&mut self, expr: &Expr) -> Option<u32> {
+        let folded = self.fold(expr)?;
+        let symbols = self.symbols;
+        match folded.value_with(&|id| symbols.kind(id).known_address().map(Value::new)) {
+            Some(value) => Some(value.get()),
+            None => {
+                self.not_constant(expr, "variable addresses", &folded);
                 None
             }
         }

@@ -426,11 +426,10 @@ pub fn bind(
              // where it had one, `abstract` where it only named offsets. A member wider than\n\
              // three bytes — a `.tag` or a `.res` — is a byte array of that size.\n\
              //\n\
-             // An `abstract var` layout crosses an `import`; a `var` layout at a fixed address\n\
-             // is usable only in the unit that declares it (`doc/syntax-reference.md`,\n\
-             // \"Abstract symbolic layouts\"). A hardware map that many units read is therefore\n\
-             // either pasted into each, or written flat — `var NAME_member = $ADDR` per member,\n\
-             // an exported equate like any other — with `--flat`."
+             // A layout crosses a direct `import` with its variable, so a hardware map that\n\
+             // many units read is one unit they all import (`doc/syntax-reference.md`,\n\
+             // \"Abstract symbolic layouts\"). `--flat` writes `var NAME_member = $ADDR` per\n\
+             // member instead, an exported equate like any other."
         );
         write_layouts(db, &mut out, request.flat);
         return Ok(out);

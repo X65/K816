@@ -2,8 +2,8 @@
 //
 // It declares the same layout unit A does — legal, because an `abstract var`
 // is not a definition anyone can be handed — and it references unit A's
-// variable by name, which is. What it cannot do is select a field of that
-// variable: those offsets are A's, and B was not told them.
+// variable by name, which is. Its own copy of the layout answers its own
+// queries; a field of A's variable would answer from A's.
 
 import "layout-unit-a.k816"
 

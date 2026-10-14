@@ -1456,16 +1456,17 @@ fn every_field_access_folds_to_the_offset_its_layout_declares() {
     assemble_and_link("subscripts", &assembly, "vars");
 }
 
-/// A layout stops at the unit boundary, and the two halves of that.
+/// A layout crosses a unit boundary as data, and the two halves of that.
 ///
-/// A `LayoutId` indexes the arena of the unit that computed it, so a layout
-/// cannot be handed to another unit — and both consequences are worth
-/// pinning, because each is a behaviour a reader would otherwise guess at.
-/// An `abstract var` is not exportable, so two units may declare the same
-/// one; an imported `var` arrives without its fields, so selecting one is
-/// refused here rather than answered from the wrong arena.
+/// A `LayoutId` indexes the arena of the unit that computed it, so what an
+/// importer gets is the layout itself, interned in its own arena — and both
+/// consequences are worth pinning, because each is a behaviour a reader
+/// would otherwise guess at. An `abstract var` is not exportable, so two
+/// units may declare the same one and each answers from its own; an imported
+/// `var` arrives with its fields, so selecting one is the declaring unit's
+/// offset on the imported name.
 #[test]
-fn a_layout_does_not_cross_a_unit_boundary() {
+fn a_layout_crosses_a_unit_boundary_as_data() {
     use k816::diagnostic::DiagnosticCode;
 
     // Both units declare `HANDLER`, and that is not a duplicate definition:
@@ -1516,17 +1517,20 @@ fn a_layout_does_not_cross_a_unit_boundary() {
         "the imported name is still an ordinary address:\n{assembly}"
     );
 
-    // And its fields do not cross. The refusal names the boundary rather
-    // than claiming the declaration has no fields, because it has — over
-    // there.
+    // And its fields cross with it: `.hi` is one byte along, on the name ld65
+    // resolves.
     let mut map = SourceMap::new();
     let user = map.add_file(
         "user.k816",
-        "import \"layout-unit-a.k816\"\nfunc main @a8 @i8 {\n    a = TABLE.hi\n}\n",
+        "import \"layout-unit-a.k816\"\nfunc reader @a8 @i8 {\n    a = TABLE.hi\n}\n",
     );
     map.add_file(
         "layout-unit-a.k816",
         include_str!("golden/layout-unit-a.k816"),
+    );
+    map.add_file(
+        "layout-unit-b.k816",
+        include_str!("golden/layout-unit-b.k816"),
     );
     let result = compile_to_ca65(
         &map,
@@ -1536,17 +1540,33 @@ fn a_layout_does_not_cross_a_unit_boundary() {
             ..Default::default()
         },
     );
+    assert_eq!(result.diagnostics, vec![], "a foreign field selection");
+    let assembly = result.assembly.expect("compilation succeeds");
+    assert!(
+        assembly.contains("lda     a:TABLE + $01"),
+        "the field is the declaring unit's offset on the imported name:\n{assembly}"
+    );
+
+    // A foreign variable declared with no field list has none here either,
+    // and the refusal says where to look.
+    let mut map = SourceMap::new();
+    map.add_file("plain-unit.k816", "var plain[2]\n");
+    let user = map.add_file(
+        "plain-user.k816",
+        "import \"plain-unit.k816\"\nfunc main @a8 @i8 {\n    a = plain.hi\n}\n",
+    );
+    let result = compile_to_ca65(&map, user, &Options::default());
     let refusal = result
         .diagnostics
         .iter()
         .find(|diagnostic| diagnostic.code == DiagnosticCode::SYMBOL_KIND_MISMATCH)
-        .expect("a foreign field selection is refused");
+        .expect("a field of a foreign variable with none is refused");
     assert!(
         refusal
             .notes
             .iter()
             .any(|note| note.contains("another unit")),
-        "the refusal names the boundary: {refusal:?}"
+        "the refusal says the declaration is in another unit: {refusal:?}"
     );
 }
 
@@ -3799,14 +3819,16 @@ fn a_borrowed_body_is_diagnosed_by_the_unit_that_wrote_it() {
         result.diagnostics[0]
     );
 
-    // A layout does not cross a unit boundary, so `slot.hi` resolves where the
-    // body is written and not where it is expanded. The owner makes no such
-    // complaint, so this one survives with its own message rather than being
-    // collapsed into the line above.
+    // The names a borrowed body reads are the expanding unit's imports, so
+    // `slot` resolves where the body is written — whose unit imports the one
+    // declaring it — and not where it is expanded, which does not. The owner
+    // makes no such complaint, so this one survives with its own message
+    // rather than being collapsed into the line above.
     let mut map = SourceMap::new();
+    map.add_file("layout-hw.k816", "var slot[ .lo:byte .hi:byte ]\n");
     map.add_file(
         "layout-defs.k816",
-        "var slot[ .lo:byte .hi:byte ]\ninline peek @a8 @i8 {\n    a = slot.hi\n}\n",
+        "import \"layout-hw.k816\"\ninline peek @a8 @i8 {\n    a = slot.hi\n}\n",
     );
     let user = map.add_file(
         "layout-user.k816",
@@ -3825,7 +3847,7 @@ fn a_borrowed_body_is_diagnosed_by_the_unit_that_wrote_it() {
         .iter()
         .map(|diagnostic| diagnostic.code.as_str())
         .collect();
-    assert_eq!(codes, ["K816-E0115"], "what borrowing revealed stays");
+    assert_eq!(codes, ["K816-E0101"], "what borrowing revealed stays");
 }
 
 /// G7, and the original's own spelling: `far goto NAME` is `goto far NAME`.

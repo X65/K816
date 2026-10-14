@@ -264,8 +264,13 @@ pub fn emit(
             // it is written: its value is a compile-time fact, so every use
             // folded and nothing in this file refers to the name any more.
             // An `extern const` is the other kind, `value: None`, and it does
-            // need the import: ld65 is the one that knows its number.
-            let folded = matches!(symbol.kind, SymbolKind::Const { value: Some(_) });
+            // need the import: ld65 is the one that knows its number. An
+            // `abstract var` is never one: it is a layout, nothing ever
+            // defines its name, and every use of it was an offset or a size.
+            let folded = matches!(
+                symbol.kind,
+                SymbolKind::Const { value: Some(_) } | SymbolKind::AbstractVar { .. }
+            );
             if model.referenced.contains(&id) && !folded {
                 let where_from = map.file(symbol.declaration.file);
                 let line = where_from.line_col(symbol.declaration.start).line + 1;

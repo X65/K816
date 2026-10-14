@@ -1,9 +1,9 @@
 // Sub-plan E8 fixture, unit A of the cross-unit layout gate.
 //
-// A layout is offsets, and offsets belong to the unit that computed them. So
-// what crosses the boundary is what ld65 can resolve — a name and an address
-// size — and what does not is the field list. This unit declares both halves:
-// a variable another unit will reference, and a layout another unit will
+// A layout is offsets, settled where they were written. So what crosses the
+// boundary is what ld65 can resolve — a name and an address size — with the
+// field list beside it as data. This unit declares both halves: a variable
+// whose fields another unit will select, and a layout another unit will
 // declare for itself.
 
 import "layout-unit-b.k816"

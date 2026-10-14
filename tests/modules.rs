@@ -594,6 +594,232 @@ fn an_imported_layout_is_not_a_place_and_not_a_definition() {
     );
 }
 
+/// The hardware map and the task table the next four tests import: a layout
+/// at a fixed address, an allocated table of a layout, a layout with no
+/// storage, and a pinned variable with none.
+const HARDWARE: &str = "var RIA[\n    .opera  :word\n    .op     :byte\n    .status :byte\n] = $FFC0\n\
+                        var TASKS[\n    .sp    :word\n    .state :byte\n    .msg[\n        .from :byte\n        .data :far\n    ]\n] * 4\n\
+                        abstract var TCB[\n    .sp    :word\n    .name  :byte [4]\n]\n\
+                        var text = $2000\n";
+
+/// A `var`'s layout crosses a direct `import` with the variable.
+///
+/// The variable crosses as a name and an address size, and the field list
+/// beside it as data, so each access path means here what it means in the
+/// unit that declared it: the base stays the symbol ld65 resolves, and the
+/// offset is the number the layout gives. Before this, every one of these
+/// was "`RIA` has no fields", and a hardware map read by many units had to
+/// be written flat or pasted into each.
+#[test]
+fn a_variable_layout_crosses_an_import_with_its_variable() {
+    let mut map = SourceMap::new();
+    map.add_file("hw.k816", HARDWARE);
+    let entry = map.add_file(
+        "main.k816",
+        "import \"hw.k816\"\n\n\
+         func main @a8 @i8 {\n\
+         \x20   lda #$FF\n    sta RIA.op\n\
+         \x20   lda TASKS.state,x\n\
+         \x20   lda TASKS[2].msg.from\n\
+         \x20   lda #&<TASKS[1]\n    sta RIA.status\n\
+         \x20   lda #TASKS:sizeof\n    sta RIA.status\n\
+         \x20   lda #TASKS.msg.data:offsetof\n    sta RIA.status\n\
+         }\n",
+    );
+    let result = k816::compile_to_ca65(
+        &map,
+        entry,
+        &k816::Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
+    assert_eq!(result.diagnostics, vec![], "fields of an imported variable");
+    let assembly = result.assembly.expect("compiles");
+    // `.op` at two and `.status` at three past $FFC0; a task is seven bytes,
+    // `.state` two into one, `.msg.from` three, `.msg.data` four.
+    for expected in [
+        "sta     a:RIA + $02",
+        "lda     a:TASKS + $02,x",
+        "lda     a:TASKS + $11",
+        "lda     #.lobyte((TASKS + $07))",
+        "sta     a:RIA + $03",
+        "lda     #$07",
+        "lda     #$04",
+        ".import RIA",
+        ".import TASKS",
+    ] {
+        assert!(assembly.contains(expected), "`{expected}` in:\n{assembly}");
+    }
+}
+
+/// A unit-level declaration reads an imported layout, an imported pinned
+/// address, and an imported `abstract var`, before the import pass has
+/// declared any of them.
+///
+/// Foreign names are declared after the unit's own, so that a local name
+/// always wins — which left `var bufs[TCB:sizeof * 2]` reporting `TCB` as
+/// undeclared, about a layout the file above declares, while the same query
+/// in an instruction folded. A layout's offsets and a pinned address are
+/// facts the declaring unit settled, so the declaration folds them the way it
+/// already folded an imported `const`.
+#[test]
+fn a_unit_level_declaration_reads_an_imported_layout() {
+    let mut map = SourceMap::new();
+    map.add_file("hw.k816", HARDWARE);
+    let entry = map.add_file(
+        "main.k816",
+        "import \"hw.k816\"\n\n\
+         var bufs[TCB:sizeof * 2]\n\
+         var regs = RIA.status\n\
+         var chargen = text + $0800\n\
+         const TASK_BYTES = TASKS:sizeof\n\
+         data names { repeat TCB.name:sizeof { ? } }\n\n\
+         func main @a8 @i8 {\n    lda #TASK_BYTES\n    sta regs\n    sta chargen\n}\n",
+    );
+    let result = k816::compile_to_ca65(
+        &map,
+        entry,
+        &k816::Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        result.diagnostics,
+        vec![],
+        "an imported layout at unit level"
+    );
+    let assembly = result.assembly.expect("compiles");
+    for expected in [
+        ".res     $0C",
+        "regs            := $FFC3",
+        "chargen         := $2800",
+        "lda     #$07",
+    ] {
+        assert!(assembly.contains(expected), "`{expected}` in:\n{assembly}");
+    }
+    // Four placeholder bytes for the name field, and nothing past them.
+    assert_eq!(
+        assembly.matches(".byte    $00").count(),
+        4,
+        "the repeat count is the field's size:\n{assembly}"
+    );
+}
+
+/// A pinned address folds in another pinned declaration, and nothing else
+/// does.
+///
+/// `var chargen = text + $0800` is a compile-time address when `text` is
+/// pinned: both numbers are written in the source. An allocated variable and
+/// a label are placed by ld65, so building a pinned address on one of them
+/// is still `K816-E0108`, in this unit and across an import alike, and the
+/// note names the variable that has no number yet.
+#[test]
+fn a_pinned_address_folds_in_another_pinned_declaration() {
+    let mut map = SourceMap::new();
+    let entry = map.add_file(
+        "pinned.k816",
+        "var text = $2000\nvar chargen = text + $0800\nvar colors = chargen + $0800\n\n\
+         func main @a8 @i8 {\n    sta colors\n}\n",
+    );
+    let assembly = k816::compile_to_ca65(&map, entry, &k816::Options::default())
+        .assembly
+        .expect("compiles");
+    assert!(assembly.contains("chargen         := $2800"), "{assembly}");
+    assert!(assembly.contains("colors          := $3000"), "{assembly}");
+
+    let mut map = SourceMap::new();
+    let entry = map.add_file(
+        "allocated.k816",
+        "var buffer[4]\nvar past = buffer + 4\n\nfunc main @a8 @i8 {\n    nop\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    let refused: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.code.0, diagnostic.notes.clone()))
+        .collect();
+    assert_eq!(
+        refused,
+        vec![(
+            "K816-E0108",
+            vec!["`buffer` gets its address from ld65".to_owned()]
+        )],
+        "an allocated base"
+    );
+
+    let mut map = SourceMap::new();
+    map.add_file("hw.k816", HARDWARE);
+    let entry = map.add_file(
+        "main.k816",
+        "import \"hw.k816\"\n\nvar after = TASKS + 1\n\nfunc main @a8 @i8 {\n    nop\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    let refused: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.code.0, diagnostic.notes.clone()))
+        .collect();
+    assert_eq!(
+        refused,
+        vec![(
+            "K816-E0108",
+            vec!["`TASKS` gets its address from ld65".to_owned()]
+        )],
+        "an allocated base another unit declares"
+    );
+}
+
+/// An `abstract var` another unit declares leaves no `.import`.
+///
+/// Nothing defines a layout's name — it emits nothing anywhere — so every
+/// use of one folded to an offset or a size, and an `.import` line for it
+/// says "defined by" about a symbol no object exports.
+#[test]
+fn an_abstract_layout_is_never_imported() {
+    let mut map = SourceMap::new();
+    map.add_file("hw.k816", HARDWARE);
+    let entry = map.add_file(
+        "main.k816",
+        "import \"hw.k816\"\n\nfunc main @a8 @i8 {\n    lda #TCB:sizeof\n    \
+         ldx #TCB.name:offsetof\n    sta &TCB.sp:offsetof,x\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(result.diagnostics, vec![], "an imported layout");
+    let assembly = result.assembly.expect("compiles");
+    assert!(!assembly.contains(".import TCB"), "{assembly}");
+}
+
+/// A borrowed `inline` body selects a field wherever its expander can see
+/// the variable.
+///
+/// The names a borrowed body reads are the expanding unit's imports, so the
+/// expanding unit must see them — and since a layout crosses with its
+/// variable, a field is no exception to that any more.
+#[test]
+fn a_borrowed_body_selects_a_field_its_expander_can_see() {
+    let mut map = SourceMap::new();
+    map.add_file("hw.k816", HARDWARE);
+    map.add_file(
+        "lib.k816",
+        "import \"hw.k816\"\n\ninline halt @a8 {\n    lda #$FF\n    sta RIA.op\n}\n",
+    );
+    let entry = map.add_file(
+        "main.k816",
+        "import \"lib.k816\"\nimport \"hw.k816\"\n\nfunc main @a8 @i8 {\n    halt\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(result.diagnostics, vec![], "a borrowed field selection");
+    assert!(
+        result
+            .assembly
+            .expect("compiles")
+            .contains("sta     a:RIA + $02"),
+        "the expansion stores through the imported layout"
+    );
+}
+
 /// A `const` another unit *defines* leaves no `.import`, exactly as a local
 /// one does.
 ///

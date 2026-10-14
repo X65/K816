@@ -174,6 +174,16 @@ pub struct Linkage {
     /// ([`Layouts::extract`]), and the importer interns it
     /// ([`SymbolTable::adopt_layout`]).
     layouts: BTreeMap<FileId, BTreeMap<String, LayoutDeclaration>>,
+    /// The field layout of every `var` declared with one, by name.
+    ///
+    /// The variable itself is a [`Definition`] and crosses as one; what its
+    /// kind cannot carry is the layout, because a [`LayoutId`] indexes the
+    /// declaring unit's arena. So the layout travels beside it as data, the
+    /// way an `abstract var`'s does, and the importer interns it and puts the
+    /// id it gets back on the kind (`plans/13-ca65-converter.md` decision 1).
+    /// Keyed by name alone: a name has one definition, and two that collide
+    /// are already `K816-E0102`.
+    var_layouts: BTreeMap<String, LayoutDeclaration>,
     /// Every unit that defines *or* declares each name.
     ///
     /// Visibility is decided against this rather than against
@@ -567,6 +577,22 @@ impl Linkage {
                 }
                 continue;
             }
+            if let SymbolKind::Var {
+                layout: Some(layout),
+                ..
+            } = symbol.kind
+                && !symbol.imported
+            {
+                let (arena, root) = model.symbols.layouts().extract(layout);
+                self.var_layouts.insert(
+                    symbol.name.clone(),
+                    LayoutDeclaration {
+                        declaration: symbol.declaration,
+                        arena,
+                        root,
+                    },
+                );
+            }
             // In this pass, `imported` can only mean one thing: the unit
             // declared the name `extern`. `declare_imports` is the other way
             // a symbol gets the flag and it runs in the *second* pass, with
@@ -923,6 +949,16 @@ impl Linkage {
             .filter(move |(owner, _)| self.sees(unit, **owner))
             .flat_map(|(_, layouts)| layouts.iter())
             .map(|(name, declaration)| (name.as_str(), declaration))
+    }
+
+    /// The field layout the `var` named `name` was declared with, when it
+    /// was declared with one.
+    ///
+    /// Carried as data for the same reason [`Linkage::visible_layouts`] is.
+    /// Visibility is the variable's own: a caller asks about a name it found
+    /// among [`Linkage::visible_definitions`].
+    pub fn var_layout(&self, name: &str) -> Option<&LayoutDeclaration> {
+        self.var_layouts.get(name)
     }
 
     /// Whether `unit` may see what `owner` declares.

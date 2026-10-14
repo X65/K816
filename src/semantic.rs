@@ -533,6 +533,10 @@ fn analyze(
                     .record_foreign_const(name, f64::from(value));
             }
         }
+        // And what each foreign layout and pinned variable is, so that a
+        // unit-level declaration — `var bufs[TCB:sizeof * 4]`, `var chargen =
+        // text + $0800` — can fold one before the import pass declares it.
+        analysis.seed_foreign_facts(linkage, unit);
     }
     analysis.declare_items(file);
     analysis.place_direct_page();
@@ -2749,20 +2753,25 @@ impl Analysis {
     ///
     /// The kind and address size are the *defining* unit's, because that is
     /// what ca65 needs to validate an addressing mode against the imported
-    /// symbol. What does not cross is the field layout: a `LayoutId` names
-    /// the declaring unit's arena, so [`SymbolKind::foreign`] strips it and a
-    /// foreign `NAME.field` says the name has no fields rather than reading
-    /// whichever layout sits at that index here.
+    /// symbol. A field layout crosses as data: a `LayoutId` names the
+    /// declaring unit's arena, so [`SymbolKind::foreign`] strips it, and the
+    /// id this unit interned the layout under — in [`Self::seed_foreign_facts`]
+    /// — is put back on the kind.
     ///
     /// Declaring a name does not import it: only the ones this unit goes on
     /// to reference reach the emitted `.import` list.
     fn declare_imports(&mut self, linkage: &Linkage, unit: crate::source::FileId) {
         for (name, definition) in linkage.visible_definitions(unit) {
-            self.model.symbols.declare_imported(
-                name,
-                definition.kind.foreign(),
-                definition.declaration,
-            );
+            // A `var` with fields gets them back: its layout crossed as data
+            // and was interned when the facts were seeded.
+            let kind = self
+                .model
+                .symbols
+                .foreign_fact(name)
+                .map_or_else(|| definition.kind.foreign(), |(kind, _)| kind);
+            self.model
+                .symbols
+                .declare_imported(name, kind, definition.declaration);
         }
         // A layout is not a definition — it emits nothing and ld65 never sees
         // it — so it travels separately, and as *data*: a `LayoutId` indexes
@@ -2779,8 +2788,75 @@ impl Analysis {
             .map(|(name, layout)| (name.to_owned(), layout.clone()))
             .collect();
         for (name, layout) in foreign {
+            let kind = match self.model.symbols.foreign_fact(&name) {
+                Some((kind @ SymbolKind::AbstractVar { .. }, _)) => kind,
+                _ => SymbolKind::AbstractVar {
+                    layout: self.model.symbols.adopt_layout(&layout.arena, layout.root),
+                },
+            };
+            self.model
+                .symbols
+                .declare_imported(&name, kind, layout.declaration);
+        }
+    }
+
+    /// Records what every foreign layout and foreign variable this unit sees
+    /// is, before the unit's own declarations run.
+    ///
+    /// The other half of [`Self::declare_imports`], and the reason that pass
+    /// can run last: a layout's offsets and a pinned address are facts the
+    /// declaring unit settled, so a declaration here may fold one without the
+    /// name being in the table yet. Layouts are interned once, here, and the
+    /// import pass reuses the ids. This unit's own declarations are skipped —
+    /// they are in the table by the time anything asks.
+    fn seed_foreign_facts(&mut self, linkage: &Linkage, unit: crate::source::FileId) {
+        let variables: Vec<_> = linkage
+            .visible_definitions(unit)
+            .filter(|(_, definition)| definition.file != unit)
+            .filter(|(_, definition)| matches!(definition.kind, SymbolKind::Var { .. }))
+            .map(|(name, definition)| {
+                (
+                    name.to_owned(),
+                    definition.kind.foreign(),
+                    definition.declaration,
+                    linkage.var_layout(name).cloned(),
+                )
+            })
+            .collect();
+        for (name, kind, declaration, layout) in variables {
+            let kind = match (kind, layout) {
+                (
+                    SymbolKind::Var {
+                        address,
+                        size,
+                        width,
+                        element,
+                        repeat,
+                        ..
+                    },
+                    Some(layout),
+                ) => SymbolKind::Var {
+                    address,
+                    size,
+                    width,
+                    element,
+                    repeat,
+                    layout: Some(self.model.symbols.adopt_layout(&layout.arena, layout.root)),
+                },
+                (kind, _) => kind,
+            };
+            self.model
+                .symbols
+                .record_foreign_fact(&name, kind, declaration);
+        }
+        let layouts: Vec<_> = linkage
+            .visible_layouts(unit)
+            .filter(|(_, layout)| layout.declaration.file != unit)
+            .map(|(name, layout)| (name.to_owned(), layout.clone()))
+            .collect();
+        for (name, layout) in layouts {
             let id = self.model.symbols.adopt_layout(&layout.arena, layout.root);
-            self.model.symbols.declare_imported(
+            self.model.symbols.record_foreign_fact(
                 &name,
                 SymbolKind::AbstractVar { layout: id },
                 layout.declaration,
@@ -2880,6 +2956,16 @@ impl Analysis {
         value
     }
 
+    /// The address a pinned declaration writes, which may name another pinned
+    /// variable's (`Resolver::address`).
+    fn address(&mut self, expr: &Expr) -> Option<u32> {
+        let mut resolver = self.resolver();
+        let value = resolver.address(expr);
+        let resolved = resolver.finish();
+        self.absorb(resolved);
+        value
+    }
+
     /// Declares one `var`, in every shape the document gives it.
     ///
     /// Three axes are decided here and they stay independent, which is
@@ -2904,7 +2990,7 @@ impl Analysis {
         }
 
         let address = match &var.address {
-            Some(expr) => match self.constant(expr, "variable addresses") {
+            Some(expr) => match self.address(expr) {
                 Some(address) => Some(address),
                 // An address that does not fold leaves nothing to declare:
                 // every reference would need a value this one cannot supply.

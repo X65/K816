@@ -418,15 +418,14 @@ impl SymbolKind {
         )
     }
 
-    /// This kind as another unit sees it.
+    /// This kind as another unit sees it, before its layout is attached.
     ///
     /// A [`LayoutId`] names *this* unit's arena, so it cannot cross a unit
     /// boundary: the importing unit would read whichever layout happens to
-    /// sit at the same index, or none at all. What crosses is what ca65 needs
-    /// — the address size — and the fields stay behind, so a foreign
-    /// `NAME.field` reports that the name has no fields rather than answering
-    /// from the wrong layout. Sharing a layout between units is a source-level
-    /// question, and the language has no syntax for asking it.
+    /// sit at the same index, or none at all. So the id is dropped here, and
+    /// the layout crosses as data — `crate::linkage::Linkage::var_layout`,
+    /// interned by the importer with [`SymbolTable::adopt_layout`] — the way
+    /// an `abstract var`'s does.
     pub fn foreign(self) -> Self {
         match self {
             Self::Var {
@@ -554,6 +553,18 @@ pub struct SymbolTable {
     /// Function-scoped names, keyed by the owning function and the name.
     local: HashMap<(SymbolId, String), SymbolId>,
     layouts: Layouts,
+    /// What a name another unit declares is, known before the import pass
+    /// puts it in the table.
+    ///
+    /// Foreign names are declared *after* the unit's own, so that a local
+    /// declaration always wins its name — which leaves a unit-level
+    /// declaration resolving at a moment the foreign name does not exist
+    /// yet. A layout's offsets and a pinned variable's address are
+    /// compile-time facts wherever they were written, the same kind of fact
+    /// a `const`'s value is, and the resolver asks here only after the table
+    /// has missed. The kind is the importer's own: a layout it names has
+    /// already been interned in this table's arena.
+    foreign: HashMap<String, (SymbolKind, Span)>,
 }
 
 impl SymbolTable {
@@ -697,6 +708,18 @@ impl SymbolTable {
     /// unit's arena, so what crosses a unit boundary is the layout's data.
     pub fn adopt_layout(&mut self, arena: &[Layout], root: LayoutId) -> LayoutId {
         self.layouts.adopt(arena, root)
+    }
+
+    /// Records what a foreign name is, for the declarations that need it
+    /// before [`Self::declare_imported`] runs.
+    pub fn record_foreign_fact(&mut self, name: &str, kind: SymbolKind, declaration: Span) {
+        self.foreign.insert(name.to_owned(), (kind, declaration));
+    }
+
+    /// What a foreign name is, when another unit this one sees declares it
+    /// with a layout or at a pinned address.
+    pub fn foreign_fact(&self, name: &str) -> Option<(SymbolKind, Span)> {
+        self.foreign.get(name).copied()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (SymbolId, &Symbol)> {

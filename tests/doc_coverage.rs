@@ -1139,11 +1139,11 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
         ),
         (
             "layout-unit-a.k816",
-            "a_layout_does_not_cross_a_unit_boundary",
+            "a_layout_crosses_a_unit_boundary_as_data",
         ),
         (
             "layout-unit-b.k816",
-            "a_layout_does_not_cross_a_unit_boundary",
+            "a_layout_crosses_a_unit_boundary_as_data",
         ),
         ("native-modes.k816", "native_modes_assembles_and_links"),
         (

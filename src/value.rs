@@ -231,6 +231,25 @@ impl KExpr {
         }
     }
 
+    /// The value with each symbol replaced by what `known` says it is, when
+    /// it says something for every one.
+    ///
+    /// For the one position where a name with a value of its own may stand
+    /// for it: a pinned variable's address in another pinned variable's
+    /// initializer. Everywhere else a symbol stays a symbol for ld65.
+    pub fn value_with(&self, known: &impl Fn(SymbolId) -> Option<Value>) -> Option<Value> {
+        match self {
+            Self::Number(value) => Some(*value),
+            Self::Symbol(id) => known(*id),
+            Self::Unary { op, operand } => Some(apply_unary(*op, operand.value_with(known)?)),
+            Self::Binary { op, left, right } => Some(apply_binary(
+                *op,
+                left.value_with(known)?,
+                right.value_with(known)?,
+            )),
+        }
+    }
+
     /// True when ld65 — not K816 — decides this expression's value.
     pub fn is_link_time(&self) -> bool {
         self.value().is_none()

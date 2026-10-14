@@ -645,6 +645,40 @@ func main @a8 {
     );
 }
 
+/// A conditional `goto` that leaves a scoped width block restores it on its
+/// taken edge. The model files a conditional jump's bridges under the jump
+/// it wraps; lowering lowered the pair as one statement and read only the
+/// outer one, so this restore was missing and `.out` ran sixteen bits wide
+/// under a claim of eight.
+#[test]
+fn a_conditional_goto_out_of_a_block_restores_it_on_its_taken_edge() {
+    let text = "\
+func f @a8 {
+    @a16 {
+        c+? goto .out
+        nop
+    }
+.out:
+    lda #$12
+}
+";
+    let ops = operations(text);
+    let branch = ops
+        .iter()
+        .position(|op| op.starts_with("bcs "))
+        .expect("the branch");
+    let pad = ops[branch].trim_start_matches("bcs ").to_owned();
+    let landing = ops
+        .iter()
+        .position(|op| *op == pad)
+        .expect("the branch lands on a pad");
+    assert_eq!(
+        &ops[landing + 1..landing + 3],
+        ["sep #$20".to_owned(), "jmp .out".to_owned()],
+        "{ops:?}"
+    );
+}
+
 /// The bridge covers exactly the axes that need it: a label all of whose
 /// arrivals already agree with the annotation needs no instruction at all,
 /// and not emitting one is not an optimization — the model knows the state,

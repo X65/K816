@@ -1127,12 +1127,17 @@ fn a_transfer_out_of_a_width_block_restores_it_on_the_taken_edge() {
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
 
-    // Three exits, each with its own restore: the native branch, the
-    // generated one, and the nested pair — which restores twice.
+    // Three exits, each with its own restore — the native branch, the
+    // generated one, and the nested pair, which restores twice — and
+    // `generated_exit`'s fall-out restore on its back edge. The generated
+    // exit's pad is a `== break`, a conditional jump whose bridges the model
+    // files under the jump it wraps; lowering read only the outer statement,
+    // so until that was fixed the count was four and the loop was left
+    // sixteen bits wide by a function that claims `@a8`.
     let restores = assembly
         .matches("restoring the width the block changed")
         .count();
-    assert_eq!(restores, 4, "one per axis left behind:\n{assembly}");
+    assert_eq!(restores, 5, "one per axis left behind:\n{assembly}");
     assemble_and_link("block_exit", &assembly, "slice");
 }
 

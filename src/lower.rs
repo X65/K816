@@ -900,18 +900,7 @@ impl<'a> Lowering<'a> {
     /// statement's last operation: no path but the transfer's runs there, so
     /// the switch is a call-site bridge and needs no pad.
     fn split_taken_edges(&mut self, statement: &crate::ast::Statement, start: usize, span: Span) {
-        let edge: Vec<Bridge> = self
-            .widths
-            .as_deref()
-            .map(|analysis| {
-                analysis
-                    .bridges(statement.id)
-                    .iter()
-                    .filter(|bridge| bridge.anchor == BridgeAnchor::TakenEdge)
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
+        let edge = self.bridges_at(statement, BridgeAnchor::TakenEdge);
         if edge.is_empty() {
             return;
         }
@@ -1544,20 +1533,31 @@ impl<'a> Lowering<'a> {
         state
     }
 
+    /// The model's bridges for `statement` at one anchor.
+    ///
+    /// A conditional jump's own statement wraps the jump's, and the model
+    /// keeps both identities: the transfer is the inner one's, so its
+    /// bridges are filed there, and lowering — which lowers the pair as one
+    /// statement — has to read both. Reading only the outer one dropped a
+    /// block's restore from `c+? goto .out` leaving the block: the CPU stayed
+    /// sixteen bits wide at a label assembled for eight.
+    fn bridges_at(&self, statement: &crate::ast::Statement, anchor: BridgeAnchor) -> Vec<Bridge> {
+        let Some(analysis) = self.widths.as_deref() else {
+            return Vec::new();
+        };
+        let mut ids = vec![statement.id];
+        if let StatementKind::ConditionalJump(jump) = &statement.kind {
+            ids.push(jump.jump.id);
+        }
+        ids.into_iter()
+            .flat_map(|id| analysis.bridges(id).iter().copied())
+            .filter(|bridge| bridge.anchor == anchor)
+            .collect()
+    }
+
     /// Emits the model's own `REP`/`SEP` for `statement` at one anchor.
     fn bridges(&mut self, statement: &crate::ast::Statement, anchor: BridgeAnchor) {
-        let bridges: Vec<Bridge> = self
-            .widths
-            .as_deref()
-            .map(|analysis| {
-                analysis
-                    .bridges(statement.id)
-                    .iter()
-                    .filter(|bridge| bridge.anchor == anchor)
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
+        let bridges = self.bridges_at(statement, anchor);
         for bridge in bridges {
             let mnemonic = match bridge.width {
                 RegisterWidth::W8 => Mnemonic::Sep,

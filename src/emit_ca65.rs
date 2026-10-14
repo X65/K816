@@ -402,6 +402,32 @@ fn dbg_line(map: &SourceMap, span: crate::source::Span) -> String {
     )
 }
 
+/// The ca65 line that defines label `name` at the current address.
+///
+/// `name:` everywhere but for the three names ca65 lexes, followed by a
+/// colon, as an address-size prefix: `a:`, `f:`, `z:`, in either case. A
+/// function called `f` emitted as `f:` made ca65 refuse the line with
+/// "Expected 'end-of-line' but found 'f:'", about a temporary file the author
+/// never wrote — after `k816 compile` had reported success. The name is a
+/// perfectly good K816 name and a perfectly good ca65 symbol; only this one
+/// spelling of its definition is ambiguous. `name := *` defines the same
+/// label, opens a new cheap-local scope exactly as `name:` does, and every
+/// reference — `jsr f`, `lda a:f,x`, `.word f` — reads as it did.
+///
+/// This is the ca65 back end's business and nobody else's, which is why the
+/// language does not reserve the names: another assembler would have other
+/// spellings and other collisions. (`a` and `z` are refused anyway, by K816's
+/// own rule that a single letter names a register or a flag — and an
+/// instruction's name by `K816-E0173`, for which ca65 has no spelling at
+/// all.) The space before `:=` is load-bearing — `f:=*` lexes as `f:` again.
+fn label_definition(name: &str) -> String {
+    if matches!(name.to_ascii_lowercase().as_str(), "a" | "f" | "z") {
+        format!("{name} := *")
+    } else {
+        format!("{name}:")
+    }
+}
+
 /// Emits a non-instruction operation: a label or one of the directives.
 ///
 /// The *decision* to produce these — segment selection, derived linkage,
@@ -416,7 +442,7 @@ fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
         // nothing at unit level. Sub-plan D task D4 gives it its directives.
         KOpKind::ModeAssumption(_) => {}
         KOpKind::Label(symbol) => out.push_str(&annotated(
-            &format!("{}:", names.of(*symbol)),
+            &label_definition(&names.of(*symbol)),
             &match op.origin {
                 // The whole line, because a function's label sits on its
                 // declaration and the name alone would not show the widths.

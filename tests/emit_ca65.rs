@@ -1325,3 +1325,78 @@ func main @a8 @i8 {
         "{assembly}"
     );
 }
+
+/// A K816 name that ca65 lexes as an address-size prefix still assembles.
+///
+/// ca65 reads `f:` at the start of a line as its far-address prefix, so a
+/// function called `f` used to reach it as a label line it refused —
+/// "Expected 'end-of-line' but found 'f:'" about a temporary `.s` file —
+/// after `k816 compile` had succeeded. The name is legal in K816 and in ca65;
+/// the emitter spells its definition `f := *`. The two `.loop` labels on
+/// either side check that the definition still opens a cheap-local scope,
+/// because each is emitted `@loop` and a second one in the same scope would
+/// be a duplicate symbol.
+#[test]
+fn a_name_ca65_lexes_as_a_prefix_is_defined_and_linked() {
+    let source = "\
+func before @a8 @i8 {
+.loop:
+    dex
+    bne .loop
+}
+func f @a8 @i8 {
+.loop:
+    dey
+    bne .loop
+}
+data F { 1 2 }
+func main @a8 @i8 {
+    call f
+    lda F
+    lda F,x
+    return
+}
+";
+    let assembly = emit("prefix-names.k816", source);
+    assert!(
+        assembly.lines().any(|line| line.starts_with("f := *")),
+        "{assembly}"
+    );
+    assert!(
+        assembly.lines().any(|line| line.starts_with("F := *")),
+        "{assembly}"
+    );
+
+    let dir = common::work_dir("prefix-names");
+    let asm = dir.join("out.s");
+    let obj = dir.join("out.o");
+    let bin = dir.join("out.bin");
+    std::fs::write(&asm, &assembly).expect("write assembly");
+    common::run_ok(
+        std::process::Command::new(common::tool("CA65", "ca65"))
+            .arg(&asm)
+            .args(["-o".as_ref(), obj.as_os_str()]),
+        "ca65",
+    );
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    common::run_ok(
+        std::process::Command::new(common::tool("LD65", "ld65"))
+            .args(["-C".as_ref(), config.as_os_str()])
+            .args(["-o".as_ref(), bin.as_os_str()])
+            .arg(&obj),
+        "ld65",
+    );
+    let bytes = std::fs::read(&bin).expect("read the image");
+    // before at $8000: dex; bne -3; rts             (4 bytes)
+    // f at $8004:      dey; bne -3; rts             (4 bytes)
+    // F at $8008:      1 2                          (2 bytes)
+    // main at $800A:   jsr $8004; lda $8008; lda $8008,x; rts
+    assert_eq!(
+        bytes,
+        [
+            0xCA, 0xD0, 0xFD, 0x60, 0x88, 0xD0, 0xFD, 0x60, 0x01, 0x02, 0x20, 0x04, 0x80, 0xAD,
+            0x08, 0x80, 0xBD, 0x08, 0x80, 0x60,
+        ],
+        "{assembly}"
+    );
+}

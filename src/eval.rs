@@ -1146,8 +1146,14 @@ impl<'a> Interpreter<'a> {
             });
         };
         // A name this unit does not declare is one another unit does, since
-        // that is the only way a section value was made for it.
-        let Some(id) = self.symbols.lookup(name) else {
+        // that is the only way a section value was made for it — and so is a
+        // name the table holds as another unit's, which it does from before
+        // this unit's own sections are resolved.
+        let Some(id) = self
+            .symbols
+            .lookup(name)
+            .filter(|id| !self.symbols.symbol(*id).imported)
+        else {
             let why = match self.sections.foreign(name) {
                 Some(SectionBytes::Known(bytes)) => return Ok(bytes),
                 Some(SectionBytes::Unresolved) => SectionUnavailable::Unresolved,

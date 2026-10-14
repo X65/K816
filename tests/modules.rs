@@ -861,6 +861,45 @@ fn a_borrowed_widthless_inline_runs_at_each_use_sites_width() {
     }
 }
 
+/// A data block names another unit's routines, labels and variables.
+///
+/// A unit's own data blocks are resolved where they stand, while its
+/// declarations are read — and the import pass ran after that, so a dispatch
+/// table was `K816-E0101` for every routine of the unit it imports. A place
+/// another unit defines cannot be shadowed by anything a later local
+/// declaration could rightly win, so the places are declared first.
+#[test]
+fn a_data_block_names_another_units_places() {
+    let mut map = SourceMap::new();
+    map.add_file(
+        "lib.k816",
+        "func read @a8 @i8 {\n    nop\n}\nfunc write @a8 @i8 {\n    nop\n}\nvar lock:word\n\
+         data table_end { 0 }\n",
+    );
+    let entry = map.add_file(
+        "main.k816",
+        "import \"lib.k816\"\n\ndata dispatch {\n    word read write lock table_end\n}\n\n\
+         func main @a8 @i8 {\n    nop\n}\n",
+    );
+    let result = k816::compile_to_ca65(&map, entry, &k816::Options::default());
+    assert_eq!(
+        result.diagnostics,
+        vec![],
+        "a table of another unit's places"
+    );
+    let assembly = result.assembly.expect("compiles");
+    assert!(
+        assembly.contains(".word    read, write, lock, table_end"),
+        "{assembly}"
+    );
+    for name in ["read", "write", "lock", "table_end"] {
+        assert!(
+            assembly.contains(&format!(".import {name}")),
+            "`{name}`:\n{assembly}"
+        );
+    }
+}
+
 /// A `const` another unit *defines* leaves no `.import`, exactly as a local
 /// one does.
 ///

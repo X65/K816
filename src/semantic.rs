@@ -544,6 +544,9 @@ fn analyze(
         // unit-level declaration — `var bufs[TCB:sizeof * 4]`, `var chargen =
         // text + $0800` — can fold one before the import pass declares it.
         analysis.seed_foreign_facts(linkage, unit);
+        // And every foreign place, before the data blocks are resolved: a
+        // dispatch table names the routines of other units.
+        analysis.declare_foreign_places(linkage, unit, file);
     }
     analysis.declare_items(file);
     analysis.place_direct_page();
@@ -2805,6 +2808,63 @@ impl Analysis {
             self.model
                 .symbols
                 .declare_imported(&name, kind, layout.declaration);
+        }
+    }
+
+    /// Declares every place another unit defines — a function, a label, a
+    /// data label, a variable — before this unit's own declarations run.
+    ///
+    /// A data block is resolved where it stands, so `word UART_read` in a
+    /// dispatch table named a routine the import pass had not declared yet,
+    /// and was `K816-E0101` about a name the file above imports. Declaring
+    /// places first cannot shadow anything a local declaration should win:
+    /// this unit's labels, functions and data labels were declared by the
+    /// first pass, and a `var` or `const` of the same name as another unit's
+    /// place is a duplicate definition of the program already
+    /// (`K816-E0102`). A `const` and an `abstract var` are not places, may
+    /// legitimately be declared in both units, and keep their fallbacks; a
+    /// name this unit declares `extern` is left for that declaration and the
+    /// diagnostic the contradiction earns.
+    fn declare_foreign_places(
+        &mut self,
+        linkage: &Linkage,
+        unit: crate::source::FileId,
+        file: &AstFile,
+    ) {
+        let externs: BTreeSet<&str> = file
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Extern(declaration) => Some(match &declaration.kind {
+                    crate::ast::ExternKind::Func(function) => function.name.text.as_str(),
+                    crate::ast::ExternKind::Var(variable) => variable.name.text.as_str(),
+                    crate::ast::ExternKind::Const(name) => name.text.as_str(),
+                }),
+                _ => None,
+            })
+            .collect();
+        for (name, definition) in linkage.visible_definitions(unit) {
+            if definition.file == unit || externs.contains(name) {
+                continue;
+            }
+            let place = matches!(
+                definition.kind,
+                SymbolKind::Function { .. }
+                    | SymbolKind::Label { .. }
+                    | SymbolKind::DataLabel { .. }
+                    | SymbolKind::Var { .. }
+            );
+            if !place {
+                continue;
+            }
+            let kind = self
+                .model
+                .symbols
+                .foreign_fact(name)
+                .map_or_else(|| definition.kind.foreign(), |(kind, _)| kind);
+            self.model
+                .symbols
+                .declare_imported(name, kind, definition.declaration);
         }
     }
 

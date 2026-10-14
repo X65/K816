@@ -322,7 +322,10 @@ Two tracked files are generated, and their tests tell you so when they drift:
 each line — four spaces per brace-delimited construct — trailing whitespace,
 and the final newline. Whitespace *inside* a line is left exactly as written,
 so a column of aligned `=` signs or trailing comments survives, and a file's
-line endings are not converted.
+line endings are not converted. Two lines keep a column of their own: a line
+continuing a `const` list hangs under the list's first name, and a comment
+line in the column of the trailing comment above it continues that comment
+and stays there.
 
 `k816 fmt --check FILE...` writes nothing and exits non-zero if a file would
 change.

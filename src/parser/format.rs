@@ -28,7 +28,9 @@
 //! - **Indentation** is four spaces per brace-delimited construct the line's
 //!   first token is inside. A closing delimiter goes back out to the
 //!   enclosing level. A label sits where the corpus puts it — see
-//!   [`label_column`].
+//!   [`label_column`]. A `const` list continued onto further lines hangs
+//!   them under its first name, and a comment line continuing the trailing
+//!   comment above it stays in that comment's column — see [`indent_of`].
 //! - **A line's leading whitespace is replaced** by that indent.
 //! - **Trailing whitespace goes**, and the file ends with exactly one
 //!   newline.
@@ -109,20 +111,36 @@ pub fn format(source: &SourceFile, tree: &SyntaxTree) -> Option<String> {
 
     let mut out = String::with_capacity(text.len());
     let mut previous_end = 0usize;
+    // The last trailing comment written: its column in the source and in the
+    // output, for a comment line that continues it.
+    let mut trailing: Option<(usize, usize)> = None;
     for (index, token) in tokens.iter().enumerate() {
         let gap = &text[previous_end..token.start];
         let breaks = line_breaks(gap);
 
         if index == 0 || !breaks.is_empty() {
             out.push_str(&breaks);
-            for _ in 0..indent_of(token) {
+            let continues = token.comment
+                && trailing.is_some_and(|(column, _)| column == source_column(text, token.start));
+            let indent = match trailing {
+                Some((_, written)) if continues => written,
+                _ => indent_of(token),
+            };
+            for _ in 0..indent {
                 out.push(' ');
+            }
+            if !continues {
+                trailing = None;
             }
         } else {
             // A gap the source wrote inside a line, kept exactly: the corpus
             // aligns `=` and `:word` in columns, and a token pair the source
             // wrote adjacent stays adjacent.
             out.push_str(gap);
+        }
+        if token.comment && breaks.is_empty() && index > 0 {
+            let written = out.len() - out.rfind('\n').map_or(0, |at| at + 1);
+            trailing = Some((source_column(text, token.start), written));
         }
         out.push_str(&text[token.start..token.end]);
         previous_end = token.end;
@@ -156,6 +174,11 @@ fn line_breaks(gap: &str) -> String {
     breaks
 }
 
+/// The column `at` is in, counted in bytes from its line's start.
+fn source_column(text: &str, at: usize) -> usize {
+    at - text[..at].rfind('\n').map_or(0, |newline| newline + 1)
+}
+
 /// One token of the CST, with what the formatter needs to place it.
 #[derive(Clone, Debug)]
 struct Leaf {
@@ -169,16 +192,28 @@ struct Leaf {
     closes: bool,
     /// `Some(unit_level)` for the name of a label statement.
     label: Option<bool>,
+    /// A line comment.
+    comment: bool,
+    /// Inside a `const` list that continues past its first line, on a later
+    /// line: the column, past the list's own indent, its first name is at.
+    hang: Option<usize>,
 }
 
 /// Every token of the tree, in source order.
 fn leaves(tree: &SyntaxTree) -> Vec<Leaf> {
     let mut leaves = Vec::new();
-    walk(tree.root(), 0, &mut leaves);
+    walk(tree.root(), 0, None, &mut leaves);
     leaves
 }
 
-fn walk(node: tree_sitter::Node<'_>, depth: usize, leaves: &mut Vec<Leaf>) {
+/// `hang` is the open `const` list's first line and its first name's
+/// column on it, for the lines after.
+fn walk(
+    node: tree_sitter::Node<'_>,
+    depth: usize,
+    hang: Option<(usize, usize)>,
+    leaves: &mut Vec<Leaf>,
+) {
     if node.child_count() == 0 {
         // Zero-width tokens contribute no text and would produce a line of
         // their own; a well-formed tree has none, but recovery can.
@@ -191,6 +226,10 @@ fn walk(node: tree_sitter::Node<'_>, depth: usize, leaves: &mut Vec<Leaf>) {
             depth,
             closes: closes_its_parent(node),
             label: label_kind(node),
+            comment: node.kind() == "line_comment",
+            hang: hang
+                .filter(|(row, _)| node.start_position().row > *row)
+                .map(|(_, column)| column),
         });
         return;
     }
@@ -199,9 +238,22 @@ fn walk(node: tree_sitter::Node<'_>, depth: usize, leaves: &mut Vec<Leaf>) {
     } else {
         depth
     };
+    // `const A = 0,` above `      B,`: the names line up under the first.
+    let hang = if node.kind() == "const_declaration"
+        && node.end_position().row > node.start_position().row
+    {
+        node.named_child(0).map(|first| {
+            (
+                node.start_position().row,
+                first.start_position().column - node.start_position().column,
+            )
+        })
+    } else {
+        hang
+    };
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk(child, inner, leaves);
+        walk(child, inner, hang, leaves);
     }
 }
 
@@ -245,5 +297,5 @@ fn indent_of(token: &Leaf) -> usize {
     } else {
         token.depth
     };
-    depth * INDENT
+    depth * INDENT + token.hang.unwrap_or(0)
 }

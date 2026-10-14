@@ -438,3 +438,44 @@ fn a_file_with_nothing_in_it_formats_to_nothing() {
         assert_eq!(twice, "", "{source:?}");
     }
 }
+
+/// A `const` list continued onto further lines hangs them under its first
+/// name, wherever the source had them.
+///
+/// The enumeration of a ca65 include is one list and reads as one — the names
+/// in a column, a comment beside each — and replacing the continuation lines'
+/// indent with the list's own put every name after the first at column 0.
+/// The hang is the first name's distance from `const`, so it is a property of
+/// the first line and every later one agrees with it.
+#[test]
+fn a_continued_const_list_hangs_under_its_first_name() {
+    let source =
+        "const   EUNKNOWN = -1,\nEOK,\n          ENOENT, // none\n    // a note\n  ESRCH\n";
+    let expected = "const   EUNKNOWN = -1,\n        EOK,\n        ENOENT, // none\n        // a note\n        ESRCH\n";
+    assert_eq!(formatted("enum.k816", source).as_deref(), Some(expected));
+    assert_eq!(
+        formatted("enum.k816", expected).as_deref(),
+        Some(expected),
+        "idempotent"
+    );
+    // A list on one line is a line like any other.
+    assert_eq!(
+        formatted("one.k816", "  const A = 0, B, C\n").as_deref(),
+        Some("const A = 0, B, C\n")
+    );
+}
+
+/// A comment line in the column of the trailing comment above it continues
+/// that comment, and stays in its column; one anywhere else is indented as a
+/// statement.
+#[test]
+fn a_comment_continuing_the_one_above_keeps_its_column() {
+    let source = "func f @a8 @i8 {\n        inc lock        // two bytes, but only the low\n                        // one matters here\n            // not a continuation\n}\n";
+    let expected = "func f @a8 @i8 {\n    inc lock        // two bytes, but only the low\n                    // one matters here\n    // not a continuation\n}\n";
+    assert_eq!(formatted("comment.k816", source).as_deref(), Some(expected));
+    assert_eq!(
+        formatted("comment.k816", expected).as_deref(),
+        Some(expected),
+        "idempotent"
+    );
+}

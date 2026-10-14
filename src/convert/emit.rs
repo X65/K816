@@ -1107,6 +1107,42 @@ impl Writer<'_> {
                     open = true;
                     last_typed = None;
                 }
+                // K816's data `repeat` has no counter, so a body that reads
+                // one is written out, a line per pass, as ca65 assembles it.
+                Item::Repeat {
+                    count,
+                    var: Some(var),
+                    items: body,
+                    line,
+                    ..
+                } if open && program::is_data_repeat(body) => {
+                    for line in std::mem::take(&mut pending_trivia) {
+                        self.trivia(1, &line);
+                    }
+                    let Some(times) = count.fold(&|path| self.program.value(path)) else {
+                        self.unsupported(1, line, "a data `.repeat` whose count only ld65 knows");
+                        at += 1;
+                        continue;
+                    };
+                    let mut typed = None;
+                    for index in 0..times {
+                        let mut entries = Vec::new();
+                        for inner in body {
+                            if let Item::Data {
+                                directive,
+                                args,
+                                line: data,
+                            } = substitute_item(inner, var, index)
+                            {
+                                let args = fold_literals(&args);
+                                entries.extend(self.entries(&directive, &args, &data, &mut typed));
+                            }
+                        }
+                        let carrier = (index == 0).then_some(line);
+                        self.emit(1, &entries.join(" "), carrier);
+                    }
+                    last_typed = typed;
+                }
                 Item::Repeat {
                     count,
                     var: None,
@@ -1515,10 +1551,20 @@ impl Writer<'_> {
         } else {
             format!(" {header}")
         };
+        // A label that shares its line with an instruction or a macro use
+        // leaves the line's comment to that statement, which is emitted
+        // with it; on the opening line too it would be said twice.
+        let opener = match &line.body {
+            Some(source::Body::Instruction { .. } | source::Body::Name { .. }) => Line {
+                comment: None,
+                ..line.clone()
+            },
+            _ => line.clone(),
+        };
         self.emit(
             0,
             &format!("{} {spelled}{header} {{", section.keyword),
-            Some(line),
+            Some(&opener),
         );
         self.state_align(1);
     }
@@ -2010,6 +2056,7 @@ impl Writer<'_> {
             }
         };
         self.note_bridge(mnemonic, &shape, widths, line);
+        self.note_code_read(mnemonic, &shape, line);
         let mut lines = Vec::new();
         if shape_has_here(&shape) {
             let label = unique(".here", &mut self.locals.values().cloned().collect());
@@ -2026,6 +2073,31 @@ impl Writer<'_> {
             }
         }
         lines
+    }
+
+    /// An instruction that reads a routine's own bytes — `lda routine` — which
+    /// K816 refuses (`K816-E0115`): the optimizer rewrites a section's body,
+    /// so the address of its first byte is not one it keeps. The line is
+    /// converted as written, and the compiler says what to do instead.
+    fn note_code_read(&mut self, mnemonic: &str, shape: &Operand, line: &Line) {
+        let Operand::Direct { expr, .. } = shape else {
+            return;
+        };
+        if matches!(mnemonic, "jsr" | "jsl" | "jmp" | "jml") {
+            return;
+        }
+        let Some(name) = expr.name() else {
+            return;
+        };
+        if self.is_section(name) {
+            self.note(
+                line,
+                format!(
+                    "`{mnemonic}` reads the bytes of the routine `{name}`, which K816 does \
+                     not allow; put a label at the place to read and read through it"
+                ),
+            );
+        }
     }
 
     /// A call that K816 bridges where the original did not: the callee's
@@ -3272,6 +3344,42 @@ fn flatten(items: &[Item], program: &Program) -> Vec<Item> {
 }
 
 /// An item of a `.repeat` body with its counter replaced by `index`.
+/// A directive's arguments with every one that is arithmetic over numbers
+/// alone written as the number it is: what a `.repeat` counter leaves
+/// behind once it is substituted, `.byte 2 * 2` for `.byte i * 2`.
+fn fold_literals(args: &[Token]) -> Vec<Token> {
+    let parts = source::split_commas(args);
+    let mut out = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            let comma = args
+                .iter()
+                .find(|token| token.tok == Tok::Punct(","))
+                .cloned();
+            out.extend(comma);
+        }
+        let folded = expr::parse_all(part).ok().and_then(|value| {
+            let mut paths = Vec::new();
+            value.symbols(&mut paths);
+            if !paths.is_empty() {
+                return None;
+            }
+            value.fold(&|_| None).filter(|number| *number >= 0)
+        });
+        match (folded, part.first()) {
+            (Some(number), Some(first)) if part.len() > 1 => out.push(Token {
+                tok: Tok::Number {
+                    value: u32::try_from(number).unwrap_or(0),
+                    text: number.to_string(),
+                },
+                ..first.clone()
+            }),
+            _ => out.extend(part.iter().cloned()),
+        }
+    }
+    out
+}
+
 fn substitute_item(item: &Item, var: &str, index: i64) -> Item {
     let replace = |tokens: &[Token]| -> Vec<Token> {
         tokens

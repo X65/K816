@@ -1173,7 +1173,14 @@ fn boundaries(items: &[Item]) -> Vec<(String, bool)> {
     let mut after_terminator = false;
     for item in items {
         match item {
-            Item::Trivia(_) | Item::Linkage { .. } | Item::Ignored(_) | Item::Macpack(..) => {}
+            // A width directive runs nothing: it neither starts code nor
+            // ends the run of a terminator, so `rts` / `.a8` / `next:` still
+            // puts `next` after the terminator.
+            Item::Trivia(_)
+            | Item::Linkage { .. }
+            | Item::Ignored(_)
+            | Item::Macpack(..)
+            | Item::WidthAssert { .. } => {}
             Item::Label(Label::Named(name), _) => {
                 if !in_code {
                     found.push((name.clone(), true));
@@ -1190,17 +1197,9 @@ fn boundaries(items: &[Item]) -> Vec<(String, bool)> {
                 in_code = false;
             }
             Item::WidthSet { .. }
-            | Item::WidthAssert { .. }
             | Item::MacroUse { .. }
             | Item::Repeat { .. }
             | Item::If { .. } => {
-                if !in_code {
-                    // Code with no label of its own continues whatever was
-                    // last; a width directive between routines is not code.
-                    if matches!(item, Item::WidthAssert { .. }) {
-                        continue;
-                    }
-                }
                 in_code = true;
                 after_terminator = false;
             }

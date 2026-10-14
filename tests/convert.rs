@@ -32,6 +32,7 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -341,6 +342,459 @@ wide_caller:
         notes[0].contains("`wide`") && notes[0].contains("`@a16` where the original is at `@a8`"),
         "{notes:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Regressions: one source per defect the converter has had, each converted,
+// compiled, and linked against the guide's memory map to the bytes the ca65
+// source links to — the shape the defect broke is asserted beside the bytes.
+// ---------------------------------------------------------------------------
+
+fn guide_config() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/ca65-guide.cfg")
+}
+
+/// Links `inputs` with the staged `cl65` against the guide's memory map.
+fn link(dir: &Path, inputs: &[PathBuf], image: &str, what: &str) -> Vec<u8> {
+    let mut command = Command::new(toolchain().join("cl65"));
+    command
+        .args(["-t", "none", "--no-target-lib", "--cpu", "65816", "-C"])
+        .arg(guide_config())
+        .arg("--asm-include-dir")
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../asminc"))
+        .arg("-o")
+        .arg(dir.join(image))
+        .args(inputs)
+        .current_dir(dir);
+    run_ok(&mut command, what);
+    std::fs::read(dir.join(image)).expect("the image")
+}
+
+/// A ca65 program of `files`, converted from `inputs`: the converted units
+/// build to the bytes the sources do. Returns each unit's text by file
+/// name, and the notes.
+fn faithful_program(
+    test: &str,
+    files: &[(&str, &str)],
+    inputs: &[&str],
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let dir = work_dir(test);
+    for entry in std::fs::read_dir(&dir).expect("read the scratch directory") {
+        let path = entry.expect("an entry").path();
+        if path.is_file() {
+            std::fs::remove_file(&path).expect("clear the scratch directory");
+        }
+    }
+    for (name, text) in files {
+        std::fs::write(dir.join(name), text).expect("write a source");
+    }
+    let sources: Vec<PathBuf> = inputs.iter().map(|name| dir.join(name)).collect();
+    let want = link(&dir, &sources, "ca65.bin", &format!("cl65 on `{test}`"));
+    let conversion = converted(&sources, &[]);
+    let mut units = BTreeMap::new();
+    let mut paths = Vec::new();
+    for unit in &conversion.units {
+        std::fs::write(&unit.path, &unit.text).expect("write a unit");
+        paths.push(unit.path.clone());
+        let name = unit.path.file_name().expect("a name").to_string_lossy();
+        units.insert(name.into_owned(), unit.text.clone());
+    }
+    let got = link(
+        &dir,
+        &paths,
+        "k816.bin",
+        &format!("cl65 on `{test}` converted"),
+    );
+    assert!(
+        want == got,
+        "`{test}` converts to different bytes\nca65: {want:02X?}\nk816: {got:02X?}\n{units:#?}"
+    );
+    let notes = conversion
+        .notes
+        .iter()
+        .map(|note| note.message.clone())
+        .collect();
+    (units, notes)
+}
+
+/// One source, as [`faithful_program`]: the unit's text, and the notes.
+fn faithful(test: &str, source: &str) -> (String, Vec<String>) {
+    let (units, notes) = faithful_program(test, &[("unit.asm", source)], &["unit.asm"]);
+    (units["unit.kk"].clone(), notes)
+}
+
+#[track_caller]
+fn has(text: &str, wanted: &str) {
+    assert!(text.contains(wanted), "no `{wanted}` in\n{text}");
+}
+
+/// The lexer had `==` and `:=` but not `=`, so an equate did not read.
+#[test]
+fn an_equate_is_read_with_its_equals_sign() {
+    let (text, _) = faithful(
+        "regress-equals",
+        "COUNT = 3\n.code\n.a8\nfirst:  lda #COUNT\n        rts\n",
+    );
+    has(&text, "const COUNT = 3");
+    has(&text, "lda #COUNT");
+}
+
+/// `beq :+` was read as a label named `beq`: a ca65 label's colon is
+/// attached to its name, and one after a space is an unnamed reference.
+#[test]
+fn a_branch_to_an_unnamed_label_is_not_a_label_named_for_the_mnemonic() {
+    let (text, _) = faithful(
+        "regress-unnamed",
+        ".code\n.a8\n.i8\nfirst:  ldx #3\n:       dex\n        bne :-\n        beq :+\n        nop\n:       rts\n",
+    );
+    for line in [".loop:", "bne .loop", "beq .skip", ".skip:"] {
+        has(&text, line);
+    }
+    assert!(!text.contains("beq:"), "{text}");
+}
+
+/// A loop label after a terminator that only its own routine's branches
+/// reach is a local label. The records an operand leaves for the width of
+/// its access once counted as uses from outside the routine, and every such
+/// label became a routine of its own.
+#[test]
+fn a_label_only_its_own_branches_reach_stays_local_after_a_terminator() {
+    let (text, _) = faithful(
+        "regress-local-after-terminator",
+        ".zeropage\ncount:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #3\n        bra test\nloop:   dex\n        lda count\ntest:   cpx #0\n        bne loop\n        rts\n",
+    );
+    for line in ["func first", ".loop:", ".test:", "bra .test", "bne .loop"] {
+        has(&text, line);
+    }
+    assert_eq!(text.matches("func ").count(), 1, "{text}");
+}
+
+/// A global label after a terminator that nothing names starts a routine:
+/// nothing ties it to the routine above, and ca65 ends a cheap local's
+/// scope at it.
+#[test]
+fn an_unreferenced_label_after_a_return_starts_a_routine() {
+    let (text, _) = faithful(
+        "regress-unreferenced",
+        ".code\n.a8\nfirst:  lda #1\n        rts\nunused: lda #2\n        rts\n",
+    );
+    has(&text, "func first @a8 {");
+    has(&text, "func unused @a8 {");
+}
+
+/// `rts` / `.a8` / `g:` — a width directive between two routines runs
+/// nothing, and once ended the terminator's run, so `g` became a local label
+/// of `f`, with `f`'s `rts` left in the middle and `g`'s first immediate
+/// unsizeable.
+#[test]
+fn a_width_directive_between_routines_does_not_join_them() {
+    let (text, _) = faithful(
+        "regress-directive-between",
+        ".code\n.a16\nfirst:  lda #$1234\n        rts\n.a8\nsecond: lda #1\n        rts\n",
+    );
+    has(&text, "func first @a16 {");
+    has(&text, "func second @a8 {");
+    assert!(!text.contains(".second:"), "{text}");
+    assert!(
+        !text.contains("rts"),
+        "both returns are their sections' own:\n{text}"
+    );
+}
+
+/// Dropped `.export`/`.import` lines left their blank lines behind, in runs.
+#[test]
+fn dropped_linkage_lines_leave_no_run_of_blank_lines() {
+    let (units, _) = faithful_program(
+        "regress-linkage",
+        &[
+            (
+                "unit.asm",
+                ".export first\n\n.import second\n\n\n.code\nfirst:  jsr second\n        rts\n",
+            ),
+            ("lib.asm", ".export second\n.code\nsecond: rts\n"),
+        ],
+        &["unit.asm", "lib.asm"],
+    );
+    let text = &units["unit.kk"];
+    assert!(!text.contains("\n\n\n"), "{text}");
+}
+
+/// The imports a unit needs come before anything that uses them; the first
+/// draft wrote them at the end.
+#[test]
+fn imports_come_before_the_code() {
+    let conversion = converted(&program_inputs(), &[]);
+    let main = conversion
+        .units
+        .iter()
+        .find(|unit| unit.path.ends_with("main.kk"))
+        .expect("main.kk");
+    let last_import = main.text.rfind("import ").expect("an import");
+    let first_code = main.text.find("segment ").expect("a segment");
+    assert!(last_import < first_code, "{}", main.text);
+}
+
+/// A name K816 reserves is renamed, and the probe that decides asks the
+/// compiler about the name *as an operand* too: `address` is fine as a
+/// declaration and not in `jsr address`.
+#[test]
+fn a_name_k816_reserves_as_an_operand_is_renamed() {
+    let (text, notes) = faithful(
+        "regress-address",
+        ".code\n.a8\naddress:\n        lda #1\n        rts\nfirst:  jsr address\n        rts\n",
+    );
+    has(&text, "func address_ @a8 {");
+    has(&text, "    address_\n");
+    assert!(
+        notes.iter().any(|note| note.contains("`address_` here")),
+        "{notes:?}"
+    );
+}
+
+/// An instruction that reads a routine's own bytes is one K816 refuses, so
+/// the converter says so at the line.
+#[test]
+fn reading_a_routines_bytes_is_noted() {
+    let (_, notes) = one(
+        "regress-code-read",
+        ".code\n.a8\nroutine:\n        lda #1\n        rts\nfirst:  lda routine\n        rts\n",
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("reads the bytes of the routine `routine`")),
+        "{notes:?}"
+    );
+}
+
+/// An equate after a routine's last way out is the next thing in the file:
+/// the first draft pulled it, and the comments after it, into the routine.
+#[test]
+fn an_equate_after_a_return_is_not_part_of_the_routine() {
+    let (text, _) = faithful(
+        "regress-equate-after",
+        ".code\n.a8\nfirst:  lda #1\n        rts\nLIMIT = 4               ; the most there can be\n; A second routine.\nsecond: lda #LIMIT\n        rts\n",
+    );
+    has(
+        &text,
+        "func first @a8 {\n    lda #1\n}\nconst LIMIT = 4         // the most there can be\n// A second routine.\nfunc second @a8 {",
+    );
+}
+
+/// The header scan stopped at the first `bra`, and never reached the tail
+/// `jmp` whose callee states the width the routine relies on.
+#[test]
+fn the_header_scan_reads_past_a_branch_to_the_tail_jump() {
+    let (text, _) = faithful(
+        "regress-bra-tail",
+        ".code\n.a16\n.i16\nwide:   lda #$1234\n        rts\nfirst:  bra skip\n        nop\nskip:   jmp wide\n",
+    );
+    has(&text, "naked first @a16 {");
+}
+
+/// The header scan did not look inside a conditional, and missed the
+/// immediate there that relies on the width.
+#[test]
+fn the_header_scan_reads_inside_a_conditional() {
+    let (text, _) = faithful(
+        "regress-if-header",
+        "DEBUG = 1\n.code\n.a16\nfirst:\n.if DEBUG\n        lda #$1234\n.endif\n        rts\n",
+    );
+    has(&text, "func first @a16 {");
+}
+
+/// An unnamed label referenced only from a macro's argument — `blt :-` —
+/// was named `.next`, because the reference scan did not read arguments.
+#[test]
+fn an_unnamed_label_named_in_a_macro_argument_is_named() {
+    let (text, _) = faithful(
+        "regress-macro-argument",
+        ".macro blt target\n        bcc target\n.endmacro\n.code\n.a8\n.i8\nfirst:  ldx #3\n:       dex\n        cpx #1\n        blt :-\n        blt :+\n        nop\n:       rts\n",
+    );
+    has(&text, "blt #.loop");
+    has(&text, "blt #.skip");
+    assert!(!text.contains(".next"), "{text}");
+}
+
+/// Two bytes the program moves sixteen bits at a time are a `:word`, read
+/// past the plain address record each access also leaves; two moved a byte
+/// at a time are a span.
+#[test]
+fn storage_moved_sixteen_bits_at_a_time_is_a_word() {
+    let (text, _) = faithful(
+        "regress-word-storage",
+        ".zeropage\nptr:    .res 2\nbytes:  .res 2\n.code\n.a16\n.i16\nfirst:  lda ptr\n        sta ptr\n        lda #ptr\n        rts\n.a8\nsecond: lda bytes\n        sta bytes+1\n        rts\n",
+    );
+    has(&text, "var dp ptr:word");
+    has(&text, "var dp bytes[2]");
+}
+
+/// A width directive at a routine's top that its header states is the
+/// header, not a second statement of it.
+#[test]
+fn a_header_width_is_not_asserted_again_in_the_body() {
+    let (text, _) = faithful(
+        "regress-header-twice",
+        ".code\nfirst:\n.a16\n.i16\n        lda #$1234\n        ldx #$1234\n        rts\n",
+    );
+    has(&text, "func first @a16 @i16 {");
+    assert_eq!(text.matches("@a16").count(), 1, "{text}");
+}
+
+/// A `.byte 0,0` entry stays one entry on one line.
+#[test]
+fn a_byte_list_stays_on_its_line() {
+    let (text, _) = faithful(
+        "regress-byte-list",
+        ".rodata\npair:   .byte 0,0\nthree:  .byte 1, 2, 3\n",
+    );
+    has(&text, "    pair:   0 0\n");
+    has(&text, "    three:  1 2 3\n");
+}
+
+/// A label on the line of its data keeps the gap after it, so a column of
+/// one-liners stays a column.
+#[test]
+fn one_liner_data_labels_keep_their_column() {
+    let (text, _) = faithful(
+        "regress-one-liner",
+        ".rodata\nstr_A:      .byte \"abc\", 0\nstr_LONGER: .byte \"de\", 0\n",
+    );
+    has(&text, "    str_A:      \"abc\" 0\n");
+    has(&text, "    str_LONGER: \"de\" 0\n");
+}
+
+/// A `.define` keeps the spaces around its `=`, and a comment that is
+/// already `; // text` is not doubled into `// // text`.
+#[test]
+fn a_define_keeps_its_spacing_and_a_double_slash_comment_is_not_doubled() {
+    let (text, _) = faithful(
+        "regress-define-comment",
+        ".define LIMIT 200       ; the most\n; // already a K816-style comment\n.code\n.a8\nfirst:  lda #LIMIT      ; // trailing\n        rts\n",
+    );
+    has(&text, "const LIMIT = 200       // the most\n");
+    has(&text, "\n// already a K816-style comment\n");
+    assert!(!text.contains("// //"), "{text}");
+}
+
+/// A comment on a line that holds a label and an instruction is said once,
+/// with the instruction — not again on the routine's opening line.
+#[test]
+fn a_comment_on_a_label_and_instruction_line_is_said_once() {
+    let (text, _) = faithful(
+        "regress-label-line-comment",
+        ".code\n.a8\n.i8\nfirst:  ldx #3          ; start\nloop:   dex             ; count down\n        bne loop\n        rts\n",
+    );
+    has(&text, "func first @i8 {\n    ldx #3          // start\n");
+    assert_eq!(text.matches("start").count(), 1, "{text}");
+}
+
+/// A `jsl` to a routine that returns with `rtl` is `far NAME`.
+#[test]
+fn a_far_call_is_far_name() {
+    let (text, _) = faithful(
+        "regress-far-call",
+        ".code\n.a8\nfirst:  jsl second\n        rts\nsecond: lda #1\n        rtl\n",
+    );
+    has(&text, "    far second\n");
+    has(&text, "far func second @a8 {");
+}
+
+/// A data `.repeat` is data, and one whose body reads its counter is
+/// written out a pass per line, since K816's `repeat` has no counter. The
+/// counter case used to end the data block and land in a routine of its own
+/// as unconvertible lines.
+#[test]
+fn a_data_repeat_that_reads_its_counter_is_written_out() {
+    let (text, notes) = faithful(
+        "regress-data-repeat",
+        ".rodata\ntable:\n.repeat 4, i\n        .byte i * 2\n.endrep\nfill:\n.repeat 3\n        .byte $EA\n.endrep\n",
+    );
+    has(&text, "data table {\n    0\n    2\n    4\n    6\n");
+    has(&text, "repeat 3 { $EA }");
+    assert_eq!(notes, Vec::<String>::new());
+}
+
+/// An `.align` written before a label is the first entry of the label's
+/// block, so the label is what lands on the boundary — here three bytes
+/// past a one-byte routine.
+#[test]
+fn an_align_before_a_label_is_the_first_entry_of_its_block() {
+    let (text, _) = faithful(
+        "regress-align",
+        ".code\nfirst:  rts\n.align 4\ntbl:    .byte 1, 2, 3\n",
+    );
+    has(&text, "data tbl {\n    align 4\n");
+}
+
+/// A width block restores the width the compiler knew at its opening, and
+/// nothing where it knew none. ca65 was told `.a16` here, but nothing in the
+/// routine relies on it before the `sep`, so the header states no width and
+/// K816 knows none: written as `@a8 { … }`, the block would restore nothing
+/// and the original's `rep #$20` would be gone. So the change is two
+/// statements.
+#[test]
+fn a_width_change_with_no_known_width_around_it_is_not_a_block() {
+    let (text, _) = faithful(
+        "regress-unknown-outer",
+        ".code\n.a16\nfirst:  nop\n        sep #$20\n        .a8\n        lda #1\n        rep #$20\n        .a16\n        rts\n",
+    );
+    has(&text, "func first {");
+    assert!(!text.contains("@a8 {"), "{text}");
+    has(&text, "    @a8\n    lda #1\n    @a16\n");
+}
+
+/// A data block names another unit's routines and data: the names are
+/// declared before the unit's own data is resolved, and reading an
+/// imported data label is reading that unit's bytes.
+#[test]
+fn data_naming_another_units_routines_converts_and_links() {
+    let (units, _) = faithful_program(
+        "regress-imported-data",
+        &[
+            (
+                "main.asm",
+                ".import lib_a, lib_b, lib_table\n.rodata\nhandlers: .addr lib_a, lib_b, lib_table\n.code\n.a8\nmain:   jsr lib_a\n        lda lib_table\n        rts\n",
+            ),
+            (
+                "lib.asm",
+                ".export lib_a, lib_b, lib_table\n.code\nlib_a:  rts\nlib_b:  rts\n.rodata\nlib_table: .byte 1, 2\n",
+            ),
+        ],
+        &["main.asm", "lib.asm"],
+    );
+    has(&units["main.kk"], "word lib_a lib_b lib_table");
+}
+
+/// Routines that call and tail-jump to each other, and to themselves, in a
+/// cycle: the header scan follows each callee once. It first followed every
+/// path to a depth of sixteen — three calls a level is forty million scans,
+/// and the test that met it never finished.
+#[test]
+fn a_cycle_of_calls_does_not_stall_the_header_scan() {
+    // Twenty routines, so that a scan which follows every path — even one
+    // that stops at a cycle — is three calls a level, twenty levels deep.
+    const ROUTINES: usize = 20;
+    let mut source = String::from(".code\n.a16\nwide:   lda #$1234\n        rts\n");
+    for index in 0..ROUTINES {
+        let next = (index + 1) % ROUTINES;
+        let after = (index + 2) % ROUTINES;
+        source.push_str(&format!(
+            "r{index}:     jsr r{next}\n        jsr r{after}\n        jsr r{index}\n        jsr wide\n        jmp r{next}\n"
+        ));
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(one("regress-call-cycle", &source).0);
+    });
+    let text = receiver
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the conversion finishes");
+    // `wide` states `@a16`, so each routine that calls it relies on the
+    // width it had there; the cycle itself states nothing.
+    for index in 0..ROUTINES {
+        has(&text, &format!("naked r{index} @a16 {{"));
+    }
 }
 
 // ---------------------------------------------------------------------------

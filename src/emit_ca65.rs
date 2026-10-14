@@ -1017,7 +1017,23 @@ fn format_immediate_value(
 /// end of the line or by a `,x` / `,y` / `,s` trailer, and no ca65 operator
 /// binds looser than either — while every nested level stays parenthesized,
 /// so the precedence guarantee is unchanged.
+///
+/// Stripping one pair is not always enough. `(CGIA + $40) + $02` — a field
+/// of a nested layout plus an offset — still *starts* with a parenthesis once
+/// the outer pair is gone, and ca65 reads that as an indirection too. A
+/// leading unary `+` ends the ambiguity: it binds tighter than any binary
+/// operator, so `+(L) op R` is `L op R` whatever `op` is.
 fn format_operand_expr(expr: &KExpr, names: &Names<'_>) -> String {
+    let text = stripped_operand_expr(expr, names);
+    if text.starts_with('(') {
+        format!("+{text}")
+    } else {
+        text
+    }
+}
+
+/// [`format_operand_expr`] before the leading-parenthesis guard.
+fn stripped_operand_expr(expr: &KExpr, names: &Names<'_>) -> String {
     let text = format_expr(expr, names);
     match expr {
         KExpr::Binary { .. } => text

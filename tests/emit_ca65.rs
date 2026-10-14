@@ -378,7 +378,14 @@ fn expressions_use_ca65s_named_operators_and_explicit_grouping() {
 /// `lda a:(spot + 2)` is not the absolute load it looks like — ca65 reads
 /// the parenthesis as an indirection and rejects the line. The outermost
 /// pair is dropped in operand position for exactly that reason; every
-/// nested level keeps its own.
+/// nested level keeps its own, and an operand that still begins with one is
+/// guarded by a unary `+`.
+///
+/// This test used to assert `lda a:(spot + $02) .bitand $FF` — the unguarded
+/// form, which ca65 refuses with "Illegal addressing mode". It compared text
+/// and never assembled, so it pinned the defect it was written to prevent;
+/// `an_operand_whose_left_side_is_parenthesized_assembles_to_its_address` is
+/// the one that goes through ca65.
 #[test]
 fn an_address_operand_drops_only_its_outermost_parentheses() {
     let text = "func work @a16 @i16 {\n  spot:\n    lda spot + 2 & $FF\n    lda spot + 2\n}\n";
@@ -388,7 +395,7 @@ fn an_address_operand_drops_only_its_outermost_parentheses() {
         "{lines:?}"
     );
     assert!(
-        lines.contains(&"lda     a:(spot + $02) .bitand $FF".to_owned()),
+        lines.contains(&"lda     a:+(spot + $02) .bitand $FF".to_owned()),
         "{lines:?}"
     );
 }
@@ -1247,5 +1254,74 @@ fn the_import_pair_links_through_ld65() {
     assert!(
         std::fs::metadata(&bin).expect("the linked image").len() > 0,
         "the pair links"
+    );
+}
+
+/// An address operand whose *left* operand is parenthesized assembles.
+///
+/// The emitter strips an operand's outermost parentheses, because ca65 reads
+/// `lda a:(spot + 2)` as an indirection. A field of a nested layout plus an
+/// offset is `((REGS + $40) + $01)`, which still starts with `(` once the
+/// outer pair is gone, so ca65 refused the line with "Illegal addressing
+/// mode". Found by building a real program whose display code writes
+/// `sta CGIA.plane_regs+CGIA_BCKGND_REGS.row_height:offsetof`.
+#[test]
+fn an_operand_whose_left_side_is_parenthesized_assembles_to_its_address() {
+    let source = "\
+abstract var PLANE[
+    .flags      :byte
+    .row_height :byte
+]
+var REGS[
+    .pad        :byte [64]
+    .plane_regs :byte [16]
+] = $FF00
+func main @a8 @i8 {
+    lda #7
+    sta REGS.plane_regs+PLANE.row_height:offsetof
+    sta REGS.plane_regs+PLANE.row_height:offsetof,x
+    sta far REGS.plane_regs+PLANE.row_height:offsetof
+    return
+}
+";
+    let assembly = emit("nested-offset.k816", source);
+    let line = assembly
+        .lines()
+        .find(|line| {
+            line.trim_start().starts_with("sta") && !line.contains(",x") && !line.contains("f:")
+        })
+        .expect("the absolute store");
+    assert!(
+        line.contains("a:+("),
+        "a leading parenthesis was emitted unguarded: {line}"
+    );
+
+    let dir = common::work_dir("nested-offset");
+    let asm = dir.join("out.s");
+    let obj = dir.join("out.o");
+    let bin = dir.join("out.bin");
+    std::fs::write(&asm, &assembly).expect("write assembly");
+    common::run_ok(
+        std::process::Command::new(common::tool("CA65", "ca65"))
+            .arg(&asm)
+            .args(["-o".as_ref(), obj.as_os_str()]),
+        "ca65",
+    );
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    common::run_ok(
+        std::process::Command::new(common::tool("LD65", "ld65"))
+            .args(["-C".as_ref(), config.as_os_str()])
+            .args(["-o".as_ref(), bin.as_os_str()])
+            .arg(&obj),
+        "ld65",
+    );
+    let bytes = std::fs::read(&bin).expect("read the image");
+    // lda #7; sta $FF41; sta $FF41,x; sta $00FF41; rts
+    assert_eq!(
+        bytes,
+        [
+            0xA9, 0x07, 0x8D, 0x41, 0xFF, 0x9D, 0x41, 0xFF, 0x8F, 0x41, 0xFF, 0x00, 0x60
+        ],
+        "{assembly}"
     );
 }

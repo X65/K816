@@ -519,3 +519,31 @@ fn the_help_a_k816_source_gets_names_k816s_spelling() {
         assert!(help.contains(wanted), "`{body}`: {help}");
     }
 }
+
+/// An HLA operand runs on across a line break and a `;` ends it, `push`'s
+/// constants like every other: `push LIMIT` above `* 3` pushes `LIMIT * 3`,
+/// as `a = LIMIT` above it loads it. Sub-plan O first ended a pushed constant
+/// at its line, which made `push` the one HLA statement that read the line
+/// break; the user: "If you want nops, you need to put ; between".
+#[test]
+fn an_hla_operand_runs_on_across_a_line_and_a_semicolon_ends_it() {
+    let program = |body: &str| format!("const LIMIT = 2\n\nfunc work @a16 @i16 {{\n{body}\n}}\n");
+    let instructions = |body: &str| -> Vec<String> {
+        code("unit.kk", &program(body))
+            .1
+            .iter()
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|line| ["pea", "lda", "nop"].iter().any(|m| line.starts_with(m)))
+            .collect()
+    };
+    assert_eq!(instructions("    push LIMIT\n    * 3"), ["pea $0006"]);
+    assert_eq!(instructions("    a = LIMIT\n    * 3"), ["lda #$0006"]);
+    assert_eq!(
+        instructions("    push LIMIT; * 3"),
+        ["pea $0002", "nop", "nop", "nop"]
+    );
+    assert_eq!(
+        instructions("    a = LIMIT; * 3"),
+        ["lda #$0002", "nop", "nop", "nop"]
+    );
+}

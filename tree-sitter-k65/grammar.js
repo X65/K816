@@ -1341,15 +1341,13 @@ export default grammar({
     // keywords are the scanner's, and one only with an operand after it on
     // its line, so `jsr push` still calls a routine of that name.
     //
-    // A constant ends at the end of its line, as a mnemonic's operand does
-    // (`native_instruction`): `push LIMIT` above a `* 3` wait is a push and
-    // a wait, not a push of `LIMIT * 3`. A comma at the end of a line still
-    // carries the list on, because no line end is valid after one.
+    // A constant runs on across a line break like every HLA operand — K65 is
+    // newline-insensitive, and `;` is what ends a statement — so `push LIMIT`
+    // above `* 3` pushes `LIMIT * 3`, as `a = LIMIT` above it loads it.
     push_statement: $ =>
       seq(
         alias($._push_keyword, 'push'),
         commaSep1(field('item', choice($.register, $.immediate, $._expression))),
-        optional($._line_end),
       ),
 
     pull_statement: $ =>

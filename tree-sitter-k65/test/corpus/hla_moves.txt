@@ -382,12 +382,13 @@ func main {
         item: (register)))))
 
 ================================================================================
-A push constant ends at the end of its line
+A push constant runs on across a line break, and a semicolon ends it
 ================================================================================
 
 func main {
   push LIMIT
   * 3
+  push LIMIT; * 3
   push $0012, LIMIT,
     x
 }
@@ -399,6 +400,10 @@ func main {
     name: (identifier)
     body: (block
       (push_statement
+        item: (binary_expression
+          left: (identifier)
+          right: (number)))
+      (push_statement
         item: (identifier))
       (hla_nop
         count: (number))
@@ -406,3 +411,4 @@ func main {
         item: (number)
         item: (identifier)
         item: (register)))))
+

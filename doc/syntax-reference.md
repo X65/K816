@@ -1979,7 +1979,7 @@ A register is pushed by its own instruction — `a`, `x`, `y`, `p`, `dbr` and `d
 | `push &<mem`, `push &>mem`, `push 'a'`, `push LIMIT:byte` | `K816-E0175`: one byte by construction, which no 65816 instruction pushes. The fix writes `(&<mem):word` — the zero high byte said out loud |
 | `push mem`, `push routine` | `K816-E0177`: a name is the place it names, as in `a = mem`, and `push` takes values. `push #mem` pushes its address |
 
-A constant ends at the end of its line, as a mnemonic's operand does, so `push LIMIT` above a `* 3` wait is a push and a wait. A comma at the end of a line carries the list on. `pei` and `per` stay mnemonics: `pei (ptr)` pushes the word at a direct-page address whatever `M` says, which a `push ptr` would make read like the value at the accumulator's width — which is why `push ptr` is refused rather than given that meaning.
+Like every HLA operand, a constant runs on across a line break — K65 is newline-insensitive, and `;` is what ends a statement — so `push LIMIT` above `* 3` pushes `LIMIT * 3`; `push LIMIT; * 3` is a push and a three-NOP wait. `pei` and `per` stay mnemonics: `pei (ptr)` pushes the word at a direct-page address whatever `M` says, which a `push ptr` would make read like the value at the accumulator's width — which is why `push ptr` is refused rather than given that meaning.
 
 `push` and `pull` are keywords only with an operand after them on their line, so `jsr push` still calls a routine of that name. K65 spells the same instructions `a!!` and `a??`, one register at a time, which a `.k65` source accepts and a K816 one refuses with `K816-K65-0010`.
 

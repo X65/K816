@@ -351,3 +351,80 @@ fn code_lines(assembly: &str, name: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+
+/// Rule 3: in a K816 source's HLA a number is always a value, so a number in
+/// a memory shape is refused, with the native mnemonic as the fix where the
+/// statement is one instruction (`plans/14-readable-hla.md` decision 10).
+/// The fix compiles to the bytes the HLA statement compiles to in a `.k65`,
+/// which keeps K65's reading. A displacement from `S`, an `&` offset, a
+/// named place and a value are not numbers used as places.
+#[test]
+fn a_number_used_as_a_place_is_refused_and_its_fix_is_the_mnemonic() {
+    for (statement, fix) in [
+        ("a = $10,x", Some("lda $10,x")),
+        ("a = ($10),y", Some("lda ($10),y")),
+        ("a = ($10,x)", Some("lda ($10,x)")),
+        ("a = dp $10", Some("lda dp $10")),
+        ("$10 = a", Some("sta $10")),
+        ("$0300,x = a", Some("sta $0300,x")),
+        ("x = $10,y", Some("ldx $10,y")),
+        ("$10++", Some("inc $10")),
+        ("$10--", Some("dec $10")),
+        ("$10<<", Some("asl $10")),
+        ("$10>>>", Some("ror $10")),
+        ("a + $10,x", Some("adc $10,x")),
+        ("a?($10),y", Some("cmp ($10),y")),
+        ("a&?$10,x", Some("bit $10,x")),
+        ("a = [$10],y", None),
+    ] {
+        let source = unit(statement);
+        let (codes, repaired) = fixed("unit.kk", &source);
+        assert_eq!(codes, ["K816-E0176"], "`{statement}`");
+        assert_eq!(
+            code("unit.k65", &source).0,
+            Vec::<&str>::new(),
+            "`{statement}` in a .k65"
+        );
+        match fix {
+            Some(fix) => {
+                assert!(
+                    repaired.contains(&format!("    {fix}\n")),
+                    "`{statement}` fixed to\n{repaired}"
+                );
+                assert_eq!(
+                    code("unit.kk", &repaired),
+                    code("unit.k65", &source),
+                    "`{statement}` and `{fix}`"
+                );
+            }
+            None => assert_eq!(repaired, source, "`{statement}` was offered a fix"),
+        }
+    }
+    // A chain of two instructions is refused at each number, with no fix:
+    // what the instructions are is the author's to write.
+    let (codes, repaired) = fixed("unit.kk", &unit("$11 = a = $10,x"));
+    assert_eq!(codes, ["K816-E0176", "K816-E0176"]);
+    assert_eq!(repaired, unit("$11 = a = $10,x"));
+    for statement in [
+        "a = 3,s",
+        "a = (3,s),y",
+        "a = &2,x",
+        "a = flags,x",
+        "a = (flags),y",
+        "a = flags + 1",
+        "a = $10",
+        "a = $10 + 1",
+        "a = &<flags",
+        "a + $10",
+        "x?$10",
+    ] {
+        assert_eq!(
+            code("unit.kk", &unit(statement)).0,
+            Vec::<&str>::new(),
+            "`{statement}`"
+        );
+    }
+    // The zero store keeps its own refusal of a numeric target.
+    let (codes, _) = fixed("unit.kk", &unit("$10 = 0"));
+    assert!(!codes.contains(&"K816-E0176"), "{codes:?}");
+}

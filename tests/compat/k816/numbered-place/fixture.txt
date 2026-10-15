@@ -1,0 +1,17 @@
+row       k816-numbered-place
+config    atarixl.cfg
+compare   diagnostics
+units     input.kk
+expect    input.kk K816-E0176
+expect    input.kk K816-E0176
+expect    input.kk K816-E0176
+
+**In a K816 source's HLA, memory is reached through a named variable.**  A
+number is always a value there - `a = $10` loads `#$10`, which both
+dialects have always done - so `a = $10,x`, `$10 = a` and `$10++` would use
+one number as two things, and a `.kk` refuses all three (`K816-E0176`), each
+with the native mnemonic as its fix: `lda $10,x` takes an address as
+written, and a mnemonic is the escape hatch.  `a = flags,x` names its place,
+`a = $10` is the value, and `a = 3,s` is a displacement from `S`, which no
+variable can name - none of the three is refused.  A `.k65` source keeps
+the reading K816 gave these shapes before the rule.

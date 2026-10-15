@@ -133,6 +133,13 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::K65_STACK_SHORTHAND,
         caret: "!!",
     },
+    // Rule 3: a number in a K816 source's HLA is a value, so it cannot be
+    // the place a statement reaches.
+    Case {
+        source: "func work @a8 @i8 {\n    a = $10,x\n}\n",
+        code: DiagnosticCode::NUMBER_AS_PLACE,
+        caret: "$10",
+    },
     // `PEA` pushes a word whatever `M` says, so a pushed constant has to be
     // written as one, and cannot be a byte by construction.
     Case {

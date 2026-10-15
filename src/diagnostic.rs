@@ -503,6 +503,11 @@ impl DiagnosticCode {
     /// character, a `:byte` view. The 65816 has no instruction that pushes a
     /// constant byte, so the fix says the high byte is zero with `:word`.
     pub const PUSH_BYTE_CONSTANT: Self = Self("K816-E0175");
+    /// A number where a K816 source's HLA reaches memory — `a = $10,x`,
+    /// `$10 = a`, `$10++` — which rule 3 says is always a value. The fix,
+    /// where the statement is one instruction, is the native mnemonic
+    /// (`plans/14-readable-hla.md` decision 10).
+    pub const NUMBER_AS_PLACE: Self = Self("K816-E0176");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -839,6 +844,7 @@ mod tests {
         DiagnosticCode::INSTRUCTION_NAME,
         DiagnosticCode::PUSH_NARROW_CONSTANT,
         DiagnosticCode::PUSH_BYTE_CONSTANT,
+        DiagnosticCode::NUMBER_AS_PLACE,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

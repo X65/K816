@@ -37,12 +37,21 @@
 //!   one, each with a fix that writes the K816 form. The fix is the whole
 //!   point: the two spellings compile to the same bytes, so applying it
 //!   changes nothing but the spelling.
+//! - Rule 3 (decision 10): in a K816 source's HLA, memory is reached only
+//!   through a named variable, and a free-standing number is always a value
+//!   — which `a = $10` already is, loading `#$10`. A number in any memory
+//!   shape (`a = $10,x`, `$10 = a`, `$10++`, `a = ($10),y`) is refused, with
+//!   the native mnemonic as the fix where the statement is one instruction:
+//!   a mnemonic takes an address as written, and is the escape hatch. A
+//!   number before `,s` is a displacement and no variable can name it, and
+//!   one after `&` says it is an offset, so both stay.
 
 use crate::ast::{
-    AstFile, Block, BranchCondition, BranchConditionKind, ComparisonKind, DataBlock, DataEntryKind,
-    Expr, ExprKind, FlagTestSpelling, HlaStack, HlaStatement, ItemKind, LoopCondition,
-    LoopSpelling, LoopStatement, RegisterKind, StackOp, StackSpelling, Statement, StatementKind,
-    TypeWidthKind, UnaryOp,
+    ArithmeticOp, AstFile, Block, BranchCondition, BranchConditionKind, ComparisonKind, DataBlock,
+    DataEntryKind, Expr, ExprKind, FlagTestSpelling, HlaOperand, HlaOperandKind, HlaStack,
+    HlaStatement, IndexRegisterKind, ItemKind, LoopCondition, LoopSpelling, LoopStatement,
+    RegisterKind, ShiftOp, StackOp, StackSpelling, Statement, StatementKind, StepOp, TypeWidthKind,
+    UnaryOp,
 };
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::source::{Dialect, SourceFile, Span};
@@ -99,6 +108,7 @@ impl Checker<'_> {
             StatementKind::Hla(HlaStatement::Stack(stack)) if k816 => {
                 self.stack_shorthand(stack, statement.span)
             }
+            StatementKind::Hla(hla) if k816 => self.numbered_places(hla, statement.span),
             StatementKind::Conditional(conditional) => {
                 if k816 {
                     self.condition(&conditional.condition);
@@ -267,6 +277,104 @@ impl Checker<'_> {
         );
     }
 
+    /// Rule 3 over one HLA statement: every memory operand it has must name
+    /// a place. A chain that names no register is the zero store's, which
+    /// refuses a numeric target itself (`k816-zero-store-target`).
+    ///
+    /// A *source* with no index and no prefix is a value however it is
+    /// written — `a = $10` loads `#$10`, which is the rule itself — so only a
+    /// target, an indexed or prefixed source, and an indirect operand can be
+    /// a number used as a place (`Resolver::hla_value` reads them the same
+    /// way).
+    fn numbered_places(&mut self, hla: &HlaStatement, span: Span) {
+        // Each operand, and whether it is read as a source.
+        let operands: Vec<(&HlaOperand, bool)> = match hla {
+            HlaStatement::Assign(assign) => {
+                let all: Vec<(&HlaOperand, bool)> = assign
+                    .targets
+                    .iter()
+                    .map(|target| (target, false))
+                    .chain(std::iter::once((&assign.source, true)))
+                    .collect();
+                if !all
+                    .iter()
+                    .any(|(operand, _)| matches!(operand.kind, HlaOperandKind::Register(_)))
+                {
+                    return;
+                }
+                all
+            }
+            HlaStatement::Arithmetic(arithmetic) => vec![(&arithmetic.operand, true)],
+            HlaStatement::Shift(shift) => vec![(&shift.target, false)],
+            HlaStatement::Step(step) => vec![(&step.target, false)],
+            _ => return,
+        };
+        for (operand, source) in operands {
+            let value = match &operand.kind {
+                HlaOperandKind::Memory(address) => {
+                    if address.offset_marker.is_some()
+                        || address
+                            .index
+                            .is_some_and(|index| index.kind == IndexRegisterKind::Stack)
+                        || (source && address.index.is_none() && address.encoding.is_none())
+                    {
+                        continue;
+                    }
+                    &address.value
+                }
+                HlaOperandKind::Indirect(indirect) => {
+                    if indirect
+                        .inner_index
+                        .is_some_and(|index| index.kind == IndexRegisterKind::Stack)
+                    {
+                        continue;
+                    }
+                    &indirect.value
+                }
+                _ => continue,
+            };
+            if names_a_place(value) {
+                continue;
+            }
+            let number = self.source.span_text(value.span);
+            // A bracket in HLA is the evaluator's and in a mnemonic an
+            // indirect-long operand, so the operand cannot be copied across.
+            let native = (!holds_a_bracket(value))
+                .then(|| native_instruction(hla, self.source))
+                .flatten();
+            let mut diagnostic = Diagnostic::error(
+                DiagnosticCode::NUMBER_AS_PLACE,
+                "a K816 source's HLA reaches memory through a named variable",
+                Label::new(
+                    value.span,
+                    format!("`{number}` is a value here, not a place"),
+                ),
+            )
+            .with_note(
+                "in HLA a number is always a value — `a = $10` loads `#$10` — so a number \
+                 cannot also be an address; a native mnemonic takes one as written",
+            )
+            .with_docs("doc/syntax-reference.md#variable-declaration");
+            diagnostic = match native {
+                Some(native) => diagnostic
+                    .with_help(format!(
+                        "name the place — `var NAME = {number}` — and write `NAME`, or write \
+                         the instruction: `{native}`"
+                    ))
+                    .with_fix(Fix {
+                        title: format!("write `{native}`"),
+                        applicability: Applicability::MachineApplicable,
+                        edits: vec![TextEdit::replace(span, native.clone())],
+                    }),
+                None => diagnostic.with_help(format!(
+                    "name the place — `var NAME = {number}` — and write `NAME`, or write the \
+                     statement with native mnemonics"
+                )),
+            };
+            self.diagnostics.push(diagnostic);
+        }
+    }
+
     /// One constant of a `push` list. `PEA` pushes two bytes, so the
     /// constant has to be written as two: a literal written narrower is a
     /// warning whose fix writes four hex digits, and a constant that is one
@@ -334,6 +442,102 @@ impl Checker<'_> {
             .with_docs("doc/syntax-reference.md#push-and-pull"),
         );
     }
+}
+
+/// Whether `value` names a place: a variable, a label, a field or an element
+/// of one. A `:sizeof` is a number however it is spelled, and a `const` is
+/// the semantic layer's to refuse (`K816-E0110`), so either counts as a name
+/// here only by being a name.
+fn names_a_place(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Symbol(_)
+        | ExprKind::LocalSymbol(_)
+        | ExprKind::Field(_)
+        | ExprKind::Subscript(_) => true,
+        ExprKind::Unary(unary) => names_a_place(&unary.operand),
+        ExprKind::Binary(binary) => names_a_place(&binary.left) || names_a_place(&binary.right),
+        ExprKind::TypedView(view) => names_a_place(&view.base),
+        ExprKind::Number(_) | ExprKind::Metadata(_) | ExprKind::Eval(_) | ExprKind::Error => false,
+    }
+}
+
+fn holds_a_bracket(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Eval(_) => true,
+        ExprKind::Unary(unary) => holds_a_bracket(&unary.operand),
+        ExprKind::Binary(binary) => holds_a_bracket(&binary.left) || holds_a_bracket(&binary.right),
+        ExprKind::TypedView(view) => holds_a_bracket(&view.base),
+        _ => false,
+    }
+}
+
+/// The one native instruction an HLA statement is, when it is one: a load,
+/// a store, an ALU operation, a step or a shift with its operand as written.
+fn native_instruction(hla: &HlaStatement, source: &SourceFile) -> Option<String> {
+    let text = |operand: &HlaOperand| source.span_text(operand.span).trim().to_owned();
+    let register = |operand: &HlaOperand| match &operand.kind {
+        HlaOperandKind::Register(register) => Some(register.kind),
+        _ => None,
+    };
+    let (mnemonic, operand) = match hla {
+        HlaStatement::Assign(assign) if assign.targets.len() == 1 => {
+            let target = &assign.targets[0];
+            match (register(target), register(&assign.source)) {
+                (Some(loaded), None) => (
+                    match loaded {
+                        RegisterKind::A => "lda",
+                        RegisterKind::X => "ldx",
+                        RegisterKind::Y => "ldy",
+                        _ => return None,
+                    },
+                    text(&assign.source),
+                ),
+                (None, Some(stored)) => (
+                    match stored {
+                        RegisterKind::A => "sta",
+                        RegisterKind::X => "stx",
+                        RegisterKind::Y => "sty",
+                        _ => return None,
+                    },
+                    text(target),
+                ),
+                _ => return None,
+            }
+        }
+        HlaStatement::Arithmetic(arithmetic) => (
+            match (arithmetic.register.kind, arithmetic.op) {
+                (RegisterKind::A, ArithmeticOp::Add) => "adc",
+                (RegisterKind::A, ArithmeticOp::Subtract) => "sbc",
+                (RegisterKind::A, ArithmeticOp::And) => "and",
+                (RegisterKind::A, ArithmeticOp::Or) => "ora",
+                (RegisterKind::A, ArithmeticOp::Xor) => "eor",
+                (RegisterKind::A, ArithmeticOp::Compare) => "cmp",
+                (RegisterKind::A, ArithmeticOp::BitTest) => "bit",
+                (RegisterKind::X, ArithmeticOp::Compare) => "cpx",
+                (RegisterKind::Y, ArithmeticOp::Compare) => "cpy",
+                _ => return None,
+            },
+            text(&arithmetic.operand),
+        ),
+        HlaStatement::Step(step) if register(&step.target).is_none() => (
+            match step.op {
+                StepOp::Increment => "inc",
+                StepOp::Decrement => "dec",
+            },
+            text(&step.target),
+        ),
+        HlaStatement::Shift(shift) if register(&shift.target).is_none() => (
+            match shift.op {
+                ShiftOp::Left => "asl",
+                ShiftOp::Right => "lsr",
+                ShiftOp::RotateLeft => "rol",
+                ShiftOp::RotateRight => "ror",
+            },
+            text(&shift.target),
+        ),
+        _ => return None,
+    };
+    Some(format!("{mnemonic} {operand}"))
 }
 
 /// What makes `value` one byte by construction, if anything does.

@@ -2584,10 +2584,9 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
     assert_eq!(
         removed,
         vec![
-            "clc",               // before `sec`
-            "cld",               // before `sed`
-            "jmp     a:control", // in reach of a `bra`, which replaces it
-            "lda     #$01",      // before the `pla` in stack_forms
+            "clc",          // before `sec`
+            "cld",          // before `sed`
+            "lda     #$01", // before the `pla` in stack_forms
             // The implicit return after `control`'s unconditional `bra`. The
             // *user's* unreachable instructions below that branch — a `brl`,
             // four jumps, a `jsr`, a `jsl`, a `brk`, and a `cop` — all stay,
@@ -2599,10 +2598,10 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
         ],
         "{removed:?}"
     );
-    // The user's `jmp control` targets its own function's label, which a
-    // `bra` reaches: pass 11 shortens a jump whoever wrote it.
-    assert_eq!(added, vec!["bra     control"]);
-    assert_eq!(bytes, 1 + 1 + 2 + 1 + 2 + 1 + 1 + 1);
+    // The user's `jmp control` reaches its target as a `bra` would, and
+    // stays: pass 11 never swaps a jump the source wrote.
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(bytes, 1 + 1 + 2 + 1 + 2 + 1 + 1);
 }
 
 /// The mode fixture, at the bytes: two changes, and nothing else.
@@ -3060,15 +3059,14 @@ const FIXTURE_EFFECTS: &[Effect] = &[
         &[
             ("clc", 1),
             ("cld", 1),
-            ("jmp     a:control", 1),
             ("lda     #$01", 1),
             ("rts", 1),
             ("sep     #$20", 1),
             ("txa", 1),
             ("tyx", 1),
         ],
-        &[("bra     control", 1)],
-        "five writes the next line overwrites — not `cli` before `sei` nor `txs` before `tcs`, which the hardware reads between the two (`READ_BY_INTERRUPTS`) — one redundant `sep`, the implicit return after an unconditional `bra`, and the user's `jmp control`, which a `bra` reaches",
+        &[],
+        "five writes the next line overwrites — not `cli` before `sei` nor `txs` before `tcs`, which the hardware reads between the two (`READ_BY_INTERRUPTS`) — one redundant `sep`, and the implicit return after an unconditional `bra`; the user's `jmp control` stays, though a `bra` would reach",
     ),
     (
         "readable-hla.kk",
@@ -3078,25 +3076,15 @@ const FIXTURE_EFFECTS: &[Effect] = &[
     ),
     (
         "hla-branches.k816",
-        &[
-            ("jmp     :+", 1),
-            ("jmp     :++", 1),
-            ("jmp     :-", 2),
-            ("jmp     a:@c", 1),
-            ("jmp     a:@done", 1),
-            ("jmp     a:@head", 1),
-            ("jmp     a:@out", 1),
-        ],
-        &[
-            ("bra     :+", 1),
-            ("bra     :++", 1),
-            ("bra     :-", 2),
-            ("bra     @c", 1),
-            ("bra     @done", 1),
-            ("bra     @head", 1),
-            ("bra     @out", 1),
-        ],
-        "every jump — the written ones and the ones `always`, `else` and `break` lower to — reaches its target as a `bra`, which pass 11 swaps in",
+        &[("jmp     :+", 1), ("jmp     :++", 1), ("jmp     :-", 2)],
+        &[("bra     :+", 1), ("bra     :++", 1), ("bra     :-", 2)],
+        "the four jumps `always`, `else` and `break` lower to, each reaching its target as the `bra` pass 11 swaps in; the native pairings' own `jmp`s stay, because the optimizer never swaps a jump the source wrote",
+    ),
+    (
+        "opt-jumps.k816",
+        &[("jmp     :++", 1), ("jmp     :---", 1)],
+        &[("bra     :++", 1), ("bra     :---", 1)],
+        "`structured`'s back edge and the jump over its `else`, which K816 lowered and pass 11 shortens; `manual`'s written `jmp` stays a `JMP`",
     ),
     (
         "native-reloc.k816",
@@ -4772,14 +4760,14 @@ fn jumps_after(test: &str, body: &str, optimize: bool) -> (Vec<String>, Vec<u8>)
     (jumps, bytes)
 }
 
-/// A jump whose target a `bra` reaches is a `bra`, written or lowered: a
-/// native `jmp` back and forward, the back edge of `loop { } always`, the
-/// jump over an `else`, and an unconditional `break`.
+/// A jump K816 wrote whose target a `bra` reaches is a `bra`: a `goto` back
+/// and forward, the back edge of `loop { } always`, the jump over an `else`,
+/// and an unconditional `break`.
 #[test]
 fn a_jump_a_branch_reaches_is_the_branch() {
     for body in [
-        ".top:\n    inx\n    jmp .top",
-        "    jmp .past\n    inx\n.past:",
+        ".top:\n    inx\n    goto .top",
+        "    goto .past\n    inx\n.past:",
         "    loop {\n        inx\n    } always",
         "    a?#1\n    == {\n        inx\n    } else {\n        dex\n    }",
         "    loop {\n        inx\n        break\n    } always",
@@ -4798,10 +4786,10 @@ fn a_jump_a_branch_reaches_is_the_branch() {
 #[test]
 fn a_jump_is_a_branch_exactly_within_a_branchs_reach() {
     for (body, expected, test) in [
-        ("    jmp .t\n    * 127\n.t:", "bra", "jump-forward-127"),
-        ("    jmp .t\n    * 128\n.t:", "jmp", "jump-forward-128"),
-        (".t:\n    * 126\n    jmp .t", "bra", "jump-backward-126"),
-        (".t:\n    * 127\n    jmp .t", "jmp", "jump-backward-127"),
+        ("    goto .t\n    * 127\n.t:", "bra", "jump-forward-127"),
+        ("    goto .t\n    * 128\n.t:", "jmp", "jump-forward-128"),
+        (".t:\n    * 126\n    goto .t", "bra", "jump-backward-126"),
+        (".t:\n    * 127\n    goto .t", "jmp", "jump-backward-127"),
     ] {
         let (jumps, _) = jumps_after(test, body, true);
         assert_eq!(jumps, [expected], "{test}");
@@ -4812,7 +4800,7 @@ fn a_jump_is_a_branch_exactly_within_a_branchs_reach() {
 /// that was a byte out of reach comes into it: the pass runs to a fixpoint.
 #[test]
 fn a_shortened_jump_brings_another_into_reach() {
-    let body = "    jmp .t\n    * 125\n.u:\n    jmp .u\n.t:";
+    let body = "    goto .t\n    * 125\n.u:\n    goto .u\n.t:";
     let (jumps, _) = jumps_after("jump-fixpoint", body, true);
     assert_eq!(jumps, ["bra", "bra"]);
 }
@@ -4823,7 +4811,7 @@ fn a_shortened_jump_brings_another_into_reach() {
 #[test]
 fn a_jump_the_pass_cannot_measure_or_may_not_touch_stays() {
     let mut map = SourceMap::new();
-    let text = "func other @a8 @i8 {\n    nop\n}\n\nfunc work @a8 @i8 {\n    jmp other\n}\n";
+    let text = "func other @a8 @i8 {\n    nop\n}\n\nfunc work @a8 @i8 {\n    goto other\n}\n";
     let file = map.add_file("tail.k816", text);
     let tail = instruction_lines(
         &compile_to_ca65(&map, file, &Options::default())
@@ -4834,11 +4822,98 @@ fn a_jump_the_pass_cannot_measure_or_may_not_touch_stays() {
 
     let (jumps, _) = jumps_after(
         "jump-nocross",
-        "    nocross {\n.top:\n        inx\n        jmp .top\n    }",
+        "    nocross {\n.top:\n        inx\n        goto .top\n    }",
         true,
     );
     assert_eq!(jumps, ["jmp"]);
 
-    let (jumps, _) = jumps_after("jump-no-opt", ".top:\n    inx\n    jmp .top", false);
+    let (jumps, _) = jumps_after("jump-no-opt", ".top:\n    inx\n    goto .top", false);
     assert_eq!(jumps, ["jmp"]);
+}
+
+/// A `jmp` the source wrote stays a `JMP` whatever a `BRA` would reach: a
+/// native mnemonic is the escape hatch, and the optimizer never swaps one
+/// (the user: "if the user wrote JMP somewhere, it should always stay JMP").
+/// The `goto` beside each, in the same place, is K816's and is swapped.
+#[test]
+fn a_jump_the_source_wrote_stays_a_jump() {
+    for (written, k816, test) in [
+        (
+            ".top:\n    inx\n    jmp .top",
+            ".top:\n    inx\n    goto .top",
+            "jump-written-back",
+        ),
+        (
+            "    jmp .past\n    inx\n.past:",
+            "    goto .past\n    inx\n.past:",
+            "jump-written-forward",
+        ),
+    ] {
+        let (jumps, _) = jumps_after(test, written, true);
+        assert_eq!(jumps, ["jmp"], "{written}");
+        let (jumps, _) = jumps_after(test, k816, true);
+        assert_eq!(jumps, ["bra"], "{k816}");
+    }
+}
+
+/// `opt-jumps.k816`: one loop written two ways. `structured`'s back edge and
+/// the jump over its `else` are K816's, `JMP` at lowering and `BRA` once
+/// optimized; `manual`'s loop is closed by a `jmp` the source wrote, which
+/// the optimizer leaves alone though a `BRA` would reach — as it leaves the
+/// `bra` the source wrote beside it.
+#[test]
+fn the_jumps_fixture_shortens_k816s_jumps_and_keeps_the_written_one() {
+    let text = include_str!("golden/opt-jumps.k816");
+    let function = |optimize: bool, name: &str| -> Vec<String> {
+        let mut map = SourceMap::new();
+        let file = map.add_file("opt-jumps.k816", text);
+        let options = Options {
+            optimize,
+            ..Default::default()
+        };
+        let assembly = compile_to_ca65(&map, file, &options)
+            .assembly
+            .expect("compiles");
+        let body = assembly
+            .split_once(&format!("\n{name}:"))
+            .expect("the function")
+            .1;
+        let body = body.split("\nmanual:").next().unwrap_or(body);
+        instruction_lines(body)
+            .into_iter()
+            .filter(|line| line.starts_with("jmp") || line.starts_with("bra"))
+            .collect()
+    };
+    assert_eq!(
+        function(false, "structured"),
+        ["jmp     :++", "jmp     :---"]
+    );
+    assert_eq!(
+        function(true, "structured"),
+        ["bra     :++", "bra     :---"]
+    );
+    assert_eq!(
+        function(false, "manual"),
+        ["bra     @next", "jmp     a:@top"]
+    );
+    assert_eq!(
+        function(true, "manual"),
+        ["bra     @next", "jmp     a:@top"]
+    );
+
+    let (optimized, _) = compile_and_link("opt-jumps", "opt-jumps.k816", text, &Options::default());
+    let (unoptimized, _) = compile_and_link(
+        "opt-jumps-unoptimized",
+        "opt-jumps.k816",
+        text,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        unoptimized.len() - optimized.len(),
+        2,
+        "two jumps a byte shorter each"
+    );
 }

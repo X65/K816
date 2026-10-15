@@ -1170,3 +1170,18 @@ fn a_break_is_raised_when_the_exit_is_also_reached_from_outside() {
     }
     assert!(!text.contains(".out") && !text.contains(".top"), "{text}");
 }
+
+/// A loop the source closed with `jmp` keeps its label: the converted `jmp`
+/// stays a `JMP`, because the optimizer never swaps a jump the source wrote,
+/// and K816's `always` would be the shorter `BRA` — a different program,
+/// which the measurement refuses. The bytes are the source's either way.
+#[test]
+fn a_loop_the_source_closed_with_jmp_keeps_its_label() {
+    let (text, _) = faithful(
+        "raise-jmp",
+        ".code\n.a8\n.i8\nfirst:  ldx #8\n@top:   dex\n        beq @out\n        jmp @top\n@out:   rts\n",
+    );
+    has(&text, ".top:");
+    has(&text, "jmp .top");
+    assert!(!text.contains("} always"), "{text}");
+}

@@ -2772,10 +2772,13 @@ fn size_bound(op: &KOp) -> Bound {
 /// should be swapped to BRA"): the two do the same thing to the same
 /// registers, and `BRA` does it in two bytes instead of three — the same
 /// cycles in native mode, and one more in emulation mode only when it
-/// crosses a page, which is what `nocross` is for. Whether the jump was
-/// written or lowered (`loop { } always`, `else`, `break`) does not matter,
-/// and only a target in this function's own stream has a distance to
-/// measure: a tail jump to another routine stays a `JMP`.
+/// crosses a page, which is what `nocross` is for. Only a jump K816 wrote is
+/// swapped — one `loop { } always`, `else`, `break` or `goto` lowered to, or
+/// one the compiler made — and never a `jmp` the source wrote as a mnemonic
+/// (the user: "This should never happen for native syntax"): a native
+/// instruction is the escape hatch, and means exactly what it says. Only a
+/// target in this function's own stream has a distance to measure, so a
+/// tail jump to another routine stays a `JMP` too.
 fn shrink_branches(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
     loop {
         let flow = Flow::build(ops, unit);
@@ -2820,6 +2823,13 @@ fn first_shortenable_jump(ops: &[KOp], flow: &Flow) -> Option<(usize, KOp)> {
 fn shortenable_jump(ops: &[KOp], flow: &Flow, index: usize) -> Option<(usize, KOp)> {
     // A `nocross` guard records the byte length of the run it closes.
     if flow.frozen[index] {
+        return None;
+    }
+    // A `jmp` the source wrote is the author's, and stays. The `JMP` of a
+    // branch widened out of reach carries the user's origin too, and stays
+    // here: when its target is in reach again, the half above puts the whole
+    // widening back into the branch the user wrote.
+    if ops[index].origin == Origin::User {
         return None;
     }
     let KOpKind::Instruction(jump) = &ops[index].kind else {

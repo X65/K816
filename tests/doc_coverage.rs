@@ -1340,6 +1340,10 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "readable-hla.kk",
             "the_readable_spellings_link_to_their_k65_twins_bytes",
         ),
+        (
+            "opt-jumps.k816",
+            "the_jumps_fixture_shortens_k816s_jumps_and_keeps_the_written_one",
+        ),
     ];
 
     /// The fixtures that cannot reach ca65, and why. Every one of them pins a

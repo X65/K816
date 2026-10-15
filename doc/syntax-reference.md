@@ -4055,7 +4055,7 @@ func work @a8 @i8 {
 
 ### Flow Control Instructions
 
-A jump K816 emits — `goto`, a written `jmp`, and the ones `always`, `else` and `break` lower to — is a two-byte `BRA` after optimization wherever its target is in the same function and within a branch's reach, and a `JMP` otherwise.
+A jump K816 writes — `goto`, and the ones `always`, `else` and `break` lower to — is a two-byte `BRA` after optimization wherever its target is in the same function and within a branch's reach, and a `JMP` otherwise. A `jmp` written as a mnemonic is always a `JMP`: a native instruction means exactly what it says.
 
 ```k65
 goto label             // JMP absolute

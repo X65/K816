@@ -1,0 +1,41 @@
+// Pass 11 swaps a JMP for the BRA that reaches the same place, and only a
+// jump K816 wrote. `structured` and `manual` are one loop: in the first, the
+// back edge of `loop { } always` and the jump over the `else` are lowered to
+// JMP, and the optimizer shortens both to BRA; in the second, the loop is
+// closed by a `jmp` the source wrote, which stays a JMP, because a native
+// mnemonic means exactly what it says.
+
+var count = $80
+
+// Counts down from eight, adding one to `count` while X is at least four
+// and taking one away after that.
+func structured @a8 @i8 {
+    ldx #8
+    loop {
+        dex
+        == break
+        x?#4
+        >= {
+            count++
+        } else {
+            count--
+        }
+    } always
+}
+
+// The same loop, labelled and closed by hand.
+func manual @a8 @i8 {
+    ldx #8
+.top:
+    dex
+    beq .out
+    cpx #4
+    bcc .less
+    inc count
+    bra .next
+.less:
+    dec count
+.next:
+    jmp .top
+.out:
+}

@@ -297,7 +297,12 @@ fn the_generated_interface_links_against_the_objects_it_describes() {
     // `lda #K` is stored before the next load, so the optimizer keeps it and
     // ca65 has to accept it: against the absolute `.import K` this tool used
     // to write, an 8-bit immediate was a range error nothing assembled.
-    for directive in [".import lib_fn", ".importzp lib_zp", ".importzp K", "lda     #K"] {
+    for directive in [
+        ".import lib_fn",
+        ".importzp lib_zp",
+        ".importzp K",
+        "lda     #K",
+    ] {
         assert!(text.contains(directive), "no `{directive}` in:\n{text}");
     }
     let object = assemble(&build.dir, &assembly, false);

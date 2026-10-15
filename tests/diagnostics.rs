@@ -476,9 +476,10 @@ const FAMILY: &[Case] = &[
         caret: "align 4",
     },
     Case {
-        source: "data dd {\n    for i=0..3 eval [ i - 9 ]\n}\n",
+        // Past 255: a negative byte fits since sub-plan P, down to -128.
+        source: "data dd {\n    for i=0..3 eval [ i + 254 ]\n}\n",
         code: DiagnosticCode::ADDRESS_RANGE,
-        caret: "i - 9",
+        caret: "i + 254",
     },
     // A section read with no answer, and the one that can never have one.
     Case {

@@ -734,12 +734,15 @@ fn a_value_that_does_not_fit_is_named_as_written() {
 /// not one past `$FFFFFFFF`, which was "not a K65 number" before.
 #[test]
 fn a_negative_constant_is_negative_in_the_evaluator() {
+    // `#if` reads constants through the same function, from the
+    // preprocessor's own table.
     let source = "const E = -1\nconst NEXT = [E + 1]\n\n\
-                  data table {\n    [E < 0]\n    NEXT\n    [E * 2]\n    word [E]\n}\n";
+                  #if [E < 0]\nconst SIGN = 1\n#else\nconst SIGN = 2\n#endif\n\n\
+                  data table {\n    [E < 0]\n    NEXT\n    [E * 2]\n    SIGN\n    word [E]\n}\n";
     let (assembly, codes) = compile("eval.kk", source);
     assert_eq!(codes, Vec::<String>::new());
     let bytes = link_quietly("constants-eval", &assembly.expect("compiles"));
-    assert_eq!(bytes, [0x01, 0x00, 0xFE, 0xFF, 0xFF]);
+    assert_eq!(bytes, [0x01, 0x00, 0xFE, 0x01, 0xFF, 0xFF]);
 }
 
 /// A negative constant another unit declares folds here as the value it is:
@@ -1142,4 +1145,43 @@ fn the_documented_extern_const_links_and_is_checked() {
         said.contains("doc.kk:4: ROWS does not fit the 8 bits this use takes"),
         "{said}"
     );
+}
+
+/// The user's analogy, taken literally: an `inline` that states no width
+/// gains one where it is expanded, and a constant without a size used in
+/// its body gains its size there too — so one body is `$FF` at one use and
+/// `$FFFF` at the next.
+#[test]
+fn a_constant_in_a_widthless_inline_takes_each_expansions_width() {
+    let source = "const EUNKNOWN = -1\n\n\
+                  inline fail {\n    lda #EUNKNOWN\n}\n\n\
+                  naked narrow @a8 @i8 {\n    fail\n}\n\n\
+                  naked wide @a16 @i8 {\n    fail\n}\n";
+    let (assembly, codes) = compile("inline.kk", source);
+    assert_eq!(codes, Vec::<String>::new());
+    let bytes = link_quietly("constants-inline", &assembly.expect("compiles"));
+    assert_eq!(bytes, [0xA9, 0xFF, 0xA9, 0xFF, 0xFF]);
+}
+
+/// `for … eval` generates bytes, and a byte is a use like any other:
+/// −128 … 255, as its low eight bits. It refused every negative value
+/// until the end of sub-plan P, which had applied the rule to every byte
+/// use but this one.
+#[test]
+fn a_generated_byte_fits_by_the_same_rule() {
+    let (assembly, codes) = compile(
+        "for.kk",
+        "data table {\n    for i=0..3 eval [i - 2]\n    for i=0..1 eval [i * 255 - 128]\n}\n",
+    );
+    assert_eq!(codes, Vec::<String>::new());
+    let bytes = link_quietly("constants-for-eval", &assembly.expect("compiles"));
+    assert_eq!(bytes, [0xFE, 0xFF, 0x00, 0x01, 0x80, 0x7F]);
+
+    for outside in ["[i - 129]", "[i + 256]"] {
+        let (_, codes) = compile(
+            "for.kk",
+            &format!("data table {{\n    for i=0..0 eval {outside}\n}}\n"),
+        );
+        assert_eq!(codes, [DATUM], "{outside}");
+    }
 }

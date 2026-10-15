@@ -1441,7 +1441,7 @@ data table {
 }
 ```
 
-The range is inclusive at both ends, so `0..4` is five values and `7..7` is one. Each value the body folds to is rounded to the nearest integer and emits **one byte**, and it has to fit one: a body that leaves the range says so (`K816-E0109`) rather than emitting a byte nobody wrote. Mask or clamp in the expression — `& 255`, `?< 255`.
+The range is inclusive at both ends, so `0..4` is five values and `7..7` is one. Each value the body folds to is rounded to the nearest integer and emits **one byte**, and it has to fit one — by the rule every use has, −128 … 255 as its low eight bits ([A constant's size](#a-constants-size)), so `[i - 2]` from zero is `$FE $FF $00 …`: a body that leaves the range says so (`K816-E0109`) rather than emitting a byte nobody wrote. Mask or clamp in the expression — `& 255`, `?< 255`.
 
 The body is the whole evaluator language, not a subset of it: floating point, the function library, `pi`, statements, and calls to an `evalfunc` all work, which is what the `sin` examples above depend on. What it sees is the loop variable, every `const`, and every name an earlier evaluator bracket assigned; a name none of those gives a value is `K816-E0101`.
 

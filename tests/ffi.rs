@@ -512,6 +512,32 @@ fn a_link_time_const_is_symbolic_wherever_it_may_stay_symbolic() {
     assert!(!assembly.contains(".importzp ROWS"), "{assembly}");
 }
 
+/// A foreign name used only as an `inline`'s argument is imported.
+///
+/// Analysis indexes a call's immediate arguments without folding them —
+/// the expansion binds them — and indexing recorded where each name was
+/// written but not that the unit used it, which is the set `.import` lines
+/// are written from. So `put #ROWS` emitted `lda #ROWS` and no `.import
+/// ROWS`, and ca65 refused an undefined symbol. Found by sub-plan P's
+/// `extern const` matrix; an `extern var`'s address had the same hole.
+#[test]
+fn a_foreign_name_passed_only_to_an_inline_is_imported() {
+    let text = "extern const ROWS\n\
+                extern var _count\n\
+                \n\
+                inline put (#v) {\n\
+                \x20   lda #v\n\
+                }\n\
+                \n\
+                func work @a16 @i8 {\n\
+                \x20   put #ROWS\n\
+                \x20   put #&&_count\n\
+                }\n";
+    let assembly = assembly(text);
+    assert!(assembly.contains(".import ROWS "), "{assembly}");
+    assert!(assembly.contains(".import _count "), "{assembly}");
+}
+
 /// Every position that needs a number now refuses it, and says why.
 ///
 /// The refusal is its own code rather than the generic "must be known at

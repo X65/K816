@@ -950,6 +950,14 @@ impl<'a> Resolver<'a> {
         match &expr.kind {
             ExprKind::Symbol(name) => {
                 if let Some(id) = self.scoped_symbol(&name.text) {
+                    // The expansion uses it, in this unit, so a name another
+                    // object provides needs this unit's `.import` as much as
+                    // one written in an operand does. Without it `put #ROWS`
+                    // for an `extern const ROWS` assembled to an undefined
+                    // symbol.
+                    if self.symbols.symbol(id).is_unit_level() {
+                        self.referenced.push(id);
+                    }
                     self.record(name.span, id);
                 }
             }

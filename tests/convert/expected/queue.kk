@@ -28,32 +28,32 @@ segment CODE
 func queue_init @a16 @i16 {
     stz queue_head
     ldx #0
-.clear:
-    @a8 {
-        stz slots.owner,x
-    }
-    stz slots.length,x
-    txa
-    clc
-    adc #SLOT:sizeof
-    tax
-    cpx #SLOTS_NO * SLOT:sizeof
-    bne .clear
+    loop {
+        @a8 {
+            stz slots.owner,x
+        }
+        stz slots.length,x
+        txa
+        clc
+        adc #SLOT:sizeof
+        tax
+        cpx #SLOTS_NO * SLOT:sizeof
+    } while !=
 }
 
 // Finds the first idle slot; carry set when there is none.
 func queue_find @a16 @i16 {
     ldx #0
-.loop:
-    lda slots.owner:word,x
-    and #$00FF
-    beq .found
-    txa
-    clc
-    adc #SLOT:sizeof
-    tax
-    cpx #SLOTS_NO * SLOT:sizeof
-    bne .loop
+    loop {
+        lda slots.owner:word,x
+        and #$00FF
+        beq .found
+        txa
+        clc
+        adc #SLOT:sizeof
+        tax
+        cpx #SLOTS_NO * SLOT:sizeof
+    } while !=
     sec
     rts
 .found:

@@ -42,6 +42,7 @@ pub mod lex;
 pub mod program;
 pub mod render;
 pub mod source;
+pub mod structure;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -142,6 +143,9 @@ pub fn convert(request: &Request, read: program::Reader<'_>) -> Result<Conversio
             ));
         }
     }
+    // The program's labels and branches, raised into K816's loops and blocks
+    // wherever that changes no byte (`structure.rs`).
+    structure::raise(&mut conversion.units);
     conversion
         .notes
         .sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));

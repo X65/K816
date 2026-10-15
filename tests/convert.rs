@@ -447,7 +447,9 @@ fn a_branch_to_an_unnamed_label_is_not_a_label_named_for_the_mnemonic() {
         "regress-unnamed",
         ".code\n.a8\n.i8\nfirst:  ldx #3\n:       dex\n        bne :-\n        beq :+\n        nop\n:       rts\n",
     );
-    for line in [".loop:", "bne .loop", "beq .skip", ".skip:"] {
+    // The two unnamed labels were named, and the names are then raised away:
+    // the loop and the skip they were read as are the program's own.
+    for line in ["loop {", "} while !=", "!= {"] {
         has(&text, line);
     }
     assert!(!text.contains("beq:"), "{text}");
@@ -962,4 +964,111 @@ fn two_units_with_one_name_are_refused() {
     let error = convert(&request, &|path| std::fs::read_to_string(path).ok())
         .expect_err("two units, one name");
     assert!(error.contains("would both become `task.kk`"), "{error}");
+}
+
+// ---------------------------------------------------------------------------
+// Raising (`plans/14-readable-hla.md` decision 15): the converted program's
+// labels and branches into K816's loops and blocks, wherever that changes no
+// byte. Every case below is `faithful`, so each one also links to the bytes
+// the ca65 source does.
+
+/// A label a conditional branch at the end of a run returns to is a loop.
+#[test]
+fn a_label_a_branch_returns_to_is_a_loop() {
+    let (text, _) = faithful(
+        "raise-loop",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n@next:  inc total\n        dex\n        bne @next\n        rts\n",
+    );
+    has(&text, "loop {");
+    has(&text, "} while !=");
+    assert!(!text.contains(".next"), "{text}");
+}
+
+/// A conditional branch over a run to a label nothing else names is a block
+/// the run sits in, run when the branch is not taken — and the comment that
+/// said where the branch goes is said where the block ends.
+#[test]
+fn a_branch_over_a_run_is_a_block_and_its_comment_closes_it() {
+    let (text, _) = faithful(
+        "raise-block",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        beq @done       ; nothing to count\n        inc total\n@done:  rts\n",
+    );
+    has(&text, "!= {");
+    has(&text, "} // nothing to count");
+    assert!(!text.contains(".done"), "{text}");
+}
+
+/// A carry a compare left reads as the relation, and any other carry as the
+/// flag: `bcc` past a run after `cmp` is `>= { … }`, and after `lsr` the
+/// block runs on `!c?`.
+#[test]
+fn a_carry_after_a_compare_is_a_relation_and_any_other_is_the_flag() {
+    let (text, _) = faithful(
+        "raise-carry",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        cmp #10\n        bcc @small\n        inc total\n@small: lsr\n        bcs @odd\n        inc total\n@odd:   rts\n",
+    );
+    has(&text, ">= {");
+    has(&text, "!c? {");
+}
+
+/// Inside a loop, a conditional branch to the label right after it is a
+/// `break` and one back to its top a `repeat`; the labels go when nothing
+/// else names them.
+#[test]
+fn a_branch_out_of_a_loop_is_a_break_and_one_back_to_its_top_a_repeat() {
+    let (text, _) = faithful(
+        "raise-break",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n@top:   lda total\n        beq @out\n        lsr total\n        bcs @top\n        dex\n        bne @top\n@out:   rts\n",
+    );
+    for line in ["loop {", "== break", "c? repeat", "} while !="] {
+        has(&text, line);
+    }
+    assert!(!text.contains(".top") && !text.contains(".out"), "{text}");
+}
+
+/// A loop closed by `bra` stays a label: K816's `always` jumps back with
+/// `JMP`, a byte longer than the source's `BRA`, and the measurement is what
+/// refuses it. The branch over the `bra` is still a block.
+#[test]
+fn a_loop_closed_by_bra_keeps_its_label() {
+    let (text, _) = faithful(
+        "raise-bra",
+        ".code\n.a8\n.i8\nfirst:  ldx #8\n@top:   dex\n        beq @out\n        bra @top\n@out:   rts\n",
+    );
+    has(&text, ".top:");
+    has(&text, "bra .top");
+    assert!(!text.contains("loop {"), "{text}");
+}
+
+/// A branch into the middle of a run from outside it keeps the run's labels:
+/// neither a loop nor a block can be entered anywhere but its top.
+#[test]
+fn a_branch_into_a_run_from_outside_keeps_its_labels() {
+    let (text, _) = faithful(
+        "raise-entered",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n        bra @mid\n@top:   inc total\n@mid:   dex\n        bne @top\n        rts\n",
+    );
+    has(&text, ".top:");
+    has(&text, ".mid:");
+    has(&text, "bne .top");
+    assert!(!text.contains("loop {"), "{text}");
+}
+
+/// A raise is measured, not assumed: here the label states an entry width
+/// the skipping branch does not arrive at, so K816 switches at the branch
+/// (decision 6 of the width plan) and the routine leaves 16 bits wide. As a
+/// block, the two paths would meet after it at different widths, with no
+/// switch and a routine that leaves at a width nobody can name — a program
+/// that compiles, and is a different one — so the labels stay. A raise that
+/// does not compile at all is refused before it is compared; this one is
+/// refused by the comparison.
+#[test]
+fn a_raise_that_would_change_the_program_keeps_its_labels() {
+    let (text, _) = one(
+        "raise-refused",
+        ".code\n.a8\n.i8\nfirst:  lda #1\n        beq @skip\n        rep #$20\n        .a16\n@skip:  nop\n        rts\n",
+    );
+    has(&text, "beq .skip");
+    has(&text, ".skip:");
+    assert!(!text.contains("!= {"), "{text}");
 }

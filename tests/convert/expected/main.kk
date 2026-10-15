@@ -35,11 +35,11 @@ naked reset {
     ldx #0
 .print:
     lda banner,x
-    beq .done
-    sta IO.data
-    inx
-    bra .print
-.done:
+    != {
+        sta IO.data
+        inx
+        bra .print
+    }
     @a16
     queue_find
     bcs .reset_wait

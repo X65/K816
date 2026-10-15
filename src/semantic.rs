@@ -413,12 +413,15 @@ pub fn analyze_unit(
     source: &crate::source::SourceFile,
     linkage: &Linkage,
 ) -> (SemanticModel, Vec<Diagnostic>) {
-    analyze(
+    let (model, mut diagnostics) = analyze(
         file,
         source.name(),
         linkage.environment(),
         Some((linkage, source.id())),
-    )
+    );
+    // How the unit is written, which reads its text and changes no byte.
+    diagnostics.extend(crate::spelling::check(model.program(file), source));
+    (model, diagnostics)
 }
 
 fn analyze(

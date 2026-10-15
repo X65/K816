@@ -110,6 +110,18 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::INSTRUCTION_NAME,
         caret: "inc",
     },
+    // `PEA` pushes a word whatever `M` says, so a pushed constant has to be
+    // written as one, and cannot be a byte by construction.
+    Case {
+        source: "func work @a16 @i16 {\n    push $12\n}\n",
+        code: DiagnosticCode::PUSH_NARROW_CONSTANT,
+        caret: "$12",
+    },
+    Case {
+        source: "var mem = $10\nfunc work @a16 @i16 {\n    push &<mem\n}\n",
+        code: DiagnosticCode::PUSH_BYTE_CONSTANT,
+        caret: "&<mem",
+    },
     Case {
         source: "var dp ptr:byte\nfunc work @a8 @i8 { lda (ptr) }\n",
         code: DiagnosticCode::INDIRECT_POINTER_WIDTH,
@@ -817,6 +829,12 @@ fn diagnostic_for(source: &str, code: DiagnosticCode) -> (SourceMap, Diagnostic)
     assert_eq!(parse.diagnostics, vec![], "`{source}` did not parse");
     let (model, diagnostics) = analyze_file(&parse.file);
     let mut diagnostics = diagnostics;
+    // The rules about how a unit is written, which `analyze_unit` runs and
+    // `analyze_file` cannot — they read the unit's text and its dialect.
+    diagnostics.extend(k816::spelling::check(
+        model.program(&parse.file),
+        map.file(id),
+    ));
     // Only a clean analysis may be lowered: lowering a body analysis rejected
     // is what `Lowering::skipped` exists to report, and its report is a
     // different code.
@@ -911,6 +929,12 @@ fn every_width_code_is_reachable() {
 /// The efficiency warning is the clearest member: `> ` and `<=` compile, and
 /// what they emit is right. It is a *cost*, and the author is the one who can
 /// decide whether to pay it (`plans/06-compatibility.md` decision 23).
+///
+/// A `push` constant written as one byte is the same kind: `push $12` pushes
+/// the word `$0012`, which is well defined, and only the author knows whether
+/// two bytes is what they meant (`plans/14-readable-hla.md` decision 9). A
+/// constant that *is* one byte is an error, because no reading of it pushes
+/// what it says.
 #[test]
 fn only_the_compile_through_conditions_are_warnings() {
     const WARNINGS: &[DiagnosticCode] = &[
@@ -919,6 +943,7 @@ fn only_the_compile_through_conditions_are_warnings() {
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
         DiagnosticCode::PREPROCESSOR_WARNING,
         DiagnosticCode::INEFFICIENT_BRANCH,
+        DiagnosticCode::PUSH_NARROW_CONSTANT,
     ];
     // `print(msg)` is the one diagnostic the *source* asked for. Nothing
     // about the program is wrong, so it is neither an error nor a warning,

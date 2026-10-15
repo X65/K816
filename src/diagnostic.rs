@@ -495,6 +495,14 @@ impl DiagnosticCode {
     /// others: an `inline` parameter and an evaluator variable are never
     /// emitted, so neither can collide with anything.
     pub const INSTRUCTION_NAME: Self = Self("K816-E0173");
+    /// A `push` constant written as one byte — `$12`, `18`, `%1010` — which
+    /// `PEA` pushes as a word. The fix writes the word it pushes
+    /// (`plans/14-readable-hla.md` decision 9).
+    pub const PUSH_NARROW_CONSTANT: Self = Self("K816-W0174");
+    /// A `push` constant that is one byte by construction — `&<x`, `&>x`, a
+    /// character, a `:byte` view. The 65816 has no instruction that pushes a
+    /// constant byte, so the fix says the high byte is zero with `:word`.
+    pub const PUSH_BYTE_CONSTANT: Self = Self("K816-E0175");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -817,6 +825,8 @@ mod tests {
         DiagnosticCode::TRANSFER_WIDTH_MISMATCH,
         DiagnosticCode::INDIRECT_POINTER_WIDTH,
         DiagnosticCode::INSTRUCTION_NAME,
+        DiagnosticCode::PUSH_NARROW_CONSTANT,
+        DiagnosticCode::PUSH_BYTE_CONSTANT,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

@@ -92,16 +92,8 @@ fn code(name: &str, text: &str) -> (Vec<&'static str>, Vec<String>) {
         .collect();
     let assembly = result
         .assembly
-        .unwrap_or_else(|| panic!("{name} compiles:\n{text}\n{:#?}", result.diagnostics))
-        .replace(name, "UNIT")
-        .lines()
-        .map(|line| line.split(';').next().unwrap_or_default().trim_end())
-        // Source lines are debug information, not bytes, and a K65 spelling
-        // can take more lines than the K816 one it is compared with.
-        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with(".dbg"))
-        .map(str::to_owned)
-        .collect();
-    (codes, assembly)
+        .unwrap_or_else(|| panic!("{name} compiles:\n{text}\n{:#?}", result.diagnostics));
+    (codes, code_lines(&assembly, name))
 }
 
 /// Each of K816's spellings compiles to the bytes of the K65 spelling it
@@ -181,4 +173,100 @@ fn the_readable_golden_is_its_k65_twin_respelled() {
     let k65 = code("readable-hla.k65", &read("readable-hla.k65"));
     assert_eq!(readable.0, Vec::<&str>::new(), "the K816 spelling warns");
     assert_eq!(readable, k65);
+}
+
+/// The codes `body` is told in a `@a16 @i16` function, the fixes they carry,
+/// and the program the first fix of each makes, applied.
+fn pushed(body: &str) -> (Vec<&'static str>, Vec<String>) {
+    let text =
+        format!("var mem = $1234\nconst LIMIT = 5\n\nfunc work @a16 @i16 {{\n    {body}\n}}\n");
+    let mut map = SourceMap::new();
+    let file = map.add_file("push.kk", text.as_str());
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let codes = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    let fixes = result
+        .diagnostics
+        .iter()
+        .flat_map(|d| d.fixes.iter())
+        .flat_map(|fix| fix.edits.iter())
+        .map(|edit| edit.replacement.clone())
+        .collect();
+    (codes, fixes)
+}
+
+/// A pushed constant has to be written as the word `PEA` pushes
+/// (`plans/14-readable-hla.md` decision 9): one written narrower is warned
+/// about and rewritten as four hex digits, one that is a byte by construction
+/// is refused and expanded with `:word`, and a sizeless one is taken at its
+/// word.
+#[test]
+fn a_pushed_constant_is_written_as_the_word_it_pushes() {
+    for (body, codes, fixes) in [
+        ("push $12", vec!["K816-W0174"], vec!["$0012"]),
+        ("push $012", vec!["K816-W0174"], vec!["$0012"]),
+        ("push 0x12", vec!["K816-W0174"], vec!["$0012"]),
+        ("push 18", vec!["K816-W0174"], vec!["$0012"]),
+        ("push 0", vec!["K816-W0174"], vec!["$0000"]),
+        ("push %00010010", vec!["K816-W0174"], vec!["$0012"]),
+        ("push ($12)", vec!["K816-W0174"], vec!["$0012"]),
+        ("push #$12", vec!["K816-W0174"], vec!["$0012"]),
+        ("push a, $12, x", vec!["K816-W0174"], vec!["$0012"]),
+        ("push $0012", vec![], vec![]),
+        ("push 300", vec![], vec![]),
+        ("push %0000000000010010", vec![], vec![]),
+        ("push LIMIT", vec![], vec![]),
+        ("push LIMIT + 1", vec![], vec![]),
+        ("push &&mem", vec![], vec![]),
+        ("push (&<mem):word", vec![], vec![]),
+        ("push &<mem", vec!["K816-E0175"], vec!["(&<mem):word"]),
+        ("push &>mem", vec!["K816-E0175"], vec!["(&>mem):word"]),
+        ("push (&<mem)", vec!["K816-E0175"], vec!["(&<mem):word"]),
+        ("push 'a'", vec!["K816-E0175"], vec!["('a'):word"]),
+        ("push LIMIT:byte", vec!["K816-E0175"], vec!["LIMIT:word"]),
+    ] {
+        assert_eq!(
+            pushed(body),
+            (codes, fixes.into_iter().map(String::from).collect()),
+            "{body}"
+        );
+    }
+    // Each fix, applied, is a push the rule accepts — and the warning's
+    // pushes the same word the narrow spelling did.
+    for (fixed, narrow) in [("push $0012", "push $12"), ("push $0012", "push 18")] {
+        assert_eq!(
+            code(
+                "unit.kk",
+                &format!("func work @a16 @i16 {{\n    {fixed}\n}}\n")
+            )
+            .1,
+            {
+                let text = format!("func work @a16 @i16 {{\n    {narrow}\n}}\n");
+                let mut map = SourceMap::new();
+                let file = map.add_file("unit.kk", text.as_str());
+                let result = compile_to_ca65(&map, file, &Options::default());
+                code_lines(
+                    &result.assembly.expect("a warning still compiles"),
+                    "unit.kk",
+                )
+            },
+            "{narrow}"
+        );
+    }
+    for fixed in ["push (&<mem):word", "push ('a'):word", "push LIMIT:word"] {
+        assert_eq!(pushed(fixed), (vec![], vec![]), "{fixed}");
+    }
+}
+
+/// The assembly lines [`code`] compares, from an assembly text: no comments,
+/// no unit name, and no source lines — those are debug information, not
+/// bytes, and a K65 spelling can take more lines than the K816 one it is
+/// compared with.
+fn code_lines(assembly: &str, name: &str) -> Vec<String> {
+    assembly
+        .replace(name, "UNIT")
+        .lines()
+        .map(|line| line.split(';').next().unwrap_or_default().trim_end())
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with(".dbg"))
+        .map(str::to_owned)
+        .collect()
 }

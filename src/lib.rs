@@ -52,6 +52,7 @@ pub mod preprocess;
 pub mod resolve;
 pub mod semantic;
 pub mod source;
+pub mod spelling;
 pub mod symbol;
 pub mod value;
 pub mod width;

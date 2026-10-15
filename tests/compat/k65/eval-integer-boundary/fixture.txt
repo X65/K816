@@ -8,20 +8,23 @@ expect    input.k65 K816-E0109
 expect    input.k65 K816-E0109
 expect    input.k65 K816-E0109
 expect    input.k65 K816-E0109
-expect    input.k65 K816-E0109
-expect    input.k65 K816-E0109
-expect    input.k65 K816-E0109
-expect    input.k65 K816-E0109
-expect    input.k65 K816-E0109
 
 **Round half up, then wrap silently - and K816 does not wrap.**
 
-Of the twenty-two entries, K816 compiles eleven to the golden's own bytes and
-refuses the other eleven with `K816-E0109`, the same code the literal `300`
-gets in a byte entry.  That split *is* decision 4: the rounding is copied
-exactly and the wrapping is not, because K816 keeps the range check the
-original does not have.  `tests/compat/k816/eval-rounding/` is the eleven it
-compiles, checked at the bytes.
+Of the twenty-two entries, K816 compiles sixteen to the golden's own bytes and
+refuses the other six with `K816-E0109`, the same code the literal `300` gets
+in a byte entry.  That split *is* decision 4: the rounding is copied exactly
+and the wrapping is not, because K816 keeps the range check the original does
+not have.  `tests/compat/k816/eval-rounding/` is the sixteen it compiles,
+checked at the bytes.
+
+Until sub-plan P the split was eleven and eleven.  The five that moved are the
+negatives - `[0 - 1]`, the three `[0 - 2.x]` and the `F9` - and they moved
+because K816's range check changed, not because it started wrapping: a value
+fits a byte when it lies in -128 ... 255, and is emitted as its low eight bits
+(`plans/15-constant-sizes.md` decision 2).  For those five that is the byte the
+original wraps to.  The six still refused are the ones no byte holds: 300,
+65536, and the four past 32 bits.
 
 The golden reads, byte for byte:
 

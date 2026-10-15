@@ -182,7 +182,7 @@ accumulator instead of believing the widening:
 ```k65
 func main {             // under --entry emulation
     rep #$20            // a no-op: M is forced to one
-    lda #$1234          // K816-E0103: maximum here is $FF
+    lda #$1234          // K816-E0103: here it must lie in -128 … $FF
 }
 ```
 

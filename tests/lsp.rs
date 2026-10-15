@@ -3228,6 +3228,37 @@ fn a_diagnostic_in_an_imported_file_can_be_told_to_the_client() {
     );
 }
 
+/// A negative constant is shown as the number it was written as, in the
+/// hover and in the outline, and not as the 32-bit pattern it is held in:
+/// no use of it has that width (`plans/15-constant-sizes.md` decision 3).
+#[test]
+fn a_negative_constant_is_shown_as_written() {
+    use k816::lsp::navigation::document_symbols;
+
+    let source = "const EUNKNOWN = -1\nconst LIMIT = 15\n\n\
+                  func main @a8 @i8 {\n    lda #EUNKNOWN\n}\n";
+    let mut workspace = Workspace::new();
+    let uri = "file:///negative.kk";
+    workspace.update(uri, source);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+
+    let outline = document_symbols(&analysis, file);
+    let details: Vec<_> = outline
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.detail.as_deref()))
+        .collect();
+    assert_eq!(
+        &details[..2],
+        [("EUNKNOWN", Some("= -1")), ("LIMIT", Some("= $000F"))]
+    );
+
+    let use_site = source.rfind("EUNKNOWN").expect("the use") as u32 + 1;
+    let hover = k816::lsp::hover::hover(&analysis, file, use_site).expect("a hover");
+    assert!(hover.markdown.contains("Value `-1`."), "{}", hover.markdown);
+    assert!(!hover.markdown.contains("FFFFFFFF"), "{}", hover.markdown);
+}
+
 /// Hover on an `extern` says it is a promise, not a body somewhere.
 #[test]
 fn hover_on_an_extern_says_another_object_provides_it() {

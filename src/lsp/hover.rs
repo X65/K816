@@ -106,7 +106,13 @@ fn symbol_hover(analysis: &Analysis, context: &Context<'_>) -> Option<Hover> {
 
     match symbol.kind {
         SymbolKind::Const { value: Some(value) } => {
-            let _ = writeln!(out, "\nValue `${value:04X}` ({value}).");
+            // A negative constant is shown as the number it was written as;
+            // its 32-bit pattern is no width any use of it has.
+            if (value as i32) < 0 {
+                let _ = writeln!(out, "\nValue `{}`.", value as i32);
+            } else {
+                let _ = writeln!(out, "\nValue `${value:04X}` ({value}).");
+            }
         }
         SymbolKind::Const { value: None } => {
             out.push_str("\nValue resolved by the linker (`extern const`).\n");

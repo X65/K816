@@ -71,6 +71,51 @@ impl Value {
     pub const fn fits(self, bytes: u32) -> bool {
         bytes >= 4 || self.0 >> (bytes * 8) == 0
     }
+
+    /// True when the value fits a use `bytes` wide: when it lies in
+    /// −2^(n−1) … 2^n−1 for that use's *n* bits.
+    ///
+    /// The rule that lets a constant with no size of its own take the size
+    /// of each place it is used (`plans/15-constant-sizes.md` decision 2):
+    /// −1 and 255 both fit a byte, as `$FF`, and −129 and 256 do not. A
+    /// value is a 32-bit two's-complement number, so one whose top bit is
+    /// set is the negative it spells — `$FFFFFFFF` is −1 — and an address
+    /// is not a value: it keeps [`Value::fits`].
+    pub const fn fits_use(self, bytes: u32) -> bool {
+        if bytes >= 4 {
+            return true;
+        }
+        let bits = bytes * 8;
+        self.0 >> bits == 0 || (self.0 as i32) >> (bits - 1) == -1
+    }
+
+    /// The low `bytes` bytes: what a use that fits emits.
+    pub const fn truncated(self, bytes: u32) -> Self {
+        if bytes >= 4 {
+            self
+        } else {
+            Self(self.0 & ((1 << (bytes * 8)) - 1))
+        }
+    }
+
+    /// The value read as the signed 32-bit number its pattern spells.
+    pub const fn signed(self) -> i32 {
+        self.0 as i32
+    }
+
+    /// The value as a reader wrote it: a negative one as a negative
+    /// decimal, any other at its natural hexadecimal width.
+    ///
+    /// For the messages about a *value* — an immediate, a datum, a
+    /// constant — where `$FFFFFF7F` would be a number nobody typed and
+    /// `-129` is the one they did.
+    pub fn written(self) -> String {
+        if self.signed() < 0 {
+            self.signed().to_string()
+        } else {
+            self.to_string()
+        }
+    }
 }
 
 impl std::fmt::Display for Value {
@@ -327,6 +372,54 @@ mod tests {
         assert!(!Value::new(0x1_0000).fits(2));
         assert!(Value::new(0xFF_FFFF).fits(3));
         assert!(Value::new(u32::MAX).fits(4));
+    }
+
+    fn negative(value: i32) -> Value {
+        Value::new(value as u32)
+    }
+
+    #[test]
+    fn a_use_fits_from_minus_half_its_range_to_its_unsigned_maximum() {
+        for (bytes, low, high) in [
+            (1, -0x80, 0xFF),
+            (2, -0x8000, 0xFFFF),
+            (3, -0x80_0000, 0xFF_FFFF),
+        ] {
+            assert!(negative(low).fits_use(bytes), "{low} fits {bytes}");
+            assert!(
+                !negative(low - 1).fits_use(bytes),
+                "{} does not fit {bytes}",
+                low - 1
+            );
+            assert!(Value::new(high).fits_use(bytes), "{high:#X} fits {bytes}");
+            assert!(
+                !Value::new(high + 1).fits_use(bytes),
+                "{:#X} does not fit {bytes}",
+                high + 1
+            );
+            assert!(negative(-1).fits_use(bytes));
+            assert!(Value::new(0).fits_use(bytes));
+        }
+        assert!(Value::new(u32::MAX).fits_use(4));
+        assert!(negative(i32::MIN).fits_use(4));
+    }
+
+    #[test]
+    fn a_use_emits_the_low_bits_of_what_fits() {
+        assert_eq!(negative(-1).truncated(1), Value::new(0xFF));
+        assert_eq!(negative(-1).truncated(2), Value::new(0xFFFF));
+        assert_eq!(negative(-1).truncated(3), Value::new(0xFF_FFFF));
+        assert_eq!(negative(-1).truncated(4), negative(-1));
+        assert_eq!(negative(-128).truncated(1), Value::new(0x80));
+        assert_eq!(Value::new(0x1234).truncated(2), Value::new(0x1234));
+    }
+
+    #[test]
+    fn a_negative_value_is_written_negative() {
+        assert_eq!(negative(-129).written(), "-129");
+        assert_eq!(negative(-1).written(), "-1");
+        assert_eq!(Value::new(0x100).written(), "$0100");
+        assert_eq!(Value::new(0x7FFF_FFFF).written(), "$7FFFFFFF");
     }
 
     #[test]

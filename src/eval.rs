@@ -177,6 +177,17 @@ impl Value {
     }
 }
 
+/// The number a `const` is inside an evaluation.
+///
+/// A constant is a 32-bit two's-complement value, so its pattern is read
+/// signed: `const E = -1` is −1 here, as it was written, and `[E + 1]` is
+/// zero rather than one past `$FFFFFFFF` (`plans/15-constant-sizes.md`
+/// decision 5). [`to_integer`] and the boundary after it take the result
+/// back to the same pattern.
+pub fn const_number(value: u32) -> f64 {
+    f64::from(value as i32)
+}
+
 /// The one integer boundary rule: `i64(floor(f32(v) + 0.5f32))`.
 ///
 /// Measured rather than chosen. `Eval_Exec` returns a `float` and `doeval`
@@ -855,7 +866,7 @@ impl<'a> Interpreter<'a> {
             symbol: id,
         });
         match self.symbols.kind(id) {
-            SymbolKind::Const { value: Some(value) } => Ok(Value::Number(f64::from(value))),
+            SymbolKind::Const { value: Some(value) } => Ok(Value::Number(const_number(value))),
             // An `extern const` has no number to give the evaluator, which
             // is the whole difference: ld65 decides it, long after every
             // compile-time question has been answered.

@@ -1093,11 +1093,12 @@ impl<'a> Resolver<'a> {
                     return None;
                 };
                 // Wrapped, not refused, and deliberately: `const NEG = 0 - 1`
-                // is `$FFFFFFFF` here and reports where it is *used*, so a
-                // bracket that evaluates to -1 has to reach the same check by
-                // the same route. Decision 4's rule is that the context's own
-                // width check applies to the rounded value exactly as it
-                // applies to a literal, and that check is downstream of this.
+                // is `$FFFFFFFF` here and is sized where it is *used* — `$FF`
+                // in a byte, `$FFFF` in a word — so a bracket that evaluates
+                // to -1 has to reach the same check by the same route.
+                // Decision 4's rule is that the context's own width check
+                // applies to the rounded value exactly as it applies to a
+                // literal, and that check is downstream of this.
                 let rounded = eval::to_integer(number);
                 match k65_number(rounded) {
                     Some(value) => Some(KExpr::number(value)),
@@ -1990,22 +1991,31 @@ impl<'a> Resolver<'a> {
     /// Classifies `#expr`, and the `&&label` forms that behave like one.
     fn immediate(&mut self, mnemonic: Mnemonic, span: Span, value: &Expr) -> Option<Classified> {
         let spec = self.select(mnemonic, OperandForm::Immediate, span, value.span)?;
-        let expr = self.fold(value)?;
+        let mut expr = self.fold(value)?;
         // A link-time immediate is legal — ca65 relocates it — and simply
         // cannot be range-checked here, because ld65 has not placed it yet.
         if let Some(folded) = expr.value()
             && let Some(class) = spec.immediate_width()
         {
-            match class.max_value(self.widths.a.width(), self.widths.i.width()) {
-                Some(limit) if folded.get() > limit => self.report(
+            match class.bytes(self.widths.a.width(), self.widths.i.width()) {
+                Some(bytes) if !folded.fits_use(bytes) => self.report(
                     Diagnostic::error(
                         DiagnosticCode::IMMEDIATE_RANGE,
-                        format!("immediate {folded} does not fit in the selected width"),
-                        Label::new(value.span, format!("maximum here is ${limit:X}")),
+                        format!(
+                            "immediate {} does not fit in the selected width",
+                            folded.written()
+                        ),
+                        Label::new(
+                            value.span,
+                            format!("here it must lie in {}", use_range(bytes)),
+                        ),
                     )
                     .with_docs("doc/register-width-aware-syntax.md"),
                 ),
-                Some(_) => {}
+                // A value has the size of the place it is used, so this is
+                // where `-1` becomes `$FF` or `$FFFF`: the bits the operand
+                // field holds (`plans/15-constant-sizes.md` decision 2).
+                Some(bytes) => expr = KExpr::Number(folded.truncated(bytes)),
                 None => {
                     let deferred = match class {
                         crate::isa::ImmediateWidthClass::XDependent => self.deferred.1,
@@ -3180,13 +3190,6 @@ pub fn eval_diagnostic(error: eval::Error) -> Option<Diagnostic> {
     Some(diagnostic)
 }
 
-/// A bracket whose rounded value is outside what any K65 context can hold.
-///
-/// The context's own check is the one that normally fires — a byte entry
-/// reports `E0109`, an immediate `E0103` — and it fires on the rounded
-/// value, exactly as it does on a literal. This one is the outer edge: a
-/// value that is not a K65 number at all, so no context's check can be
-/// reached to state it better.
 /// The 32-bit K65 number `value` wraps to, or `None` when it is not one.
 ///
 /// The original narrows through a C++ `int` (`compiler_src.cpp:392`), so the
@@ -3201,6 +3204,20 @@ fn k65_number(value: i64) -> Option<u32> {
         .or_else(|| i32::try_from(value).ok().map(|value| value as u32))
 }
 
+/// What a use `bytes` wide admits, for the label under a value that does not
+/// fit it: the fit rule of [`crate::value::Value::fits_use`], spelled out.
+pub(crate) fn use_range(bytes: u32) -> String {
+    let bits = bytes * 8;
+    format!("-{} … ${:X}", 1u64 << (bits - 1), (1u64 << bits) - 1)
+}
+
+/// A bracket whose rounded value is outside what any K65 context can hold.
+///
+/// The context's own check is the one that normally fires — a byte entry
+/// reports `E0109`, an immediate `E0103` — and it fires on the rounded
+/// value, exactly as it does on a literal. This one is the outer edge: a
+/// value that is not a K65 number at all, so no context's check can be
+/// reached to state it better.
 fn eval_out_of_range(value: i64, span: Span) -> Diagnostic {
     Diagnostic::error(
         DiagnosticCode::NUMBER_RANGE,
@@ -3735,21 +3752,29 @@ impl Resolver<'_> {
         match value {
             DataValue::Expr(expr) => {
                 let width = address_of_width(expr);
-                let folded = self.fold(expr)?;
+                let mut folded = self.fold(expr)?;
                 if width.is_none()
                     && let Some(known) = folded.value()
-                    && known.get() > 0xFF
                 {
-                    self.report(
-                        Diagnostic::error(
-                            DiagnosticCode::ADDRESS_RANGE,
-                            format!("{known} does not fit in a byte"),
-                            Label::new(expr.span, "an untyped data value is one byte wide"),
-                        )
-                        .with_help("use `&<`/`&>` to select a byte, or a `word` entry")
-                        .with_docs("doc/syntax-reference.md#raw-bytes-and-strings"),
-                    );
-                    return None;
+                    if !known.fits_use(1) {
+                        self.report(
+                            Diagnostic::error(
+                                DiagnosticCode::ADDRESS_RANGE,
+                                format!("{} does not fit in a byte", known.written()),
+                                Label::new(
+                                    expr.span,
+                                    format!(
+                                        "an untyped data value is one byte wide, {}",
+                                        use_range(1)
+                                    ),
+                                ),
+                            )
+                            .with_help("use `&<`/`&>` to select a byte, or a `word` entry")
+                            .with_docs("doc/syntax-reference.md#raw-bytes-and-strings"),
+                        );
+                        return None;
+                    }
+                    folded = KExpr::Number(known.truncated(1));
                 }
                 Some(match width {
                     Some(2) => DataOp::Word(vec![folded]),
@@ -3822,23 +3847,34 @@ impl Resolver<'_> {
                     folded.extend(self.string_bytes(text, span, emission)?);
                 }
                 DataValue::Expr(expr) => {
-                    let value = self.fold(expr)?;
-                    if let Some(known) = value.value()
-                        && known.get() > width.max_value()
-                    {
-                        self.report(
-                            Diagnostic::error(
-                                DiagnosticCode::ADDRESS_RANGE,
-                                format!("{known} does not fit a {}-byte value", width.bytes()),
-                                Label::new(
-                                    expr.span,
-                                    format!("this entry emits {} bytes per value", width.bytes()),
-                                ),
-                            )
-                            .with_help("use a wider entry, or select a byte with `&<` / `&>`")
-                            .with_docs("doc/syntax-reference.md#byte-8-bit-byte-entries"),
-                        );
-                        return None;
+                    let mut value = self.fold(expr)?;
+                    if let Some(known) = value.value() {
+                        if !known.fits_use(width.bytes()) {
+                            self.report(
+                                Diagnostic::error(
+                                    DiagnosticCode::ADDRESS_RANGE,
+                                    format!(
+                                        "{} does not fit a {}-byte value",
+                                        known.written(),
+                                        width.bytes()
+                                    ),
+                                    Label::new(
+                                        expr.span,
+                                        format!(
+                                            "this entry emits {} bytes per value, {}",
+                                            width.bytes(),
+                                            use_range(width.bytes())
+                                        ),
+                                    ),
+                                )
+                                .with_help("use a wider entry, or select a byte with `&<` / `&>`")
+                                .with_docs("doc/syntax-reference.md#byte-8-bit-byte-entries"),
+                            );
+                            return None;
+                        }
+                        // The entry's width is the value's size here, as an
+                        // operand's is: `-1` in a `word` entry is `$FFFF`.
+                        value = KExpr::Number(known.truncated(width.bytes()));
                     }
                     folded.push(value);
                 }

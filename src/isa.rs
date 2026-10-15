@@ -332,6 +332,22 @@ pub enum ImmediateWidthClass {
 }
 
 impl ImmediateWidthClass {
+    /// How many bytes this class encodes at `width`, or `None` when the
+    /// class is width-dependent and the width is unknown.
+    pub fn bytes(self, a: Option<RegisterWidth>, i: Option<RegisterWidth>) -> Option<u32> {
+        let bytes = |width: Option<RegisterWidth>| match width {
+            Some(RegisterWidth::W8) => Some(1),
+            Some(RegisterWidth::W16) => Some(2),
+            None => None,
+        };
+        match self {
+            Self::Fixed8 => Some(1),
+            Self::Fixed16 => Some(2),
+            Self::MDependent => bytes(a),
+            Self::XDependent => bytes(i),
+        }
+    }
+
     /// The largest value this class admits at `width`, or `None` when the
     /// class is width-dependent and the width is unknown.
     pub fn max_value(self, a: Option<RegisterWidth>, i: Option<RegisterWidth>) -> Option<u32> {

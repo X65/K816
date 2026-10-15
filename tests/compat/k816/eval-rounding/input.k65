@@ -1,18 +1,22 @@
-// The eleven entries of `k65/eval-integer-boundary` that stay inside a byte,
-// and nothing else.
+// The sixteen entries of `k65/eval-integer-boundary` that a byte holds, and
+// nothing else.
 //
-// The oracle fixture cannot check bytes: eleven of its twenty-two entries are
-// out of range, which the original wraps and K816 refuses, so it stops at the
-// diagnostics.  These eleven are the half where the two compilers must agree
-// exactly, and the golden beside it is where they do.
+// The oracle fixture cannot check bytes: six of its twenty-two entries are out
+// of range, which the original wraps and K816 refuses, so it stops at the
+// diagnostics.  These are the entries where the two compilers must agree
+// exactly, in the oracle's order, and the golden beside it is where they do.
 
 data boundary {
   [ 255 ]                              // in range
+  [ 0 - 1 ]                            // negative: a byte holds -128 ... 255
   [ 2.4 ] [ 2.5 ] [ 2.6 ]              // half up, not half to even
+  [ 0 - 2.4 ] [ 0 - 2.5 ] [ 0 - 2.6 ]  // and -2.5 is -2
   [ 0.5 ] [ 1.5 ] [ 2.5 ] [ 3.5 ]      // .5 four times, all upward
   [ 7 / 2 ]                            // 3.5 arrived at by division
   [ 16777217 - 16777216 ]              // two decimal literals: one `float`
-  [ 0x1000001 - 0x1000000 ]            // the same two in hex: exact
+  [ 16777216 + 1 - 16777216 ]          // the same sum inside one expression
+  [ ( 0.1 + 0.2 - 0.3 ) * 1000000000 ] // double arithmetic: -7, not zero
+  [ 0x1000001 - 0x1000000 ]            // two hex literals: exact
 }
 
 func main @a8 @i8 {

@@ -3,16 +3,22 @@ config    atarixl.cfg
 compare   bytes
 units     input.k65
 
-**The half of `k65/eval-integer-boundary` where the two compilers must agree
+**The part of `k65/eval-integer-boundary` where the two compilers must agree
 exactly, checked at the bytes.**
 
-    FF 02 03 03 01 02 03 04 04 00 01
+    FF FF 02 03 03 FE FE FD 01 02 03 04 04 00 01 F9 01
 
-The oracle fixture cannot make this claim itself: eleven of its twenty-two
-entries are out of range, the original wraps them silently and K816 refuses
-them, so it stops at the diagnostics and eleven agreements go unchecked.
-These are those eleven, and each byte here is the byte at the same position in
-`k65/eval-integer-boundary/oracle.hex`.
+The oracle fixture cannot make this claim itself: six of its twenty-two entries
+are out of range, the original wraps them silently and K816 refuses them, so
+it stops at the diagnostics and sixteen agreements go unchecked.  These are
+those sixteen, in the oracle's order, and each is the byte
+`k65/eval-integer-boundary/oracle.hex` has for the same entry.  The last is
+not in the oracle fixture: it is the hexadecimal twin of the fifteenth.
+
+Five of them are negative, and they were refused until sub-plan P: a value
+fits a byte when it lies in -128 ... 255, emitted as its low eight bits
+(`plans/15-constant-sizes.md` decision 2), so `[0 - 1]` is `FF` here for the
+same reason `const EUNKNOWN = -1` is `$FF` in an 8-bit immediate.
 
 Read in order they are the whole numeric model:
 
@@ -31,4 +37,5 @@ Read in order they are the whole numeric model:
 
 What is *not* copied is the wrapping, and that is decision 4's one deliberate
 difference: K816 keeps its range check, so a bracket that produces 300 in a
-byte entry is `K816-E0109`, exactly as the literal `300` is.
+byte entry is `K816-E0109`, exactly as the literal `300` is.  A negative value
+is not wrapped either; it is in range.

@@ -732,8 +732,8 @@ fn narrowing(parameter: &crate::ast::ContractParameter) -> Option<(&str, u32, &'
     };
     let width = width.as_ref()?;
     match width.kind {
-        crate::ast::TypeWidthKind::Byte => Some((&name.text, 0xFF, "byte")),
-        crate::ast::TypeWidthKind::Word => Some((&name.text, 0xFFFF, "word")),
+        crate::ast::TypeWidthKind::Byte => Some((&name.text, 1, "byte")),
+        crate::ast::TypeWidthKind::Word => Some((&name.text, 2, "word")),
         // `:far` is refused where it is written (`K816-E0169`); nothing here
         // has a range to enforce for it.
         crate::ast::TypeWidthKind::Far => None,
@@ -2079,20 +2079,26 @@ impl<'a> Lowering<'a> {
         span: Span,
         target: &crate::ast::Name,
     ) -> bool {
-        let Some((name, maximum, width)) = narrowing(parameter) else {
+        let Some((name, bytes, width)) = narrowing(parameter) else {
             return true;
         };
-        let Some(number) = value.value().map(|value| value.get()) else {
+        let Some(number) = value.value() else {
             return true;
         };
-        if number <= maximum {
+        // The narrowing is a declared range, as a `const`'s size is: the
+        // argument keeps its value, and the body's own operands give it the
+        // width each of them needs.
+        if number.fits_use(bytes) {
             return true;
         }
         self.diagnostics.push(
             Diagnostic::error(
                 DiagnosticCode::IMMEDIATE_PARAMETER_RANGE,
-                format!("${number:X} does not fit `#{name}:{width}`"),
-                Label::new(span, format!("maximum here is ${maximum:X}")),
+                format!("{} does not fit `#{name}:{width}`", number.written()),
+                Label::new(
+                    span,
+                    format!("here it must lie in {}", crate::resolve::use_range(bytes)),
+                ),
             )
             .with_help(format!(
                 "pass a value that fits, or widen `{}`'s parameter",

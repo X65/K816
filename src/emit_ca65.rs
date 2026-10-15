@@ -287,20 +287,32 @@ pub fn emit(
             }
         } else if crate::linkage::exported(symbol.kind) {
             // A `const` has no address, so it is exported as the value it
-            // is — with an explicit size, because ca65 derives an
-            // `=`-defined symbol's address size from its *value*
+            // is — with an explicit size where it has one, because ca65
+            // derives an `=`-defined symbol's address size from its *value*
             // (`src/ca65/symentry.c`) and would export a small one as
             // zeropage, which every absolute `.import` of it then disagrees
-            // with. Widening is silent; narrowing is the warning.
+            // with.
+            //
+            // A value past `$FFFFFF` has no size at all: ca65 warns about
+            // exporting a symbol at any size its value exceeds, and a
+            // negative value exceeds them all — it is `long` to ca65, which
+            // no 65816 import can name (`plans/15-constant-sizes.md`
+            // decision 8). So it is exported as the number it is, written
+            // the way it was, and ca65 gives it the size it derives.
             let directive = match symbol.kind {
-                SymbolKind::Const { value: Some(value) } => format!(
-                    ".export {} : {} = ${value:04X}",
-                    symbol.name,
-                    match AddressSize::of_value(value) {
-                        AddressSize::Long => "far",
-                        _ => "abs",
-                    }
-                ),
+                SymbolKind::Const { value: Some(value) } if value <= 0xFFFF => {
+                    format!(".export {} : abs = ${value:04X}", symbol.name)
+                }
+                SymbolKind::Const { value: Some(value) } if value <= 0xFF_FFFF => {
+                    format!(".export {} : far = ${value:04X}", symbol.name)
+                }
+                SymbolKind::Const { value: Some(value) } => {
+                    format!(
+                        ".export {} = {}",
+                        symbol.name,
+                        crate::value::Value::new(value).written()
+                    )
+                }
                 // An `extern const` this unit merely declared is never
                 // reached here: `symbol.imported` sent it to the `.import`
                 // arm above. A *local* `const` always has a value.

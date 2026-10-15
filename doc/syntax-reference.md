@@ -399,6 +399,32 @@ The shorthand form only applies to comma-separated groups. A standalone declarat
 const LIMIT               // error
 ```
 
+### A constant's size
+
+A `const` written without a size has none. Each use gives it the size that use needs, the way a widthless `inline` takes the width of the place it is expanded:
+
+```k65
+const EUNKNOWN = -1
+
+func fail @a16 @i8 {
+    lda #EUNKNOWN         // lda #$FFFF: the accumulator is 16 bits here
+    ldx #EUNKNOWN         // ldx #$FF: and the index registers 8
+    push EUNKNOWN         // pea $FFFF: PEA always pushes a word
+}
+
+data codes {
+    EUNKNOWN              // .byte $FF
+    word EUNKNOWN         // .word $FFFF
+    far EUNKNOWN          // .faraddr $FFFFFF
+}
+```
+
+A value fits a use *n* bits wide when it lies in −2^(n−1) … 2^n−1, and the use emits its low *n* bits. So −1 and 255 both fit a byte, as `$FF`, and −129 and 256 do not: each is the range error its use reports, `K816-E0103` for an immediate, `K816-E0109` for a data entry and `K816-E0170` for an `inline` argument. A literal is a value too, and `lda #-1` is `lda #$FF` at `@a8`. A constant is never an address — `lda EUNKNOWN` is `K816-E0110` — so the rule has nothing to say about one.
+
+A number is 32 bits of two's complement, so a pattern with its top bit set is the negative it spells: `$FFFFFFFF` and `-1` are one value, and `const ALL = $FFFFFFFF` is `$FF` in a byte as well. The evaluator reads a constant the same way, so `[EUNKNOWN + 1]` is zero.
+
+A unit-level constant is exported, for ca65 code and for an `extern const` elsewhere. One that fits `$0000` … `$FFFF` is exported absolute, `.export LIMIT : abs = $000F`, which is what a ca65 `.import` expects, and one that fits 24 bits far. Any other — a negative one, or one past `$FFFFFF` — has no size ca65 would accept and is exported as the number it is, `.export EUNKNOWN = -1`; ca65 makes it `long`, which no 65816 `.import` can name, so ld65 warns about an import of it.
+
 ## Expression Operators
 
 K65 expressions (used in `const NAME = …`, `var NAME = …`, instruction operands, eval brackets `[…]`, and other compile-time positions) support a C-style operator set. All ops fold at compile time when their operands resolve to integer constants — so flag-style unions, bit-position shifts, and mask inversions all work in `const` declarations and resolve to a single byte/word value at sema time.
@@ -659,7 +685,7 @@ data table { ROWS }      // .byte ROWS
 
 Every position that needs the number *now* refuses it with `K816-E0167`: a `#if` condition, an evaluator bracket, an array extent, an allocation count, a placement, and another `const`'s value. The refusal is its own code rather than the generic "must be known at compile time" a label's address earns, because the two have different answers — a label's address is ld65's and always will be, and a link-time constant is a number somebody could have written here instead.
 
-It is exported absolute (`.export ROWS : abs = $0019`), which is what an ordinary `const` in another K816 unit exports as, so the two agree without an ld65 address-size warning.
+It is imported absolute (`.import ROWS`), which is what an ordinary `const` in another K816 unit exports as when it fits `$0000` … `$FFFF` (`.export ROWS : abs = $0019`, [A constant's size](#a-constants-size)), so the two agree without an ld65 address-size warning.
 
 ### Two declarations of one name
 

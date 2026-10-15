@@ -540,7 +540,7 @@ fn analyze(
                 analysis
                     .model
                     .eval
-                    .record_foreign_const(name, f64::from(value));
+                    .record_foreign_const(name, eval::const_number(value));
             }
         }
         // And what each foreign layout and pinned variable is, so that a

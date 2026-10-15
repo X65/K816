@@ -49,6 +49,9 @@ pub fn work_dir(test: &str) -> PathBuf {
 }
 
 /// Runs `command`, panicking with its stderr on failure.
+// `tests/constants.rs` reads the tools' stderr itself, because a warning is a
+// failure there, so this is dead code in that one suite.
+#[allow(dead_code)]
 pub fn run_ok(command: &mut Command, what: &str) {
     let output = command
         .output()

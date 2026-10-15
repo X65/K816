@@ -158,6 +158,11 @@ const FAMILY: &[Case] = &[
         caret: "mem",
     },
     Case {
+        source: "const ERROR:byte = 300\n",
+        code: DiagnosticCode::CONST_SIZE_RANGE,
+        caret: "300",
+    },
+    Case {
         source: "var dp ptr:byte\nfunc work @a8 @i8 { lda (ptr) }\n",
         code: DiagnosticCode::INDIRECT_POINTER_WIDTH,
         caret: "ptr",

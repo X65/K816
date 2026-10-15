@@ -1,0 +1,36 @@
+row       k816-sized-const
+config    atarixl.cfg
+compare   bytes
+units     input.kk
+
+**A constant without a size takes the width of each use; one with a size
+declares a range, and its uses still take their own width.**
+
+    A9 FF  8D 1C 20     lda #EUNKNOWN   at @a8:  -1 is $FF
+    A9 FE  8D 1C 20     lda #ERROR      at @a8:  -2 is $FE
+    C2 20               rep #$20
+    A9 FF FF  8D 1C 20  lda #EUNKNOWN   at @a16: -1 is $FFFF
+    A9 FE FF  8D 1C 20  lda #ERROR      at @a16: $FFFE, not $00FE
+    F4 FE FF            push ERROR:word
+    60
+    FF FE               EUNKNOWN ERROR
+    FF FF 34 12         word EUNKNOWN PAGE
+    FD FF FF FF FF FF   far BANK EUNKNOWN
+
+The original K65 has a `const` with no size and no notion of one: a value
+reaches a byte entry wrapped to eight bits, and an immediate is a byte
+because every K65 accumulator is.  K816's rule for a constant without a
+size is the same at a byte - a value lies in -128 ... 255 and is emitted as
+its low eight bits - and extends to every width a 65816 use has: sixteen
+bits at `@a16` and in `PEA`, twenty-four in a `far` entry
+(`plans/15-constant-sizes.md` decisions 1-3).  What K816 adds, and the
+original has no spelling for, is the declared size: `:byte`, `:word` or
+`:far` after the name.  It is a range the value must lie in (`K816-E0178`
+otherwise) and the size the constant is exported at, and it makes a `:byte`
+constant one that `push` refuses (`K816-E0175`) - so this fixture pushes
+`ERROR` through its `:word` view, and the stack gets `$FFFE`.  `--strict-k65`
+rejects each declared size.
+
+The width the `@a16` block set is not restored before the `PEA`: nothing
+after the block reads the accumulator's width, which dead mode elimination
+sees.

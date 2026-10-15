@@ -105,17 +105,28 @@ fn symbol_hover(analysis: &Analysis, context: &Context<'_>) -> Option<Hover> {
     }
 
     match symbol.kind {
-        SymbolKind::Const { value: Some(value) } => {
-            // A negative constant is shown as the number it was written as;
-            // its 32-bit pattern is no width any use of it has.
-            if (value as i32) < 0 {
-                let _ = writeln!(out, "\nValue `{}`.", value as i32);
-            } else {
-                let _ = writeln!(out, "\nValue `${value:04X}` ({value}).");
+        SymbolKind::Const { value, size } => {
+            match value {
+                // A negative constant is shown as the number it was written
+                // as; its 32-bit pattern is no width any use of it has.
+                Some(value) if (value as i32) < 0 => {
+                    let _ = writeln!(out, "\nValue `{}`.", value as i32);
+                }
+                Some(value) => {
+                    let _ = writeln!(out, "\nValue `${value:04X}` ({value}).");
+                }
+                None => out.push_str("\nValue resolved by the linker (`extern const`).\n"),
             }
-        }
-        SymbolKind::Const { value: None } => {
-            out.push_str("\nValue resolved by the linker (`extern const`).\n");
+            match size {
+                Some(width) => {
+                    let _ = writeln!(
+                        out,
+                        "\nDeclared `{}`: linked at that size, used at the width of each use.",
+                        type_width(width)
+                    );
+                }
+                None => out.push_str("\nNo size: each use gives it the width it needs.\n"),
+            }
         }
         SymbolKind::Var {
             address,

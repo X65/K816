@@ -1124,13 +1124,15 @@ impl<'a> Resolver<'a> {
         match self.symbols.kind(id) {
             // A `const` has no storage, so it can only ever be its value;
             // everything else keeps its name for ca65/ld65.
-            SymbolKind::Const { value: Some(value) } => Some(KExpr::number(value)),
+            SymbolKind::Const {
+                value: Some(value), ..
+            } => Some(KExpr::number(value)),
             // Except an `extern const`, whose value is ld65's: it keeps its
             // name, exactly as a relocatable symbol does, and every use of
             // it reaches ca65 as an expression the linker resolves. That is
             // a path this compiler already had — `lda #&<table` is one — so
             // nothing downstream needs to know the difference.
-            SymbolKind::Const { value: None } => Some(KExpr::Symbol(id)),
+            SymbolKind::Const { value: None, .. } => Some(KExpr::Symbol(id)),
             // An `abstract var` has neither a value nor a place, so there is
             // nothing for a mention of one to fold to.
             SymbolKind::AbstractVar { .. } => {
@@ -1614,10 +1616,12 @@ impl<'a> Resolver<'a> {
         // time" is true of it and of a label alike, but only one of the two
         // can be *made* known by writing the number, and saying which is the
         // whole use of the message.
-        if let Some(id) = symbols
-            .iter()
-            .find(|id| matches!(self.symbols.kind(**id), SymbolKind::Const { value: None }))
-        {
+        if let Some(id) = symbols.iter().find(|id| {
+            matches!(
+                self.symbols.kind(**id),
+                SymbolKind::Const { value: None, .. }
+            )
+        }) {
             let name = self.symbols.name(*id).to_owned();
             let declaration = self.symbols.symbol(*id).declaration;
             self.report(link_time_value(&name, expr.span, Some(declaration)));
@@ -1648,6 +1652,14 @@ impl<'a> Resolver<'a> {
         self.function
             .and_then(|owner| self.symbols.lookup_local(owner, name))
             .or_else(|| self.symbols.lookup(name))
+    }
+
+    /// The size a `const` named `name` declares, when it declares one.
+    pub(crate) fn declared_const_size(&self, name: &str) -> Option<crate::symbol::DataWidth> {
+        match self.symbols.kind(self.scoped_symbol(name)?) {
+            SymbolKind::Const { size, .. } => size,
+            _ => None,
+        }
     }
 
     /// Resolves a plain name, reporting it when nothing declares it.
@@ -2574,10 +2586,12 @@ impl<'a> Resolver<'a> {
         // An `extern const` has its own message, and it is the more useful
         // one: writing the number is the fix there, and it is not the fix for
         // a variable.
-        if let Some(id) = symbols
-            .iter()
-            .find(|id| matches!(self.symbols.kind(**id), SymbolKind::Const { value: None }))
-        {
+        if let Some(id) = symbols.iter().find(|id| {
+            matches!(
+                self.symbols.kind(**id),
+                SymbolKind::Const { value: None, .. }
+            )
+        }) {
             let name = self.symbols.name(*id).to_owned();
             let declaration = self.symbols.symbol(*id).declaration;
             self.report(link_time_value(&name, span, Some(declaration)));

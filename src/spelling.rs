@@ -396,30 +396,8 @@ impl Checker<'_> {
                 _ if is_parenthesized(text) => format!("{text}:word"),
                 _ => format!("({text}):word"),
             };
-            self.diagnostics.push(
-                Diagnostic::error(
-                    DiagnosticCode::PUSH_BYTE_CONSTANT,
-                    "a one-byte constant cannot be pushed",
-                    Label::new(
-                        value.span,
-                        format!("{what} is one byte, and `push` pushes two"),
-                    ),
-                )
-                .with_note(
-                    "the 65816 has no instruction that pushes a constant byte; `push` writes \
-                     `PEA`, which pushes a word whatever `M` says",
-                )
-                .with_help(format!(
-                    "write `{expanded}` to push it with a zero high byte, or load it and \
-                     `push a` with an 8-bit accumulator"
-                ))
-                .with_fix(Fix {
-                    title: format!("push it as the word `{expanded}`"),
-                    applicability: Applicability::MaybeIncorrect,
-                    edits: vec![TextEdit::replace(value.span, expanded.clone())],
-                })
-                .with_docs("doc/syntax-reference.md#push-and-pull"),
-            );
+            self.diagnostics
+                .push(byte_constant_pushed(value.span, what, &expanded));
             return;
         }
         let ExprKind::Number(number) = value.kind else {
@@ -444,6 +422,33 @@ impl Checker<'_> {
             .with_docs("doc/syntax-reference.md#push-and-pull"),
         );
     }
+}
+
+/// `push` of a constant that is one byte by construction (`K816-E0175`):
+/// `what` says which construction, and `expanded` is the word to write.
+///
+/// Shared with lowering, which is where a `const` declared `:byte` is known
+/// to be one — this pass reads spellings and has no symbol table.
+pub(crate) fn byte_constant_pushed(span: Span, what: &str, expanded: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::PUSH_BYTE_CONSTANT,
+        "a one-byte constant cannot be pushed",
+        Label::new(span, format!("{what} is one byte, and `push` pushes two")),
+    )
+    .with_note(
+        "the 65816 has no instruction that pushes a constant byte; `push` writes \
+         `PEA`, which pushes a word whatever `M` says",
+    )
+    .with_help(format!(
+        "write `{expanded}` to push it as a word, or load it and `push a` with an 8-bit \
+         accumulator"
+    ))
+    .with_fix(Fix {
+        title: format!("push it as the word `{expanded}`"),
+        applicability: Applicability::MaybeIncorrect,
+        edits: vec![TextEdit::replace(span, expanded.to_owned())],
+    })
+    .with_docs("doc/syntax-reference.md#push-and-pull")
 }
 
 /// Whether `value` names a place: a variable, a label, a field or an element

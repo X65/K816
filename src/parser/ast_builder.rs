@@ -32,7 +32,7 @@ use crate::ast::{
     BranchCondition, BranchConditionKind, CallArgument, CallContract, CallStatement,
     ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
     ContractOutput, ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind,
-    DataValue, EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind,
+    DataValue, EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind, ExternConst,
     ExternDeclaration, ExternExit, ExternFunction, ExternKind, ExternVar, FieldAccess,
     FieldDeclaration, FlagKind, FlagTestSpelling, Function, FunctionKind, GotoStatement,
     HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift,
@@ -462,6 +462,9 @@ impl AstBuilder<'_> {
             match child.kind() {
                 "const_entry" => entries.push(ConstEntry {
                     name: self.name(child.child_by_field_name("name"), child),
+                    width: child
+                        .child_by_field_name("type")
+                        .and_then(|width| self.type_width(width)),
                     value: child
                         .child_by_field_name("value")
                         .map(|value| self.expr(Some(value), child)),
@@ -570,7 +573,12 @@ impl AstBuilder<'_> {
                     .child_by_field_name("type")
                     .and_then(|width| self.type_width(width)),
             }),
-            "extern_const" => ExternKind::Const(self.name(item.child_by_field_name("name"), item)),
+            "extern_const" => ExternKind::Const(ExternConst {
+                name: self.name(item.child_by_field_name("name"), item),
+                width: item
+                    .child_by_field_name("type")
+                    .and_then(|width| self.type_width(width)),
+            }),
             _ => {
                 self.unexpected(item, "an `extern` declaration");
                 return None;

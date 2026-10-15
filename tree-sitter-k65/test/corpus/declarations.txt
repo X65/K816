@@ -177,6 +177,50 @@ const M = 0, N, O = 10, P
       name: (identifier))))
 
 ================================================================================
+A constant may declare its size, and one in a group does not lend it on
+================================================================================
+
+const EUNKNOWN = -1
+const SMALL:byte = -1
+const ADDRESS : word = $1234
+const BANKED:far = $123456, NEXT, PLAIN:byte
+const LIMIT:byte
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (unary_expression
+        operand: (number))))
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      type: (type_suffix)
+      value: (unary_expression
+        operand: (number))))
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      type: (type_suffix)
+      value: (number)))
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      type: (type_suffix)
+      value: (number))
+    (const_entry
+      name: (identifier))
+    (const_entry
+      name: (identifier)
+      type: (type_suffix)))
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      type: (type_suffix))))
+
+================================================================================
 Segment selection
 ================================================================================
 
@@ -381,7 +425,7 @@ extern func setup @a8 @i16 -> @a16 @i8
         width: (width_annotation)))))
 
 ================================================================================
-Extern variables carry a storage class and a typed width; constants carry neither
+Extern variables carry a storage class and a typed width; constants only a size
 ================================================================================
 
 extern var frame
@@ -389,6 +433,7 @@ extern var dp ptr
 extern var abs port : word
 extern var far rom : far
 extern const ROWS
+extern const COLUMNS:byte
 
 --------------------------------------------------------------------------------
 
@@ -412,7 +457,11 @@ extern const ROWS
       type: (type_suffix)))
   (extern_declaration
     item: (extern_const
-      name: (identifier))))
+      name: (identifier)))
+  (extern_declaration
+    item: (extern_const
+      name: (identifier)
+      type: (type_suffix))))
 
 ================================================================================
 A module default after an extern constant is still a module default

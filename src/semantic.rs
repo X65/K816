@@ -536,7 +536,10 @@ fn analyze(
             if definition.file == unit {
                 continue;
             }
-            if let SymbolKind::Const { value: Some(value) } = definition.kind {
+            if let SymbolKind::Const {
+                value: Some(value), ..
+            } = definition.kind
+            {
                 analysis
                     .model
                     .eval
@@ -849,7 +852,12 @@ impl Analysis {
             // No number, which is the whole difference from a `const`: ld65
             // decides it. Every use of it stays a symbolic expression, and
             // every compile-time position refuses it.
-            ExternKind::Const(_) => SymbolKind::Const { value: None },
+            ExternKind::Const(constant) => SymbolKind::Const {
+                value: None,
+                size: constant
+                    .width
+                    .map(|width| crate::layout::data_width(width.kind)),
+            },
         };
         if self.reserved(&name.text, name.span) {
             return;
@@ -1803,7 +1811,14 @@ impl Analysis {
         if compat::reserved_name(span, name).is_some() {
             return;
         }
-        self.declare(name, SymbolKind::Const { value: Some(value) }, span);
+        self.declare(
+            name,
+            SymbolKind::Const {
+                value: Some(value),
+                size: None,
+            },
+            span,
+        );
     }
 
     /// Refuses a declaration that asks for a reserved spelling — a register,
@@ -2841,7 +2856,7 @@ impl Analysis {
                 ItemKind::Extern(declaration) => Some(match &declaration.kind {
                     crate::ast::ExternKind::Func(function) => function.name.text.as_str(),
                     crate::ast::ExternKind::Var(variable) => variable.name.text.as_str(),
-                    crate::ast::ExternKind::Const(name) => name.text.as_str(),
+                    crate::ast::ExternKind::Const(constant) => constant.name.text.as_str(),
                 }),
                 _ => None,
             })
@@ -3412,10 +3427,25 @@ impl Analysis {
             if entry.name.provenance == Provenance::Synthetic {
                 continue; // Recovery invented the name; a syntax error covers it.
             }
+            let size = entry
+                .width
+                .map(|width| crate::layout::data_width(width.kind));
+            if let (Some(width), Some(declared), Some(value)) = (&entry.width, size, value)
+                && !crate::value::Value::new(value).fits_use(declared.bytes())
+            {
+                self.diagnostics
+                    .push(const_outside_its_size(entry, width, declared, value));
+            }
+            // Declared whether or not it fits: the value is still the value
+            // its uses were written against, and one wrong size should not
+            // turn every use of the name into an undeclared-symbol error.
             if let Some(value) = value {
                 self.declare(
                     &entry.name.text,
-                    SymbolKind::Const { value: Some(value) },
+                    SymbolKind::Const {
+                        value: Some(value),
+                        size,
+                    },
                     entry.name.span,
                 );
             }
@@ -4338,6 +4368,46 @@ fn duplicate_field(field: &ast::FieldDeclaration, previous: Span) -> Diagnostic 
          never be reached",
     )
     .with_docs("doc/symbolic-subscripts.md#field-item-grammar")
+}
+
+/// `const E:byte = 300`: a value outside the size its declaration states.
+///
+/// The caret is on the value where one is written, and on the entry where
+/// the group's auto-increment produced it — `const A:byte = 255, B:byte` is
+/// the `B`, because that is the entry the reader has to change.
+fn const_outside_its_size(
+    entry: &ast::ConstEntry,
+    width: &ast::TypeWidth,
+    declared: crate::symbol::DataWidth,
+    value: u32,
+) -> Diagnostic {
+    let name = match width.kind {
+        ast::TypeWidthKind::Byte => "byte",
+        ast::TypeWidthKind::Word => "word",
+        ast::TypeWidthKind::Far => "far",
+    };
+    let written = crate::value::Value::new(value).written();
+    let range = crate::resolve::use_range(declared.bytes());
+    let primary = match &entry.value {
+        Some(expr) => Label::new(expr.span, format!("a `:{name}` constant lies in {range}")),
+        None => Label::new(
+            entry.name.span,
+            format!(
+                "the group continues here at {written}, and a `:{name}` constant lies in {range}"
+            ),
+        ),
+    };
+    Diagnostic::error(
+        DiagnosticCode::CONST_SIZE_RANGE,
+        format!("{written} does not fit `{}:{name}`", entry.name.text),
+        primary,
+    )
+    .with_secondary(Label::new(width.span, "the size declared here"))
+    .with_help(
+        "declare a size that holds it, or none: a constant without a size takes the width \
+         of each place it is used",
+    )
+    .with_docs("doc/syntax-reference.md#a-constants-size")
 }
 
 /// `var t * 0`, or the field count `.str[0]`. Not a declaration's raw span:

@@ -66,6 +66,10 @@ struct Use {
     checks: &'static [(u32, &'static str)],
     /// How many bytes of the value one use emits.
     emits: u32,
+    /// Whether a constant declared `:byte` is refused here whatever its
+    /// value: `push` writes `PEA`, which pushes two bytes
+    /// (`plans/15-constant-sizes.md` decision 7).
+    refuses_a_byte: bool,
 }
 
 const A8: &str = "naked uses @a8 @i8 {\n{uses}}\n";
@@ -81,6 +85,8 @@ const WORD_PARAMETER: &str =
     "inline put (#v:word) {\n    lda #v\n}\n\nnaked uses @a8 @i8 {\n{uses}}\n";
 
 const IMMEDIATE: &str = "K816-E0103";
+const PUSHED_BYTE: &str = "K816-E0175";
+const OUTSIDE_ITS_SIZE: &str = "K816-E0178";
 const DATUM: &str = "K816-E0109";
 const ARGUMENT: &str = "K816-E0170";
 
@@ -92,6 +98,7 @@ const USES: &[Use] = &[
         opcode: &[0xA9],
         checks: &[(1, IMMEDIATE)],
         emits: 1,
+        refuses_a_byte: false,
     },
     Use {
         what: "`lda #` at @a16",
@@ -100,6 +107,7 @@ const USES: &[Use] = &[
         opcode: &[0xA9],
         checks: &[(2, IMMEDIATE)],
         emits: 2,
+        refuses_a_byte: false,
     },
     Use {
         what: "`ldx #` at @i8",
@@ -108,6 +116,7 @@ const USES: &[Use] = &[
         opcode: &[0xA2],
         checks: &[(1, IMMEDIATE)],
         emits: 1,
+        refuses_a_byte: false,
     },
     Use {
         what: "`ldy #` at @i16",
@@ -116,6 +125,7 @@ const USES: &[Use] = &[
         opcode: &[0xA0],
         checks: &[(2, IMMEDIATE)],
         emits: 2,
+        refuses_a_byte: false,
     },
     Use {
         what: "`a = ` at @a8",
@@ -124,6 +134,7 @@ const USES: &[Use] = &[
         opcode: &[0xA9],
         checks: &[(1, IMMEDIATE)],
         emits: 1,
+        refuses_a_byte: false,
     },
     Use {
         what: "`a = ` at @a16",
@@ -132,6 +143,7 @@ const USES: &[Use] = &[
         opcode: &[0xA9],
         checks: &[(2, IMMEDIATE)],
         emits: 2,
+        refuses_a_byte: false,
     },
     Use {
         what: "`a+` at @a8",
@@ -140,6 +152,7 @@ const USES: &[Use] = &[
         opcode: &[0x69],
         checks: &[(1, IMMEDIATE)],
         emits: 1,
+        refuses_a_byte: false,
     },
     Use {
         what: "`x?` at @i16",
@@ -148,6 +161,7 @@ const USES: &[Use] = &[
         opcode: &[0xE0],
         checks: &[(2, IMMEDIATE)],
         emits: 2,
+        refuses_a_byte: false,
     },
     Use {
         what: "`y?` at @i8",
@@ -156,6 +170,7 @@ const USES: &[Use] = &[
         opcode: &[0xC0],
         checks: &[(1, IMMEDIATE)],
         emits: 1,
+        refuses_a_byte: false,
     },
     Use {
         what: "`pea #`, always a word",
@@ -164,6 +179,7 @@ const USES: &[Use] = &[
         opcode: &[0xF4],
         checks: &[(2, IMMEDIATE)],
         emits: 2,
+        refuses_a_byte: false,
     },
     Use {
         what: "`push`, which is `pea`",
@@ -172,6 +188,7 @@ const USES: &[Use] = &[
         opcode: &[0xF4],
         checks: &[(2, IMMEDIATE)],
         emits: 2,
+        refuses_a_byte: true,
     },
     Use {
         what: "`cop #`, always a byte",
@@ -180,6 +197,7 @@ const USES: &[Use] = &[
         opcode: &[0x02],
         checks: &[(1, IMMEDIATE)],
         emits: 1,
+        refuses_a_byte: false,
     },
     Use {
         what: "an untyped data entry",
@@ -188,6 +206,7 @@ const USES: &[Use] = &[
         opcode: &[],
         checks: &[(1, DATUM)],
         emits: 1,
+        refuses_a_byte: false,
     },
     Use {
         what: "a `byte` entry",
@@ -196,6 +215,7 @@ const USES: &[Use] = &[
         opcode: &[],
         checks: &[(1, DATUM)],
         emits: 1,
+        refuses_a_byte: false,
     },
     Use {
         what: "a `word` entry",
@@ -204,6 +224,7 @@ const USES: &[Use] = &[
         opcode: &[],
         checks: &[(2, DATUM)],
         emits: 2,
+        refuses_a_byte: false,
     },
     Use {
         what: "a `far` entry",
@@ -212,6 +233,7 @@ const USES: &[Use] = &[
         opcode: &[],
         checks: &[(3, DATUM)],
         emits: 3,
+        refuses_a_byte: false,
     },
     Use {
         what: "a `#v:byte` argument used at @a16",
@@ -220,6 +242,7 @@ const USES: &[Use] = &[
         opcode: &[0xA9],
         checks: &[(1, ARGUMENT)],
         emits: 2,
+        refuses_a_byte: false,
     },
     Use {
         what: "a `#v:word` argument used at @a8",
@@ -228,6 +251,7 @@ const USES: &[Use] = &[
         opcode: &[0xA9],
         checks: &[(2, ARGUMENT), (1, IMMEDIATE)],
         emits: 1,
+        refuses_a_byte: false,
     },
 ];
 
@@ -251,11 +275,16 @@ fn spelled(value: i64) -> String {
     }
 }
 
-/// One `const` per value, `C0` … in order, and `the` use of each.
-fn program(the: &Use, consts: &[(String, String)]) -> String {
+/// The sizes a declaration may state, and how many bytes each is.
+const SIZES: &[(&str, u32)] = &[("byte", 1), ("word", 2), ("far", 3)];
+
+/// One `const` per value, `C0` … in order, each declared at `size` if one is
+/// given, and `the` use of each.
+fn program(the: &Use, size: Option<&str>, consts: &[(String, String)]) -> String {
+    let suffix = size.map_or(String::new(), |size| format!(":{size}"));
     let mut out = String::new();
     for (name, value) in consts {
-        out.push_str(&format!("const {name} = {value}\n"));
+        out.push_str(&format!("const {name}{suffix} = {value}\n"));
     }
     out.push('\n');
     let uses: String = consts
@@ -326,25 +355,87 @@ fn link_quietly(test: &str, assembly: &str) -> Vec<u8> {
     std::fs::read(&binary).expect("read linked binary")
 }
 
-/// The matrix: every use, every boundary value.
-#[test]
-fn every_use_gives_a_size_less_constant_the_width_it_needs() {
+/// Links `assembly` with a ca65 module assembled from `other`, `assembly`
+/// first, requiring both tools to say nothing.
+fn link_with_ca65(test: &str, assembly: &str, other: &str) -> Vec<u8> {
+    let dir = work_dir(test);
+    let config =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    let mut objects = Vec::new();
+    for (name, text) in [("k816", assembly), ("ca65", other)] {
+        let source = dir.join(format!("{name}.s"));
+        let object = dir.join(format!("{name}.o"));
+        std::fs::write(&source, text).expect("write assembly");
+        quiet(
+            test,
+            "ca65",
+            Command::new(tool("CA65", "ca65"))
+                .arg(&source)
+                .arg("-o")
+                .arg(&object),
+        );
+        objects.push(object);
+    }
+    let binary = dir.join("out.bin");
+    quiet(
+        test,
+        "ld65",
+        Command::new(tool("LD65", "ld65"))
+            .arg("-C")
+            .arg(&config)
+            .arg("-o")
+            .arg(&binary)
+            .args(&objects),
+    );
+    std::fs::read(&binary).expect("read linked binary")
+}
+
+/// Runs `command` and requires it to succeed and say nothing.
+fn quiet(test: &str, what: &str, command: &mut Command) {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("cannot run {what}: {error}"));
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && said.is_empty(),
+        "{test}: {what} said:\n{said}"
+    );
+}
+
+/// The matrix: every use, every boundary value — of constants declared at
+/// `size`, or with no size, and only the values a declaration of that size
+/// admits. A size is a range and not a width, so each use gives a sized
+/// constant its own width exactly as it gives one with no size: the value
+/// stays the value.
+fn matrix(size: Option<(&str, u32)>) {
+    let values: Vec<i64> = VALUES
+        .iter()
+        .copied()
+        .filter(|&value| size.is_none_or(|(_, bytes)| fits(value, bytes)))
+        .collect();
     for (index, the) in USES.iter().enumerate() {
         let mut fitting = Vec::new();
         let mut expected = Vec::new();
-        for &value in VALUES {
-            let refused = the
-                .checks
-                .iter()
-                .find(|(bytes, _)| !fits(value, *bytes))
-                .map(|(_, code)| *code);
+        for &value in &values {
+            let refused = if the.refuses_a_byte && size.is_some_and(|(name, _)| name == "byte") {
+                Some(PUSHED_BYTE)
+            } else {
+                the.checks
+                    .iter()
+                    .find(|(bytes, _)| !fits(value, *bytes))
+                    .map(|(_, code)| *code)
+            };
             let Some(code) = refused else {
                 fitting.push((format!("C{}", fitting.len()), spelled(value)));
                 expected.extend_from_slice(the.opcode);
                 expected.extend(encoded(value, the.emits));
                 continue;
             };
-            let source = program(the, &[("VALUE".to_owned(), spelled(value))]);
+            let source = program(
+                the,
+                size.map(|(name, _)| name),
+                &[("VALUE".to_owned(), spelled(value))],
+            );
             let (_, codes) = compile("refused.kk", &source);
             assert_eq!(
                 codes,
@@ -353,15 +444,224 @@ fn every_use_gives_a_size_less_constant_the_width_it_needs() {
                 the.what
             );
         }
-        let source = program(the, &fitting);
+        if fitting.is_empty() {
+            continue;
+        }
+        let source = program(the, size.map(|(name, _)| name), &fitting);
         let (assembly, codes) = compile("fitting.kk", &source);
         assert_eq!(codes, Vec::<String>::new(), "{}:\n{source}", the.what);
         let bytes = link_quietly(
-            &format!("constants-use-{index}"),
+            &format!(
+                "constants-{}-use-{index}",
+                size.map_or("none", |(name, _)| name)
+            ),
             &assembly.expect("compiles"),
         );
         assert_eq!(bytes, expected, "{}: the linked bytes\n{source}", the.what);
     }
+}
+
+#[test]
+fn every_use_gives_a_size_less_constant_the_width_it_needs() {
+    matrix(None);
+}
+
+#[test]
+fn every_use_gives_a_byte_constant_its_own_width() {
+    matrix(Some(SIZES[0]));
+}
+
+#[test]
+fn every_use_gives_a_word_constant_its_own_width() {
+    matrix(Some(SIZES[1]));
+}
+
+#[test]
+fn every_use_gives_a_far_constant_its_own_width() {
+    matrix(Some(SIZES[2]));
+}
+
+/// A declared size is a range: the value must lie in −2^(n−1) … 2^n−1 for
+/// its *n* bits, which is the fit rule a use applies, applied once where the
+/// constant is declared.
+#[test]
+fn a_declared_size_is_a_range_the_value_must_lie_in() {
+    for &(size, bytes) in SIZES {
+        for &value in VALUES {
+            let source = format!("const VALUE:{size} = {}\n", spelled(value));
+            let (_, codes) = compile("declared.kk", &source);
+            let expected: &[&str] = if fits(value, bytes) {
+                &[]
+            } else {
+                &[OUTSIDE_ITS_SIZE]
+            };
+            assert_eq!(codes, expected, "{source}");
+        }
+    }
+}
+
+/// The group's auto-increment can carry a sized entry out of its range, and
+/// the error is on the entry that has to change.
+#[test]
+fn a_group_entry_its_increment_carries_out_of_range_is_the_one_reported() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "group.kk",
+        "const LAST:byte = 255, NEXT:byte, WIDER:word\nconst BIG:byte = 300\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let reported: Vec<(&str, String, String, String)> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code.0,
+                diagnostic.title.clone(),
+                map.file(file).span_text(diagnostic.primary.span).to_owned(),
+                map.file(file)
+                    .span_text(diagnostic.secondary[0].span)
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reported,
+        [
+            (
+                OUTSIDE_ITS_SIZE,
+                "$0100 does not fit `NEXT:byte`".to_owned(),
+                "NEXT".to_owned(),
+                ":byte".to_owned()
+            ),
+            (
+                OUTSIDE_ITS_SIZE,
+                "$012C does not fit `BIG:byte`".to_owned(),
+                "300".to_owned(),
+                ":byte".to_owned()
+            ),
+        ]
+    );
+}
+
+/// A sized constant is exported at its size, as its low bits at that size,
+/// and ca65 assembles each line quietly: `.export E : zp = -1` would be
+/// "long but exported zeropage" (`plans/15-constant-sizes.md` decision 8).
+#[test]
+fn a_sized_constant_is_exported_at_its_size() {
+    for &(size, bytes) in SIZES {
+        for &value in VALUES.iter().filter(|&&value| fits(value, bytes)) {
+            let source = format!("const VALUE:{size} = {}\n", spelled(value));
+            let (assembly, codes) = compile("export.kk", &source);
+            assert_eq!(codes, Vec::<String>::new());
+            let assembly = assembly.expect("compiles");
+            let bits = value & ((1 << (8 * bytes)) - 1);
+            let expected = match size {
+                "byte" => format!(".export VALUE : zp = ${bits:02X}"),
+                "word" => format!(".export VALUE : abs = ${bits:04X}"),
+                _ => format!(".export VALUE : far = ${bits:06X}"),
+            };
+            assert!(
+                assembly.contains(&expected),
+                "{source}: `{expected}` in\n{assembly}"
+            );
+            let _ = link_quietly("constants-sized-export", &assembly);
+        }
+    }
+}
+
+/// ca65 code imports a sized constant at its size and uses it the way that
+/// size allows — a `:byte` one in an 8-bit immediate — and ld65 links the
+/// two quietly, which an absolute export of a byte would not.
+#[test]
+fn ca65_imports_a_sized_constant_at_its_size() {
+    let k816 = "const ERROR:byte = -1\nconst PAGE:word = $1234\nconst BANK:far = $123456\n";
+    let ca65 = ".setcpu \"65816\"\n.importzp ERROR\n.import PAGE\n.import BANK : far\n\
+                .segment \"CODE\"\n.a8\nlda #ERROR\n.a16\nlda #PAGE\n.faraddr BANK\n";
+    let (assembly, codes) = compile("sizes.kk", k816);
+    assert_eq!(codes, Vec::<String>::new());
+    let bytes = link_with_ca65("constants-ca65-import", &assembly.expect("compiles"), ca65);
+    assert_eq!(bytes, [0xA9, 0xFF, 0xA9, 0x34, 0x12, 0x56, 0x34, 0x12]);
+}
+
+/// `extern const NAME:byte` is an `.importzp`, `:word` a plain `.import` and
+/// `:far` one at `: far`; with no size it stays the plain `.import` it was.
+#[test]
+fn an_extern_const_is_imported_at_the_size_it_declares() {
+    let source = "extern const ROWS:byte\nextern const PAGE:word\nextern const BANK:far\n\
+                  extern const PLAIN\n\n\
+                  data table {\n    far ROWS PAGE BANK PLAIN\n}\n";
+    let (assembly, codes) = compile("externs.kk", source);
+    assert_eq!(codes, Vec::<String>::new());
+    let assembly = assembly.expect("compiles");
+    for line in [
+        ".importzp ROWS",
+        ".import PAGE ",
+        ".import BANK : far",
+        ".import PLAIN ",
+    ] {
+        assert!(assembly.contains(line), "`{line}` in\n{assembly}");
+    }
+}
+
+/// Two `extern const` declarations of one name that disagree about its size
+/// disagree about the import, which is `K816-E0165` like any other.
+#[test]
+fn two_extern_consts_of_one_name_must_agree_about_its_size() {
+    let mut map = SourceMap::new();
+    map.add_file("a.kk", "extern const ROWS:byte\n");
+    let entry = map.add_file("main.kk", "import \"a.kk\"\nextern const ROWS\n");
+    let codes: Vec<&str> = compile_to_ca65(&map, entry, &Options::default())
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.0)
+        .collect();
+    assert_eq!(codes, ["K816-E0165"]);
+}
+
+/// A `:byte` constant is a one-byte constant to `push`, which pushes two, and
+/// the fix is the word view — which pushes the value at sixteen bits, so a
+/// `:byte` -1 is `$FFFF` on the stack.
+#[test]
+fn a_byte_constant_is_pushed_through_its_word_view() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "push.kk",
+        "const ERROR:byte = -1\n\nnaked uses @a8 @i8 {\n    push ERROR\n}\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let [diagnostic] = result.diagnostics.as_slice() else {
+        panic!("one diagnostic: {:?}", result.diagnostics);
+    };
+    assert_eq!(diagnostic.code.0, PUSHED_BYTE);
+    assert_eq!(map.file(file).span_text(diagnostic.primary.span), "ERROR");
+    assert_eq!(diagnostic.fixes[0].edits[0].replacement, "ERROR:word");
+
+    let (assembly, codes) = compile(
+        "push.kk",
+        "const ERROR:byte = -1\n\nnaked uses @a8 @i8 {\n    push ERROR:word\n}\n",
+    );
+    assert_eq!(codes, Vec::<String>::new());
+    let bytes = link_quietly("constants-push-view", &assembly.expect("compiles"));
+    assert_eq!(bytes, [0xF4, 0xFF, 0xFF]);
+}
+
+/// A size crosses `import` with the constant: the importer folds the value
+/// and knows the size, so `push` refuses another unit's `:byte` constant
+/// exactly as its own.
+#[test]
+fn a_declared_size_crosses_an_import() {
+    let mut map = SourceMap::new();
+    map.add_file("defs.kk", "const ERROR:byte = -1\n");
+    let entry = map.add_file(
+        "main.kk",
+        "import \"defs.kk\"\n\nnaked uses @a16 @i8 {\n    lda #ERROR\n    push ERROR\n}\n",
+    );
+    let codes: Vec<&str> = compile_to_ca65(&map, entry, &Options::default())
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.0)
+        .collect();
+    assert_eq!(codes, [PUSHED_BYTE]);
 }
 
 /// A use's own value need not be a constant's: a literal is the same number

@@ -257,7 +257,12 @@ pub fn emit(
         if !symbol.is_unit_level() {
             continue;
         }
-        let size = symbol.kind.address_size();
+        // A `const` has no address, and one that declares a size crosses
+        // the link at it: `extern const ROWS:byte` is an `.importzp`.
+        let size = match symbol.kind {
+            SymbolKind::Const { size, .. } => size.map(crate::symbol::DataWidth::linked_size),
+            kind => kind.address_size(),
+        };
         if symbol.imported {
             // Only a name this unit actually used needs importing — and a
             // `const` another unit *defines* is not one of them however often
@@ -269,7 +274,7 @@ pub fn emit(
             // defines its name, and every use of it was an offset or a size.
             let folded = matches!(
                 symbol.kind,
-                SymbolKind::Const { value: Some(_) } | SymbolKind::AbstractVar { .. }
+                SymbolKind::Const { value: Some(_), .. } | SymbolKind::AbstractVar { .. }
             );
             if model.referenced.contains(&id) && !folded {
                 let where_from = map.file(symbol.declaration.file);
@@ -299,14 +304,44 @@ pub fn emit(
             // no 65816 import can name (`plans/15-constant-sizes.md`
             // decision 8). So it is exported as the number it is, written
             // the way it was, and ca65 gives it the size it derives.
+            //
+            // A constant that declares a size is exported at it, as its low
+            // bits at that size: `:byte` -1 is `: zp = $FF`, because no other
+            // form both ca65 and ld65 accept quietly (decision 8). Across the
+            // link it is those bits.
             let directive = match symbol.kind {
-                SymbolKind::Const { value: Some(value) } if value <= 0xFFFF => {
+                SymbolKind::Const {
+                    value: Some(value),
+                    size: Some(width),
+                } => {
+                    let bits = crate::value::Value::new(value)
+                        .truncated(width.bytes())
+                        .get();
+                    match width {
+                        crate::symbol::DataWidth::Byte => {
+                            format!(".export {} : zp = ${bits:02X}", symbol.name)
+                        }
+                        crate::symbol::DataWidth::Word => {
+                            format!(".export {} : abs = ${bits:04X}", symbol.name)
+                        }
+                        crate::symbol::DataWidth::Far => {
+                            format!(".export {} : far = ${bits:06X}", symbol.name)
+                        }
+                    }
+                }
+                SymbolKind::Const {
+                    value: Some(value), ..
+                } if value <= 0xFFFF => {
                     format!(".export {} : abs = ${value:04X}", symbol.name)
                 }
-                SymbolKind::Const { value: Some(value) } if value <= 0xFF_FFFF => {
+                SymbolKind::Const {
+                    value: Some(value), ..
+                } if value <= 0xFF_FFFF => {
                     format!(".export {} : far = ${value:04X}", symbol.name)
                 }
-                SymbolKind::Const { value: Some(value) } => {
+                SymbolKind::Const {
+                    value: Some(value), ..
+                } => {
                     format!(
                         ".export {} = {}",
                         symbol.name,
@@ -316,7 +351,7 @@ pub fn emit(
                 // An `extern const` this unit merely declared is never
                 // reached here: `symbol.imported` sent it to the `.import`
                 // arm above. A *local* `const` always has a value.
-                SymbolKind::Const { value: None } => continue,
+                SymbolKind::Const { value: None, .. } => continue,
                 _ => linkage_directive("export", &symbol.name, size),
             };
             linkage_directives.push_str(&annotated(

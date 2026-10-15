@@ -578,6 +578,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-stack-words", K816Extension, Rejects),
     row("k816-dialect", K816Extension, Quiet),
     row("k816-numbered-place", K816Extension, Quiet),
+    row("k816-sized-const", K816Extension, Rejects),
     row("k65-global-namespace", IntentionallyChanged, Quiet),
     row("optimizer-branch-to-next-label", BackendDifferent, Quiet),
     row("optimizer-duplicate-return", BackendDifferent, Quiet),
@@ -661,6 +662,11 @@ const REPORTED: &[Reported] = &[
         id: "k816-metadata-query",
         what: "a compile-time metadata query",
         instead: None,
+    },
+    Reported {
+        id: "k816-sized-const",
+        what: "a constant's declared size",
+        instead: Some("a K65 `const` has no size, and each use gives it the width it needs"),
     },
     Reported {
         id: "k816-typed-view",
@@ -938,6 +944,9 @@ impl StrictWalk<'_> {
                     if group && entry.value.is_none() {
                         self.mark("k816-const-auto-increment", entry.span);
                     }
+                    if let Some(width) = &entry.width {
+                        self.mark("k816-sized-const", width.span);
+                    }
                     if let Some(value) = &entry.value {
                         self.expr(value);
                     }
@@ -968,7 +977,16 @@ impl StrictWalk<'_> {
             // has no K65 spelling with or without them, so a second
             // diagnostic on the same line would say nothing the first did
             // not.
-            ItemKind::Extern(declaration) => self.mark("k816-extern", declaration.keyword_span),
+            ItemKind::Extern(declaration) => {
+                self.mark("k816-extern", declaration.keyword_span);
+                // A declared size is its own extension, and a `const` with
+                // one is reported at the size whichever kind it is.
+                if let crate::ast::ExternKind::Const(constant) = &declaration.kind
+                    && let Some(width) = &constant.width
+                {
+                    self.mark("k816-sized-const", width.span);
+                }
+            }
             ItemKind::Func(function) => self.function(function),
         }
     }

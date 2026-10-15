@@ -20,8 +20,8 @@ rather than going uncounted.
 
 | | count |
 |---|---|
-| unit compilations | 165 |
-| of those, compiling | 121 |
+| unit compilations | 166 |
+| of those, compiling | 122 |
 | refusing on purpose | 44 |
 
 A *unit compilation* is one file of one fixture, compiled with the siblings its
@@ -32,7 +32,7 @@ why — either in its own `fixture.txt` or in `REFUSALS`.
 
 | | count |
 |---|---|
-| emitted sections | 271 |
+| emitted sections | 272 |
 | of those, declaring an output | 5 |
 | `inline` sections (no exit to seed) | 13 |
 | of those, declaring an output | 7 |

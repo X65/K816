@@ -113,6 +113,17 @@ impl DataWidth {
             Self::Far => 3,
         }
     }
+
+    /// The address size a `const` of this size crosses the link at:
+    /// `.exportzp` and `.importzp` for a byte, plain for a word, `: far` for
+    /// three bytes (`plans/15-constant-sizes.md` decisions 8 and 9).
+    pub fn linked_size(self) -> AddressSize {
+        match self {
+            Self::Byte => AddressSize::DirectPage,
+            Self::Word => AddressSize::Absolute,
+            Self::Far => AddressSize::Long,
+        }
+    }
 }
 
 /// Identifies an interned [`Layout`].
@@ -301,7 +312,15 @@ pub enum SymbolKind {
     /// hands on. Every *compile-time* position — a `#if`, an evaluator
     /// bracket, a span, a count, another `const` — needs a number and
     /// refuses it (`K816-E0167`).
-    Const { value: Option<u32> },
+    ///
+    /// `size` is the one a declaration states, `const E:byte = -1`: a range
+    /// the value lies in and the size it is linked at. `None` is a constant
+    /// with no size, which each use gives the width it needs
+    /// (`plans/15-constant-sizes.md`).
+    Const {
+        value: Option<u32>,
+        size: Option<DataWidth>,
+    },
     /// `var NAME [= addr]`. `address` is `None` for a linker-allocated
     /// variable, whose address only ld65 knows.
     Var {

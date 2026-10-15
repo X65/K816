@@ -512,6 +512,10 @@ impl DiagnosticCode {
     /// `push` takes values. `push #mem` pushes its address
     /// (`plans/14-readable-hla.md` decision 9).
     pub const PUSH_PLACE: Self = Self("K816-E0177");
+    /// A `const` whose value is outside the size it declares —
+    /// `const E:byte = 300`. A size is a range, −2^(n−1) … 2^n−1 for its *n*
+    /// bits (`plans/15-constant-sizes.md` decision 6).
+    pub const CONST_SIZE_RANGE: Self = Self("K816-E0178");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -850,6 +854,7 @@ mod tests {
         DiagnosticCode::PUSH_BYTE_CONSTANT,
         DiagnosticCode::NUMBER_AS_PLACE,
         DiagnosticCode::PUSH_PLACE,
+        DiagnosticCode::CONST_SIZE_RANGE,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

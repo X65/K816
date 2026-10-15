@@ -415,11 +415,15 @@ impl Preprocess {
             // either, and the table already refuses a `var` and a section by
             // kind, so declaring them would change nothing.
             ItemKind::Extern(declaration) => {
-                if let crate::ast::ExternKind::Const(name) = &declaration.kind {
+                if let crate::ast::ExternKind::Const(constant) = &declaration.kind {
                     let _ = self.symbols.declare(
-                        &name.text,
-                        SymbolKind::Const { value: None },
-                        name.span,
+                        &constant.name.text,
+                        // No size: a condition reads values, never sizes.
+                        SymbolKind::Const {
+                            value: None,
+                            size: None,
+                        },
+                        constant.name.span,
                     );
                 }
                 self.brackets_of_item(item);
@@ -919,6 +923,7 @@ impl Preprocess {
                     &name,
                     SymbolKind::Const {
                         value: Some(eval::to_integer(number) as u32),
+                        size: None,
                     },
                     body.span,
                 );
@@ -1009,7 +1014,11 @@ impl Preprocess {
             if let Some(value) = value {
                 let _ = self.symbols.declare(
                     &entry.name.text,
-                    SymbolKind::Const { value: Some(value) },
+                    // No size, as above: analysis declares the real one.
+                    SymbolKind::Const {
+                        value: Some(value),
+                        size: None,
+                    },
                     entry.name.span,
                 );
             }

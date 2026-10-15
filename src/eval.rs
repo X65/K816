@@ -866,11 +866,13 @@ impl<'a> Interpreter<'a> {
             symbol: id,
         });
         match self.symbols.kind(id) {
-            SymbolKind::Const { value: Some(value) } => Ok(Value::Number(const_number(value))),
+            SymbolKind::Const {
+                value: Some(value), ..
+            } => Ok(Value::Number(const_number(value))),
             // An `extern const` has no number to give the evaluator, which
             // is the whole difference: ld65 decides it, long after every
             // compile-time question has been answered.
-            SymbolKind::Const { value: None } => Err(Error::LinkTimeValue {
+            SymbolKind::Const { value: None, .. } => Err(Error::LinkTimeValue {
                 span: name.span,
                 name: name.text.clone(),
             }),

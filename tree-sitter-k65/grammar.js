@@ -404,9 +404,13 @@ export default grammar({
     // initializer continues the previous one (enum-like auto-increment).
     const_declaration: $ => seq('const', commaSep1($.const_entry)),
 
+    // `const EUNKNOWN:byte = -1` — a size is a declared range and the size
+    // the constant is exported at; without one a constant has none, and each
+    // use gives it the width it needs (`plans/15-constant-sizes.md`).
     const_entry: $ =>
       seq(
         field('name', $.identifier),
+        optional(field('type', $.type_suffix)),
         optional(seq('=', field('value', $._expression))),
       ),
 
@@ -466,7 +470,9 @@ export default grammar({
         optional(field('type', $.type_suffix)),
       ),
 
-    extern_const: $ => seq('const', field('name', $.identifier)),
+    // A size here is the import's: `.importzp`, `.import`, `.import : far`.
+    extern_const: $ =>
+      seq('const', field('name', $.identifier), optional(field('type', $.type_suffix))),
 
     // The code sections:
     //

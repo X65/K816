@@ -283,11 +283,25 @@ fn fields(unit: &AnalyzedUnit, kind: &SymbolKind) -> Vec<Outline> {
 /// The one-line suffix an editor shows beside a name.
 fn detail(kind: &SymbolKind) -> Option<String> {
     match kind {
-        SymbolKind::Const { value: Some(value) } if (*value as i32) < 0 => {
-            Some(format!("= {}", *value as i32))
+        SymbolKind::Const { value, size } => {
+            let size = size.map_or(String::new(), |width| {
+                format!(
+                    ":{} ",
+                    match width {
+                        crate::symbol::DataWidth::Byte => "byte",
+                        crate::symbol::DataWidth::Word => "word",
+                        crate::symbol::DataWidth::Far => "far",
+                    }
+                )
+            });
+            Some(match value {
+                Some(value) if (*value as i32) < 0 => format!("{size}= {}", *value as i32),
+                Some(value) => format!("{size}= ${value:04X}"),
+                // Not listed in an outline, which shows what a unit defines;
+                // kept so the suffix has an answer for every constant.
+                None => format!("extern {size}").trim_end().to_owned(),
+            })
         }
-        SymbolKind::Const { value: Some(value) } => Some(format!("= ${value:04X}")),
-        SymbolKind::Const { value: None } => Some("extern".to_owned()),
         SymbolKind::Var {
             address: Some(address),
             ..

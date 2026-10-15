@@ -3257,6 +3257,60 @@ fn a_negative_constant_is_shown_as_written() {
     let hover = k816::lsp::hover::hover(&analysis, file, use_site).expect("a hover");
     assert!(hover.markdown.contains("Value `-1`."), "{}", hover.markdown);
     assert!(!hover.markdown.contains("FFFFFFFF"), "{}", hover.markdown);
+    assert!(hover.markdown.contains("No size"), "{}", hover.markdown);
+}
+
+/// A declared size is shown beside the value, and on an `extern const`
+/// beside the word `extern`.
+#[test]
+fn a_constants_declared_size_is_shown() {
+    use k816::lsp::navigation::document_symbols;
+
+    let source = "const ERROR:byte = -1\nconst PAGE:word = $1234\nextern const ROWS:byte\n\
+                  extern const COLS\n\nfunc main @a8 @i8 {\n    lda #ERROR\n    lda #ROWS\n}\n";
+    let mut workspace = Workspace::new();
+    let uri = "file:///sized.kk";
+    workspace.update(uri, source);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+
+    let outline = document_symbols(&analysis, file);
+    let details: Vec<_> = outline
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.detail.as_deref()))
+        .collect();
+    // An `extern` is declared and not defined here, so the outline does not
+    // list it; its size is in the hover.
+    assert_eq!(
+        details,
+        [
+            ("ERROR", Some(":byte = -1")),
+            ("PAGE", Some(":word = $1234")),
+            ("main", None),
+        ]
+    );
+
+    let use_site = source.rfind("ERROR").expect("the use") as u32 + 1;
+    let hover = k816::lsp::hover::hover(&analysis, file, use_site).expect("a hover");
+    assert!(hover.markdown.contains("Value `-1`."), "{}", hover.markdown);
+    assert!(
+        hover.markdown.contains("Declared `:byte`"),
+        "{}",
+        hover.markdown
+    );
+
+    let use_site = source.rfind("ROWS").expect("the use") as u32 + 1;
+    let hover = k816::lsp::hover::hover(&analysis, file, use_site).expect("a hover");
+    assert!(
+        hover.markdown.contains("resolved by the linker"),
+        "{}",
+        hover.markdown
+    );
+    assert!(
+        hover.markdown.contains("Declared `:byte`"),
+        "{}",
+        hover.markdown
+    );
 }
 
 /// Hover on an `extern` says it is a promise, not a body somewhere.

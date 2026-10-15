@@ -423,7 +423,22 @@ A value fits a use *n* bits wide when it lies in −2^(n−1) … 2^n−1, and t
 
 A number is 32 bits of two's complement, so a pattern with its top bit set is the negative it spells: `$FFFFFFFF` and `-1` are one value, and `const ALL = $FFFFFFFF` is `$FF` in a byte as well. The evaluator reads a constant the same way, so `[EUNKNOWN + 1]` is zero.
 
-A unit-level constant is exported, for ca65 code and for an `extern const` elsewhere. One that fits `$0000` … `$FFFF` is exported absolute, `.export LIMIT : abs = $000F`, which is what a ca65 `.import` expects, and one that fits 24 bits far. Any other — a negative one, or one past `$FFFFFF` — has no size ca65 would accept and is exported as the number it is, `.export EUNKNOWN = -1`; ca65 makes it `long`, which no 65816 `.import` can name, so ld65 warns about an import of it.
+A unit-level constant is exported, for ca65 code and for an `extern const` elsewhere. One that fits `$0000` … `$FFFF` is exported absolute, `.export LIMIT : abs = $000F`, which is what a ca65 `.import` expects, and one that fits 24 bits far. Any other — a negative one, or one past `$FFFFFF` — has no size ca65 would accept and is exported as the number it is, `.export EUNKNOWN = -1`; ca65 makes it `long`, which no 65816 `.import` can name, so ld65 warns about an import of it. A constant meant for ca65 code states its size.
+
+#### A declared size
+
+A size after the name — `:byte`, `:word` or `:far` — declares the range the value lies in and the size the constant is linked at:
+
+```k65
+const ERROR:byte = -1     // .export ERROR : zp = $FF
+const PAGE:word = $1234   // .export PAGE : abs = $1234
+const BANK:far = $7E0000  // .export BANK : far = $7E0000
+const LAST:byte = 255, NEXT:byte  // K816-E0178: NEXT is 256
+```
+
+The value must fit the size by the rule a use applies — a `:byte` constant lies in −128 … 255 — and one that does not is `K816-E0178`. It is exported at that size, as its low bits at it, which is the form ca65 and ld65 both accept without a warning: `.export ERROR : zp = -1` would be "long but exported zeropage". ca65 code imports it with `.importzp ERROR` and may then write `lda #ERROR` at `.a8`, which an absolute import refuses.
+
+A size is not a width. A use still gives the constant the width it needs, and the value stays the value, so `lda #ERROR` is `lda #$FFFF` at `@a16`, not `$00FF`. Across the link it is the bits the export carries: ca65 code, or an `extern const ERROR:byte`, that reads it at sixteen bits sees `$00FF`, because ld65 has no negative numbers to extend. The one use a size changes is `push`: a `:byte` constant is a one-byte constant, and `push ERROR` is `K816-E0175` with `ERROR:word` as the fix ([Push and pull](#push-and-pull)).
 
 ## Expression Operators
 
@@ -645,6 +660,7 @@ extern var _count                    // absolute, the default
 extern var dp scratch                // a zero-page cell: `.importzp`
 extern var far rom : far             // a 24-bit address, and a 3-byte datum
 extern const ROWS                    // a value an include file exports
+extern const COLUMNS:byte            // and one exported zeropage: `.importzp`
 ```
 
 Each form carries exactly what ld65 cannot infer and ca65 needs. The storage class decides the directive — `.importzp`, plain `.import`, or `.import NAME : far` — and ca65 validates addressing modes against it, so a `dp` variable declared absolute is a wrong *instruction* rather than a wrong name. `far func` decides `JSR`/`RTS` against `JSL`/`RTL`, checked at every call site with the same `K816-E0138` a local `far func` gets.
@@ -2002,7 +2018,7 @@ A register is pushed by its own instruction — `a`, `x`, `y`, `p`, `dbr` and `d
 |---|---|
 | `push $0012`, `push 300`, `push LIMIT`, `push LIMIT + 1` | nothing: a word, or a constant that says nothing about its width |
 | `push $12`, `push 18`, `push %00010010` | `K816-W0174`, with a fix that writes `$0012` |
-| `push &<mem`, `push &>mem`, `push 'a'`, `push LIMIT:byte` | `K816-E0175`: one byte by construction, which no 65816 instruction pushes. The fix writes `(&<mem):word` — the zero high byte said out loud |
+| `push &<mem`, `push &>mem`, `push 'a'`, `push LIMIT:byte`, and `push ERROR` where `const ERROR:byte` | `K816-E0175`: one byte by construction, which no 65816 instruction pushes. The fix writes `(&<mem):word` — the zero high byte said out loud — and `ERROR:word` for a `:byte` constant, which pushes its value at sixteen bits: `$FFFF` for −1 |
 | `push mem`, `push routine` | `K816-E0177`: a name is the place it names, as in `a = mem`, and `push` takes values. `push #mem` pushes its address |
 
 Like every HLA operand, a constant runs on across a line break — K65 is newline-insensitive, and `;` is what ends a statement — so `push LIMIT` above `* 3` pushes `LIMIT * 3`; `push LIMIT; * 3` is a push and a three-NOP wait. `pei` and `per` stay mnemonics: `pei (ptr)` pushes the word at a direct-page address whatever `M` says, which a `push ptr` would make read like the value at the accumulator's width — which is why `push ptr` is refused rather than given that meaning.

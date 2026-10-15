@@ -493,6 +493,19 @@ fn push_constant(
         );
         return None;
     }
+    // A `const` declared `:byte` is a one-byte constant as much as `&<x` is
+    // (`plans/15-constant-sizes.md` decision 7), and only here is the symbol
+    // table there to say so. A `:word` view of it is the expansion.
+    if let ExprKind::Symbol(name) = &value.kind
+        && resolver.declared_const_size(&name.text) == Some(crate::symbol::DataWidth::Byte)
+    {
+        resolver.report(crate::spelling::byte_constant_pushed(
+            value.span,
+            &format!("`{}` is declared `:byte`, which", name.text),
+            &format!("{}:word", name.text),
+        ));
+        return None;
+    }
     Some(vec![resolver.classify_source(
         Mnemonic::Pea,
         crate::resolve::OperandSource::Immediate(value),

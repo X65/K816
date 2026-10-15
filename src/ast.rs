@@ -165,6 +165,9 @@ pub struct ConstDeclaration {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstEntry {
     pub name: Name,
+    /// `const E:byte = -1`: the size the constant declares, if it declares
+    /// one (`plans/15-constant-sizes.md` decision 6).
+    pub width: Option<TypeWidth>,
     pub value: Option<Expr>,
     pub span: Span,
 }
@@ -1273,7 +1276,15 @@ pub enum ExternKind {
     Var(ExternVar),
     /// `extern const NAME` — a value ld65 resolves. It has no expression,
     /// which is the whole difference from a `const`.
-    Const(Name),
+    Const(ExternConst),
+}
+
+/// A value another object provides, and the size it is imported at, if the
+/// declaration states one (`extern const ROWS:byte` is `.importzp ROWS`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternConst {
+    pub name: Name,
+    pub width: Option<TypeWidth>,
 }
 
 /// A code section another object provides.
@@ -1304,7 +1315,7 @@ pub fn extern_name(kind: &ExternKind) -> &Name {
     match kind {
         ExternKind::Func(function) => &function.name,
         ExternKind::Var(variable) => &variable.name,
-        ExternKind::Const(name) => name,
+        ExternKind::Const(constant) => &constant.name,
     }
 }
 

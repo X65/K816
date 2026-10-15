@@ -1554,6 +1554,8 @@ const AST_FIELDS: &[(&str, &str, &str)] = &[
         "value",
         "topelem-const k816-const-auto-increment",
     ),
+    ("ConstEntry", "width", "k816-sized-const"),
+    ("ExternConst", "width", "k816-extern k816-sized-const"),
     ("Function", "is_far", "k816-far-function"),
     ("ExternFunction", "is_far", "k816-extern k816-far-function"),
     ("ExternFunction", "exit", "k816-extern"),
@@ -1950,7 +1952,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
 
     assert_eq!(
         marked.len(),
-        32,
+        33,
         "the manifest marks {} rows for the flag; if that is deliberate, move the \
          number here so the count stays a statement someone made",
         marked.len()

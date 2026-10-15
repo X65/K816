@@ -2889,7 +2889,7 @@ fn import_and_extern_items_build_the_declared_shapes() {
     );
     match externs[6] {
         // No value, which is the whole difference from a `const`.
-        ExternKind::Const(name) => assert_eq!(name.text, "ROWS"),
+        ExternKind::Const(constant) => assert_eq!(constant.name.text, "ROWS"),
         other => panic!("expected an extern constant, got {other:?}"),
     }
 }

@@ -1,8 +1,8 @@
-// The other half of `kk-k65.kk`: the same program in K816's native form -
+// The other half of `kk-k65.k65`: the same program in K816's native form -
 // raw mnemonics, a written label, width annotations, a `$` literal and an
 // `import` - none of which K65 has, so `--strict-k65` refuses every one of
-// them. The extension is not a dialect: a `.kk` takes full K816 exactly as
-// a `.k816` does.
+// them. A `.kk` is K816 exactly as a `.k816` is; K65's own spellings live in
+// `.k65` sources.
 
 import "kk-lib.k816"
 

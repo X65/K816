@@ -372,7 +372,7 @@ fn a_retired_register_spelling_names_its_replacement() {
         ("    d = a", "the direct page register is `dpr`"),
         ("    b = x", "write `a~b` to swap the halves"),
         ("    x = b", "write `a~b` to swap the halves"),
-        ("    b!!", "write `dbr!!`"),
+        ("    b!!", "write `push dbr`"),
     ] {
         let program = format!("func main @a8 @i8 {{\n{source}\n}}\n");
         let diagnostics = diagnostics(&program);

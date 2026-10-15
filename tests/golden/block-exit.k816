@@ -18,7 +18,7 @@ func native_exit @a8 {
 // The same for a branch the compiler generated, here a `break` out of a loop
 // wrapped in a width block.
 func generated_exit @a8 @i8 {
-    {
+    loop {
         @a16 {
             a?0
             == break

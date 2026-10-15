@@ -103,16 +103,16 @@ func flags_native @a8 @i8 {
 // Push and pull. The data bank and direct page are `dbr` and `dpr`, spelled
 // out because a single letter is a flag.
 //
-// `p??` pulls the processor status and with it the width flags, so both
+// `pull p` pulls the processor status and with it the width flags, so both
 // halves re-establish the widths before returning — and that they *both*
-// have to is the point: the width model sees `p??` as the `PLP` it is.
+// have to is the point: the width model sees `pull p` as the `PLP` it is.
 func stack @a8 @i8 {
-    a!! a??
-    x!! x??
-    y!! y??
-    p!! p??
-    dbr!! dbr??
-    dpr!! dpr??
+    push a pull a
+    push x pull x
+    push y pull y
+    push p pull p
+    push dbr pull dbr
+    push dpr pull dpr
     @a8 @i8
     return
 }

@@ -25,10 +25,10 @@ var SCREEN = $0400
 
 func main {
   x = 0
-  {
+  loop {
     a = hello, x
-    z-? { SCREEN, x = a x++ }
-  } z-?
+    !z? { SCREEN, x = a x++ }
+  } while !z?
 }
 
 data text_data {

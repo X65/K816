@@ -96,12 +96,9 @@ fn code(name: &str, text: &str) -> (Vec<&'static str>, Vec<String>) {
     (codes, code_lines(&assembly, name))
 }
 
-/// Each of K816's spellings compiles to the bytes of the K65 spelling it
-/// replaces: respelling changes nothing a program does
-/// (`plans/14-readable-hla.md` decision 13). One pair per inventory row the
-/// plan respells, and every flag both ways in every place a condition goes.
-#[test]
-fn every_respelled_form_compiles_to_the_bytes_of_its_k65_spelling() {
+/// One pair per inventory row the plan respells, K816's spelling first, and
+/// every flag both ways in every place a condition goes.
+fn respelled_pairs() -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = vec![
         ("loop { x-- } while !=".into(), "{ x-- } !=".into()),
         ("loop { x++ } while >=0".into(), "{ x++ } >=0".into()),
@@ -122,6 +119,12 @@ fn every_respelled_form_compiles_to_the_bytes_of_its_k65_spelling() {
             "loop { x++ \n == repeat \n y++ } while !=".into(),
             "{ x++ \n == repeat \n y++ } !=".into(),
         ),
+        (
+            "loop { loop { x++ } while != \n y++ } while !=".into(),
+            "{ { x++ } != \n y++ } !=".into(),
+        ),
+        ("v? { x++ }".into(), "<<={ x++ }".into()),
+        ("!v? goto .out".into(), ">>= goto .out".into()),
         ("push a, x, y".into(), "a!! x!! y!!".into()),
         ("pull y, x, a".into(), "y?? x?? a??".into()),
         ("push p, dbr, dpr".into(), "p!! dbr!! dpr!!".into()),
@@ -131,10 +134,10 @@ fn every_respelled_form_compiles_to_the_bytes_of_its_k65_spelling() {
         ("push #LIMIT".into(), "pea #LIMIT".into()),
         ("push (&<flags):word".into(), "pea #(&<flags):word".into()),
     ];
-    for (letter, flag) in [('c', 'c'), ('z', 'z'), ('n', 'n'), ('v', 'v')] {
+    for flag in ['c', 'z', 'n', 'v'] {
         for (bare, signed) in [
-            (format!("{letter}?"), format!("{flag}+?")),
-            (format!("!{letter}?"), format!("{flag}-?")),
+            (format!("{flag}?"), format!("{flag}+?")),
+            (format!("!{flag}?"), format!("{flag}-?")),
         ] {
             pairs.push((format!("{bare} {{ x++ }}"), format!("{signed}{{ x++ }}")));
             pairs.push((format!("{bare} goto .out"), format!("{signed} goto .out")));
@@ -148,16 +151,94 @@ fn every_respelled_form_compiles_to_the_bytes_of_its_k65_spelling() {
             ));
         }
     }
-    let unit = |body: &str| {
-        format!(
-            "var flags = $10\nconst LIMIT = $1234\n\nfunc work @a8 @i8 {{\n    {body}\n.out:\n}}\n"
-        )
-    };
-    for (readable, k65) in pairs {
+    pairs
+}
+
+/// `body` as the function every pair is compiled in.
+fn unit(body: &str) -> String {
+    format!("var flags = $10\nconst LIMIT = $1234\n\nfunc work @a8 @i8 {{\n    {body}\n.out:\n}}\n")
+}
+
+/// Each of K816's spellings compiles to the bytes of the K65 spelling it
+/// replaces: respelling changes nothing a program does
+/// (`plans/14-readable-hla.md` decision 13).
+#[test]
+fn every_respelled_form_compiles_to_the_bytes_of_its_k65_spelling() {
+    for (readable, k65) in respelled_pairs() {
         assert_eq!(
             code("unit.kk", &unit(&readable)),
             code("unit.k65", &unit(&k65)),
             "`{readable}` and `{k65}`"
+        );
+    }
+}
+
+/// `text` with every edit of every fix the compiler offered applied.
+fn fixed(name: &str, text: &str) -> (Vec<&'static str>, String) {
+    let mut map = SourceMap::new();
+    let file = map.add_file(name, text);
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let codes = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    let mut edits: Vec<_> = result
+        .diagnostics
+        .iter()
+        .flat_map(|d| d.fixes.iter())
+        .flat_map(|fix| fix.edits.iter())
+        .collect();
+    edits.sort_by_key(|edit| std::cmp::Reverse((edit.span.start, edit.span.end)));
+    let mut text = text.to_owned();
+    for edit in edits {
+        text.replace_range(
+            edit.span.start as usize..edit.span.end as usize,
+            &edit.replacement,
+        );
+    }
+    (codes, text)
+}
+
+/// A K816 source refuses each K65 spelling the plan respells, a `.k65` source
+/// takes it, and the refusal's fix writes K816 that compiles to the bytes the
+/// K65 spelling compiles to in its own dialect (decision 11).
+#[test]
+fn a_k816_source_refuses_k65_spellings_and_their_fixes_change_no_byte() {
+    for (_, k65) in respelled_pairs() {
+        let source = unit(&k65);
+        let (codes, repaired) = fixed("unit.kk", &source);
+        let expected: &[&str] = if k65.contains("<<=") || k65.contains(">>=") {
+            &["K816-K65-0009"]
+        } else if k65.contains("+?") || k65.contains("-?") {
+            &["K816-K65-0008"]
+        } else if k65.contains("!!") || k65.contains("??") {
+            &["K816-K65-0010"]
+        } else if k65.contains('}') && !k65.contains("pea") {
+            &["K816-K65-0007"]
+        } else {
+            &[]
+        };
+        for code in expected {
+            assert!(codes.contains(code), "`{k65}` in a .kk: {codes:?}");
+        }
+        // Whatever else the program says, it says in both dialects.
+        let in_k65 = code("unit.k65", &source).0;
+        assert!(
+            in_k65.iter().all(|code| !code.starts_with("K816-K65-")),
+            "`{k65}` in a .k65: {in_k65:?}"
+        );
+        let besides: Vec<&str> = codes
+            .iter()
+            .filter(|code| !code.starts_with("K816-K65-"))
+            .copied()
+            .collect();
+        assert_eq!(besides, in_k65, "`{k65}`");
+        assert_eq!(
+            code("unit.kk", &repaired),
+            code("unit.k65", &source),
+            "`{k65}` fixed to\n{repaired}"
+        );
+        assert_eq!(
+            fixed("unit.k816", &source).0,
+            codes,
+            "`{k65}`: .k816 is .kk"
         );
     }
 }

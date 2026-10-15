@@ -17,8 +17,8 @@ func prefix @a8 @i8 {
     != { mem++ }
     <0 { mem++ }
     >=0 { mem++ }
-    <<= { mem++ }
-    >>= { mem++ }
+    v? { mem++ }
+    !v? { mem++ }
     return
 }
 
@@ -53,11 +53,11 @@ func prefix_native @a8 @i8 {
 
 // The flag tests, which invert the same way.
 func flags @a8 @i8 {
-    c+? { mem++ }
-    c-? { mem++ }
-    z+? { mem++ }
-    n-? { mem++ }
-    v+? { mem++ }
+    c? { mem++ }
+    !c? { mem++ }
+    z? { mem++ }
+    !n? { mem++ }
+    v? { mem++ }
     return
 }
 
@@ -80,13 +80,13 @@ func flags_native @a8 @i8 {
     rts
 }
 
-// The postfix form does not invert: it branches back while the condition
+// A loop does not invert: it branches back while its `while` condition
 // holds. `always` and `never` are its degenerate cases.
 func postfix @a8 @i8 {
-    { mem++ } !=
-    { mem++ } <
-    { mem++ } always
-    { mem++ } never
+    loop { mem++ } while !=
+    loop { mem++ } while <
+    loop { mem++ } always
+    loop { mem++ } never
     return
 }
 
@@ -107,7 +107,7 @@ func postfix_native @a8 @i8 {
 
 // `break` leaves the loop and `repeat` restarts it, conditionally or not.
 func loop_control @a8 @i8 {
-    {
+    loop {
         mem++
         < break
         != repeat
@@ -148,8 +148,8 @@ func alternatives_native @a8 @i8 {
 // not equal", so an equality test guards the branch that takes the target;
 // unsigned `<=` is "carry clear or equal", which is two branches to it.
 func compound @a8 @i8 {
-    { mem++ } >
-    { mem++ } <=
+    loop { mem++ } while >
+    loop { mem++ } while <=
     return
 }
 

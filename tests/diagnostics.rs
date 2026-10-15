@@ -110,6 +110,29 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::INSTRUCTION_NAME,
         caret: "inc",
     },
+    // K65's spellings of a loop, a flag test, the overflow test and the
+    // stack, in a K816 source (this file is `case.k816`): each is refused
+    // with a fix that writes K816's (`plans/14-readable-hla.md` decision 11).
+    Case {
+        source: "func work @a8 @i8 {\n    { x-- } !=\n}\n",
+        code: DiagnosticCode::K65_POSTFIX_LOOP,
+        caret: "{",
+    },
+    Case {
+        source: "func work @a8 @i8 {\n    c+? { x++ }\n}\n",
+        code: DiagnosticCode::K65_SIGNED_FLAG_TEST,
+        caret: "c+?",
+    },
+    Case {
+        source: "func work @a8 @i8 {\n    <<= { x++ }\n}\n",
+        code: DiagnosticCode::K65_OVERFLOW_RELATION,
+        caret: "<<=",
+    },
+    Case {
+        source: "func work @a8 @i8 {\n    a!!\n}\n",
+        code: DiagnosticCode::K65_STACK_SHORTHAND,
+        caret: "!!",
+    },
     // `PEA` pushes a word whatever `M` says, so a pushed constant has to be
     // written as one, and cannot be a byte by construction.
     Case {
@@ -501,7 +524,7 @@ const FAMILY: &[Case] = &[
     // The caret is the operator and not the block it governs, because the
     // operator is what the author would change.
     Case {
-        source: "func main @a8 @i8 {\n    {\n        x++\n    } >\n}\n",
+        source: "func main @a8 @i8 {\n    loop {\n        x++\n    } while >\n}\n",
         code: DiagnosticCode::INEFFICIENT_BRANCH,
         caret: ">",
     },
@@ -1682,6 +1705,10 @@ fn every_machine_applicable_fix_removes_its_diagnostic() {
 /// The sites above are reached by sources invented for them; this is the same
 /// property over the programs the tree actually holds, which is where a fix
 /// meets a construct nobody wrote a case for.
+///
+/// "Removes its diagnostic" is one fewer of it, not none: a program can say
+/// the same thing twice — two `a!!` in a K816 source are two refusals with
+/// one title — and fixing the first leaves the second, rightly.
 #[test]
 fn every_fix_a_corpus_program_produces_is_applied_and_checked() {
     use corpus_files::{corpus, root};
@@ -1704,6 +1731,15 @@ fn every_fix_a_corpus_program_produces_is_applied_and_checked() {
                 if diagnostic.primary.span.file != file {
                     continue;
                 }
+                let alike = |other: &&k816::diagnostic::Diagnostic| {
+                    other.code == diagnostic.code && other.title == diagnostic.title
+                };
+                let before = analysis
+                    .diagnostics
+                    .iter()
+                    .filter(|other| other.primary.span.file == file)
+                    .filter(alike)
+                    .count();
                 for fix in &diagnostic.fixes {
                     applied += 1;
                     let fixed = with_fix_applied(&source, fix);
@@ -1714,9 +1750,7 @@ fn every_fix_a_corpus_program_produces_is_applied_and_checked() {
                         continue;
                     }
                     assert!(
-                        !after.diagnostics.iter().any(|other| {
-                            other.code == diagnostic.code && other.title == diagnostic.title
-                        }),
+                        after.diagnostics.iter().filter(alike).count() < before,
                         "{}: applying `{}` left `{}` still reported",
                         entry.display(),
                         fix.title,

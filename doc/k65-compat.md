@@ -98,12 +98,36 @@ Three constructs sit on that floor.
 These are `intentionally-changed` rows, not `compatible` ones, and the reason
 column is this section.
 
+## Two dialects, one grammar
+
+The superset is the **`.k65` dialect**. A `.kk` or `.k816` source is K816,
+which writes four of K65's forms its own way and refuses K65's spelling of
+them, each with a fix that writes K816's:
+
+| K65 spelling | K816 spelling | Refused in K816 as |
+|---|---|---|
+| `{ x-- } !=`, `{ } always`, `{ } never` | `loop { x-- } while !=`, `loop { } always`, `loop { } never` | `K816-K65-0007` |
+| `c+?`, `c-?` (and `z`, `n`, `v`) | `c?`, `!c?` | `K816-K65-0008` |
+| `<<=`, `>>=` | `v?`, `!v?` | `K816-K65-0009` |
+| `a!!`, `a??` | `push a`, `pull a` | `K816-K65-0010` |
+
+Each pair compiles to the same bytes, so the refusal is about spelling and
+never about meaning: applying the fix changes nothing a program does. The
+grammar is one for both dialects, so an old spelling in a `.kk` parses and is
+refused by name rather than reported as a parse error, which is the rule
+above for any K65 form K816 does not take. A `.k65` source accepts both
+spellings, and `--strict-k65` reports the K816 ones as extensions.
+
+K65 compatibility is kept for bootstrapping and as a baseline, and will
+eventually be dropped (`plans/14-readable-hla.md` decision 11). The
+manifest's `k816-dialect` row is this section.
+
 This document is itself part of the authority chain now
 (`plans/implementation.md` §2, rule 4): it is the only one that says what
 compatibility *means*, and the manifest is its inventory rather than a rival to
 it.
 
-I would also provide `--strict-k65`, but not make it a separate compiler architecture. Normal K816 mode accepts the whole superset; strict mode merely rejects K816 extensions so portable K65 programs can be checked.
+I would also provide `--strict-k65`, but not make it a separate compiler architecture. A `.k65` source accepts the whole superset, and a K816 one all of it but the four K65 spellings above; strict mode merely rejects K816 extensions so portable K65 programs can be checked.
 
 ## `--strict-k65`, and the policy behind it
 

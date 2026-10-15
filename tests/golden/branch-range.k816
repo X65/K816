@@ -102,7 +102,7 @@ func main @a8 @i8 {
         mem++
         mem++
     }
-    {
+    loop {
         mem++
         mem++
         mem++
@@ -193,6 +193,6 @@ func main @a8 @i8 {
         mem++
         mem++
         mem++
-    } !=
+    } while !=
     return
 }

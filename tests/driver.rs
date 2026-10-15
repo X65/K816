@@ -402,12 +402,14 @@ fn two_units_that_import_each_other_link_to_the_manual_image() {
 
 /// `.k65`, `.k816` and `.kk` are one language and one compiler.
 ///
-/// The extension policy (`plans/feature-manifest.md` §5) is that every
-/// spelling is accepted by the same parser with no per-extension dialect,
-/// and `cl65` maps all of them onto one file type for that reason. The two
-/// units are the pair above, renamed to the other two extensions: the image
-/// is the same bytes, which is what "no dialect switch" means when a build
-/// states it.
+/// Every extension is read by the same parser, and `cl65` maps all three
+/// onto one file type for that reason. The dialect an extension names
+/// decides only which spellings of four forms a source may use — `.k65`
+/// keeps K65's, `.kk` and `.k816` refuse them (`plans/14-readable-hla.md`
+/// decision 11) — so a program both dialects accept means the same thing
+/// under every name. The two units are the pair above, which is such a
+/// program, renamed to the other two extensions: the image is the same
+/// bytes, which is what that means when a build states it.
 #[test]
 fn the_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
     let directory = work_dir("driver-mixed-extensions");
@@ -437,8 +439,8 @@ fn the_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
         "the driver's image differs from the manual path's"
     );
 
-    // …and the same bytes the pair produces under its own names, because an
-    // extension is not a dialect.
+    // …and the same bytes the pair produces under its own names, because a
+    // dialect decides what is refused and never what anything means.
     let original = work_dir("driver-mixed-extensions-original");
     let units = vec![golden.join("unit-a.k816"), golden.join("unit-b.k816")];
     assert_eq!(
@@ -448,19 +450,29 @@ fn the_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
     );
 }
 
-/// A `.kk` source takes both languages a `.k816` does.
+/// A `.kk` source is K816, and a `.k65` one keeps K65's spellings.
 ///
-/// `kk-k65.kk` is portable K65 and `kk-native.kk` is the same program in
+/// `kk-k65.k65` is portable K65 and `kk-native.kk` is the same program in
 /// K816's native form, importing `kk-lib.k816` for its variable. `cl65` has
-/// to recognize the extension to build either, `--strict-k65` has to accept
-/// the first and refuse the second, and the two images have to be the same
-/// bytes - which is what "the extension is not a dialect" means here.
+/// to recognize both extensions, `--strict-k65` has to accept the first and
+/// refuse the second, and the two images have to be the same bytes. The K65
+/// program renamed to `.kk` is refused, its loop by name with the K816
+/// spelling in the fix (`plans/14-readable-hla.md` decision 11) — the pair
+/// used to share the extension, when `.kk` took both languages.
 #[test]
-fn a_kk_source_takes_k65_and_full_k816_alike() {
+fn a_kk_source_is_k816_and_a_k65_one_keeps_k65s_spellings() {
     let golden = root().join("tests/golden");
     let config = root().join("tests/driver.cfg");
 
-    let k65 = golden.join("kk-k65.kk");
+    let k65 = golden.join("kk-k65.k65");
+    let renamed = work_dir("driver-kk-renamed").join("kk-k65.kk");
+    std::fs::copy(&k65, &renamed).expect("stage the K65 program as a .kk");
+    let (stderr, ok) = compile_through_driver("driver-kk-renamed", &renamed, &[]);
+    assert!(!ok, "a .kk source took K65's loop");
+    assert!(
+        stderr.contains("K816-K65-0007") && stderr.contains("loop { ... } while !="),
+        "the K65 loop in a .kk was not refused with its K816 spelling:\n{stderr}"
+    );
     let (stderr, ok) = compile_through_driver("driver-kk-strict", &k65, &["-Wk", "--strict-k65"]);
     assert!(ok, "the K65 half is not portable K65:\n{stderr}");
     let native = golden.join("kk-native.kk");

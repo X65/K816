@@ -398,7 +398,10 @@ fn push_or_pull(resolver: &mut Resolver, stack: &HlaStack, site: Span) -> Option
                     ),
                     Label::new(stack.op_span, "`b` is the accumulator's high half"),
                 )
-                .with_help("to move the data bank, write `dbr!!` / `dbr??`")
+                .with_help(
+                    "to move the data bank, write `push dbr` / `pull dbr` (`dbr!!` / `dbr??` in \
+                     a `.k65` source)",
+                )
                 .with_note(
                     "`b` names one half of the accumulator and exists for `a~b` alone; \
                      `PHB` pushes the data bank, which is a different register",

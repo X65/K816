@@ -136,7 +136,10 @@ pub fn k65_flag_stack_form(span: Span, letter: &str) -> Diagnostic {
     .with_note(
         "in the original the letter is decoration: all seven of `z c n v b i d` assemble          to plain `PLP`/`PHP`, so nothing about this spelling moves one flag on its own",
     )
-    .with_help("write `p??` / `p!!`, which is the same two instructions and says so")
+    .with_help(
+        "write `pull p` / `push p` (`p??` / `p!!` in a `.k65` source), which is the same two \
+         instructions and says so",
+    )
     .with_docs("doc/k65-compat.md")
 }
 
@@ -159,7 +162,9 @@ pub fn k65_overflow_flag_spelling(span: Span) -> Diagnostic {
         "the original spells the set/clear shorthand `o-` and the branch tests `v-?`, \
          which is one flag under two letters; K816 uses `v` for both",
     )
-    .with_help("`v-` is `CLV`, and `v-?` / `v+?` are the branch tests")
+    .with_help(
+        "`v-` is `CLV`, and `!v?` / `v?` are the branch tests (`v-?` / `v+?` in a `.k65` source)",
+    )
     .with_docs("doc/k65-compat.md")
 }
 
@@ -571,6 +576,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-loop-keyword", K816Extension, Rejects),
     row("k816-bare-flag-test", K816Extension, Rejects),
     row("k816-stack-words", K816Extension, Rejects),
+    row("k816-dialect", K816Extension, Quiet),
     row("k65-global-namespace", IntentionallyChanged, Quiet),
     row("optimizer-branch-to-next-label", BackendDifferent, Quiet),
     row("optimizer-duplicate-return", BackendDifferent, Quiet),

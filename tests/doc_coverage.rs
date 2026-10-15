@@ -1315,9 +1315,14 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
         ("import-main.k816", "the_import_pair_links_through_ld65"),
         ("import-lib.k816", "the_import_pair_links_through_ld65"),
         ("import-iface.k816", "the_import_pair_links_through_ld65"),
-        ("kk-k65.kk", "a_kk_source_takes_k65_and_full_k816_alike"),
-        ("kk-native.kk", "a_kk_source_takes_k65_and_full_k816_alike"),
-        ("kk-lib.k816", "a_kk_source_takes_k65_and_full_k816_alike"),
+        (
+            "kk-native.kk",
+            "a_kk_source_is_k816_and_a_k65_one_keeps_k65s_spellings",
+        ),
+        (
+            "kk-lib.k816",
+            "a_kk_source_is_k816_and_a_k65_one_keeps_k65s_spellings",
+        ),
         (
             "readable-hla.kk",
             "the_readable_spellings_link_to_their_k65_twins_bytes",

@@ -31,13 +31,21 @@
 //! - A pushed constant's written width (decision 9): `PEA` pushes two bytes
 //!   whatever `M` says, so a constant written as one byte is warned about,
 //!   and one that *is* one byte by construction is refused.
+//! - K65's spellings in a K816 source (decision 11): the postfix loop, the
+//!   signed flag test, the `<<=` / `>>=` relations and the `!!` / `??`
+//!   stack are accepted in a `.k65` source and refused in a `.kk` or `.k816`
+//!   one, each with a fix that writes the K816 form. The fix is the whole
+//!   point: the two spellings compile to the same bytes, so applying it
+//!   changes nothing but the spelling.
 
 use crate::ast::{
-    AstFile, Block, DataBlock, DataEntryKind, Expr, ExprKind, HlaStatement, ItemKind, Statement,
-    StatementKind, TypeWidthKind, UnaryOp,
+    AstFile, Block, BranchCondition, BranchConditionKind, ComparisonKind, DataBlock, DataEntryKind,
+    Expr, ExprKind, FlagTestSpelling, HlaStack, HlaStatement, ItemKind, LoopCondition,
+    LoopSpelling, LoopStatement, RegisterKind, StackOp, StackSpelling, Statement, StatementKind,
+    TypeWidthKind, UnaryOp,
 };
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
-use crate::source::SourceFile;
+use crate::source::{Dialect, SourceFile, Span};
 
 /// Every spelling rule over one unit.
 pub fn check(program: &AstFile, source: &SourceFile) -> Vec<Diagnostic> {
@@ -85,21 +93,178 @@ impl Checker<'_> {
         if statement.span.file != self.source.id() {
             return;
         }
+        let k816 = self.source.dialect() == Dialect::K816;
         match &statement.kind {
             StatementKind::Hla(HlaStatement::PushConstant(value)) => self.pushed_constant(value),
+            StatementKind::Hla(HlaStatement::Stack(stack)) if k816 => {
+                self.stack_shorthand(stack, statement.span)
+            }
             StatementKind::Conditional(conditional) => {
+                if k816 {
+                    self.condition(&conditional.condition);
+                }
                 self.block(&conditional.body);
                 if let Some(otherwise) = &conditional.otherwise {
                     self.block(otherwise);
                 }
             }
-            StatementKind::ConditionalJump(jump) => self.statement(&jump.jump),
-            StatementKind::Loop(loop_statement) => self.block(&loop_statement.body),
+            StatementKind::ConditionalJump(jump) => {
+                if k816 {
+                    self.condition(&jump.condition);
+                }
+                self.statement(&jump.jump);
+            }
+            StatementKind::Loop(loop_statement) => {
+                if k816 {
+                    self.postfix_loop(loop_statement);
+                    if let LoopCondition::Branch(condition) = &loop_statement.condition {
+                        self.condition(condition);
+                    }
+                }
+                self.block(&loop_statement.body);
+            }
             StatementKind::WidthBlock(width) => self.block(&width.body),
             StatementKind::Nocross(block) => self.block(block),
             StatementKind::Data(data) => self.data(data),
             _ => {}
         }
+    }
+
+    /// `{ x-- } !=`, `{ ... } always`, `{ ... } never`, with or without
+    /// `nocross`: the loop K816 writes as `loop { x-- } while !=`. The fix
+    /// inserts the keyword before the brace and `while` before a branch
+    /// condition, which is the whole difference between the two.
+    fn postfix_loop(&mut self, loop_statement: &LoopStatement) {
+        if loop_statement.spelling != LoopSpelling::Postfix {
+            return;
+        }
+        let brace = loop_statement.body.span;
+        let brace = Span::new(brace.file, brace.start, brace.start + 1);
+        let mut edits = vec![TextEdit::insert(brace, "loop ")];
+        let after = match loop_statement.condition {
+            LoopCondition::Branch(condition) => {
+                edits.push(TextEdit::insert(condition.span, "while "));
+                format!("while {}", self.source.span_text(condition.span))
+            }
+            LoopCondition::Always => "always".to_owned(),
+            LoopCondition::Never => "never".to_owned(),
+        };
+        let written = format!("loop {{ ... }} {after}");
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::K65_POSTFIX_LOOP,
+                "a K816 source writes a loop with `loop`",
+                Label::new(
+                    brace,
+                    "this block is a loop only because of what follows its `}`",
+                ),
+            )
+            .with_note(
+                "K65's loop is a block with its condition after it; K816's says where it \
+                 begins, and both compile to the same bytes",
+            )
+            .with_help(format!(
+                "write `{written}`, or name the file `.k65` to keep K65's spelling"
+            ))
+            .with_fix(Fix {
+                title: format!("write `{written}`"),
+                applicability: Applicability::MachineApplicable,
+                edits,
+            })
+            .with_docs("doc/syntax-reference.md#loops"),
+        );
+    }
+
+    /// `c+?` / `c-?` and the overflow relations `<<=` / `>>=`: the flag tests
+    /// K816 writes `c?` / `!c?` and `v?` / `!v?`.
+    fn condition(&mut self, condition: &BranchCondition) {
+        let text = self.source.span_text(condition.span);
+        let (code, title, written) = match condition.kind {
+            BranchConditionKind::Flag {
+                set,
+                spelling: FlagTestSpelling::Signed,
+                ..
+            } => {
+                let letter = text.get(..1).unwrap_or("c");
+                (
+                    DiagnosticCode::K65_SIGNED_FLAG_TEST,
+                    "a K816 source writes a flag test without its sign",
+                    if set {
+                        format!("{letter}?")
+                    } else {
+                        format!("!{letter}?")
+                    },
+                )
+            }
+            BranchConditionKind::Comparison(ComparisonKind::OverflowSet) => (
+                DiagnosticCode::K65_OVERFLOW_RELATION,
+                "a K816 source tests the overflow flag by its name",
+                "v?".to_owned(),
+            ),
+            BranchConditionKind::Comparison(ComparisonKind::OverflowClear) => (
+                DiagnosticCode::K65_OVERFLOW_RELATION,
+                "a K816 source tests the overflow flag by its name",
+                "!v?".to_owned(),
+            ),
+            _ => return,
+        };
+        let note = if code == DiagnosticCode::K65_OVERFLOW_RELATION {
+            "`<<=` and `>>=` read as relations and are the overflow flag, and `<<=` is one \
+             character from the comparison `<=`"
+        } else {
+            "`c?` is `c+?` and `!c?` is `c-?`: the same branch"
+        };
+        self.diagnostics.push(
+            Diagnostic::error(
+                code,
+                title,
+                Label::new(condition.span, format!("K816 writes this test `{written}`")),
+            )
+            .with_note(note)
+            .with_help(format!(
+                "write `{written}`, or name the file `.k65` to keep K65's spelling"
+            ))
+            .with_fix(Fix {
+                title: format!("write `{written}`"),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![TextEdit::replace(condition.span, written.clone())],
+            })
+            .with_docs("doc/syntax-reference.md#branch-and-flow-control"),
+        );
+    }
+
+    /// `a!!` / `a??`: the push and pull K816 writes `push a` / `pull a`.
+    ///
+    /// `b` is left to its own refusal, which names the register it meant.
+    fn stack_shorthand(&mut self, stack: &HlaStack, span: Span) {
+        if stack.spelling != StackSpelling::Shorthand || stack.register.kind == RegisterKind::B {
+            return;
+        }
+        let register = self.source.span_text(stack.register.span);
+        let written = match stack.op {
+            StackOp::Push => format!("push {register}"),
+            StackOp::Pull => format!("pull {register}"),
+        };
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::K65_STACK_SHORTHAND,
+                "a K816 source pushes and pulls with `push` and `pull`",
+                Label::new(stack.op_span, format!("K816 writes this `{written}`")),
+            )
+            .with_note(
+                "`push` and `pull` take a list in the order written, and `push` takes \
+                 constants too",
+            )
+            .with_help(format!(
+                "write `{written}`, or name the file `.k65` to keep K65's spelling"
+            ))
+            .with_fix(Fix {
+                title: format!("write `{written}`"),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![TextEdit::replace(span, written.clone())],
+            })
+            .with_docs("doc/syntax-reference.md#push-and-pull"),
+        );
     }
 
     /// One constant of a `push` list. `PEA` pushes two bytes, so the

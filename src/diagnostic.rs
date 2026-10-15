@@ -555,6 +555,18 @@ impl DiagnosticCode {
     /// what let the two intermix; it now spells the flag `v` throughout and
     /// names that here (decision 32).
     pub const K65_OVERFLOW_FLAG_SPELLING: Self = Self("K816-K65-0006");
+    /// K65's postfix loop — `{ x-- } !=`, `{ } always`, `{ } never` — in a
+    /// `.kk` or `.k816` source, which writes `loop { x-- } while !=`. The four
+    /// codes from here on are K65 spellings with a K816 one beside them: a
+    /// `.k65` source keeps accepting them (`plans/14-readable-hla.md`
+    /// decision 11), and each refusal's fix writes the K816 form.
+    pub const K65_POSTFIX_LOOP: Self = Self("K816-K65-0007");
+    /// `c+?` / `c-?` in a K816 source, which writes `c?` / `!c?`.
+    pub const K65_SIGNED_FLAG_TEST: Self = Self("K816-K65-0008");
+    /// `<<=` / `>>=` in a K816 source, which writes `v?` / `!v?`.
+    pub const K65_OVERFLOW_RELATION: Self = Self("K816-K65-0009");
+    /// `a!!` / `a??` in a K816 source, which writes `push a` / `pull a`.
+    pub const K65_STACK_SHORTHAND: Self = Self("K816-K65-0010");
 
     // The `K816-CA65-####` family: ca65 syntax recognized *where the grammar
     // already failed*, so that a source carried over from ca65 by hand is
@@ -834,6 +846,10 @@ mod tests {
         DiagnosticCode::K65_UNSUPPORTED_ILLEGAL_OPCODE,
         DiagnosticCode::K65_FLAG_STACK_FORM,
         DiagnosticCode::K65_OVERFLOW_FLAG_SPELLING,
+        DiagnosticCode::K65_POSTFIX_LOOP,
+        DiagnosticCode::K65_SIGNED_FLAG_TEST,
+        DiagnosticCode::K65_OVERFLOW_RELATION,
+        DiagnosticCode::K65_STACK_SHORTHAND,
         DiagnosticCode::CA65_COMMENT,
         DiagnosticCode::CA65_DIRECTIVE,
         DiagnosticCode::CA65_SCOPE_OPERATOR,

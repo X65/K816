@@ -60,8 +60,8 @@ naked tail @a8 @i8 {
 // It leaves no width a caller can rely on, which is the same answer the
 // native spelling has had since sub-plan D.
 naked handler @a8 @i8 {
-    a!!
+    push a
     mem = a = $DE
-    a??
+    pull a
     return_i
 }

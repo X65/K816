@@ -717,7 +717,7 @@ func nested @a8 @i8 {
     } else {
         call leaf
     }
-    {
+    loop {
         call leaf
     } never
     @a16 {

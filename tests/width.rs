@@ -220,6 +220,61 @@ func main @a8 {
     assert_eq!(before(source, "main", 1).0, known(RegisterWidth::W8));
 }
 
+/// A `break` leaves its loop. It used to land on the loop's back edge, so
+/// an `always` loop with a `break` in it had no way out and nothing after it
+/// was reachable — `a?#3` below was "no path reaches this instruction".
+#[test]
+fn a_break_leaves_an_always_loop_for_the_code_after_it() {
+    for spelling in [
+        "loop {\n    x++\n    == break\n  } always",
+        "{\n    x++\n    break\n  } always",
+    ] {
+        let source = format!("func f @a8 @i8 {{\n  {spelling}\n  a?#3\n}}\n");
+        let (_, _, diagnostics) = analyze(&source);
+        assert_eq!(error_codes(&diagnostics), Vec::<&str>::new(), "{spelling}");
+        let ids = statement_ids(&analyze(&source).0, "f");
+        assert_eq!(
+            before(&source, "f", ids.len() - 1).0,
+            known(RegisterWidth::W8),
+            "the compare after `{spelling}` is not reached at 8 bits"
+        );
+    }
+}
+
+/// A `break`'s widths leave with it and do not go round again: the loop head
+/// below is reached at 8 bits from the entry and the back edge, and the
+/// break's 16 bits only after the loop. They used to reach the head too,
+/// which made `lda #1` an immediate of unknown width.
+#[test]
+fn a_breaks_widths_reach_after_the_loop_and_not_its_head() {
+    let source = "\
+func f @a8 @i8 {
+  loop {
+    lda #1
+    dex
+    == {
+      rep #$20
+      break
+    }
+  } while !=
+  nop
+}
+";
+    let (file, _, diagnostics) = analyze(source);
+    assert_eq!(error_codes(&diagnostics), Vec::<&str>::new());
+    assert_eq!(
+        before(source, "f", 1).0,
+        known(RegisterWidth::W8),
+        "the head"
+    );
+    let ids = statement_ids(&file, "f");
+    assert_eq!(
+        before(source, "f", ids.len() - 1).0,
+        AxisState::Unknown,
+        "after the loop, the break's 16 bits meet the fall-through's 8"
+    );
+}
+
 /// Nested loops close two backward edges over the same head, and the inner
 /// one's width has to reach the outer one's.
 #[test]

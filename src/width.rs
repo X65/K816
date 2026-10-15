@@ -1065,8 +1065,15 @@ impl Flattener<'_> {
                     },
                     LoopCondition::Never => Control::fall_through(),
                 };
-                let exit = self.push(id, span, Transfer::Identity, control);
+                self.push(id, span, Transfer::Identity, control);
                 self.loops.pop();
+                // A `break` leaves the loop, so it lands *after* the back
+                // edge, where the loop's own fall-through does. Landing on
+                // the back edge itself sent it round again: an `always` loop
+                // has no fall-through there, so nothing after one with a
+                // `break` was reachable, and every other loop took each
+                // break's widths back to its head as well as out of it.
+                let exit = self.push(id, span, Transfer::Identity, Control::fall_through());
                 self.resolve_breaks(exit);
             }
             StatementKind::Data(data) => {

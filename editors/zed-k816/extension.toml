@@ -20,7 +20,7 @@ repository = "https://github.com/X65/K816"
 # and the generated parser defines `tree_sitter_k65`.
 [grammars.k65]
 repository = "https://github.com/X65/K816"
-rev = "b5f97127bf81c911e8176aa892c78226471f30f5"
+rev = "63b1959cbd03164cd703f068b11e7b6b23bc33c9"
 path = "tree-sitter-k65"
 
 [language_servers.k816]

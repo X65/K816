@@ -581,6 +581,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k65-global-namespace", IntentionallyChanged, Quiet),
     row("optimizer-branch-to-next-label", BackendDifferent, Quiet),
     row("optimizer-duplicate-return", BackendDifferent, Quiet),
+    row("optimizer-jump-to-branch", BackendDifferent, Quiet),
 ];
 
 /// The row `id` names, or `None` when the manifest has no such row.

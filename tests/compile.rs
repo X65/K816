@@ -2479,6 +2479,9 @@ fn the_optimized_block_exit_fixture_drops_the_enters_no_body_observes() {
     assert_eq!(
         removed,
         vec![
+            "jmp     :++",
+            "jmp     :++",
+            "jmp     :---",
             "jmp     @out",
             "jmp     @out",
             "rep     #$10",
@@ -2490,15 +2493,18 @@ fn the_optimized_block_exit_fixture_drops_the_enters_no_body_observes() {
         ],
         "{removed:?}"
     );
+    // And three lowered jumps — the `break`s' and the loop's back edge —
+    // that a `bra` reaches, each a byte shorter (pass 11, `JMP` to `BRA`).
     assert_eq!(
         added,
-        vec!["sep     #$30"],
-        "the pad's restores fold into one; nothing else is put back: {added:?}"
+        vec!["bra     :++", "bra     :++", "bra     :---", "sep     #$30"],
+        "the pad's restores fold into one, and three jumps become branches: {added:?}"
     );
     assert_eq!(
         bytes,
-        12 - 2 + 6,
-        "six two-byte instructions out, one back in, and two three-byte jumps"
+        12 - 2 + 6 + 3,
+        "six two-byte instructions out, one back in, two three-byte jumps, and three \
+         jumps a byte shorter"
     );
 }
 
@@ -2578,9 +2584,10 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
     assert_eq!(
         removed,
         vec![
-            "clc",          // before `sec`
-            "cld",          // before `sed`
-            "lda     #$01", // before the `pla` in stack_forms
+            "clc",               // before `sec`
+            "cld",               // before `sed`
+            "jmp     a:control", // in reach of a `bra`, which replaces it
+            "lda     #$01",      // before the `pla` in stack_forms
             // The implicit return after `control`'s unconditional `bra`. The
             // *user's* unreachable instructions below that branch — a `brl`,
             // four jumps, a `jsr`, a `jsl`, a `brk`, and a `cop` — all stay,
@@ -2592,8 +2599,10 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
         ],
         "{removed:?}"
     );
-    assert_eq!(added, Vec::<String>::new());
-    assert_eq!(bytes, 1 + 1 + 2 + 1 + 2 + 1 + 1);
+    // The user's `jmp control` targets its own function's label, which a
+    // `bra` reaches: pass 11 shortens a jump whoever wrote it.
+    assert_eq!(added, vec!["bra     control"]);
+    assert_eq!(bytes, 1 + 1 + 2 + 1 + 2 + 1 + 1 + 1);
 }
 
 /// The mode fixture, at the bytes: two changes, and nothing else.
@@ -2998,14 +3007,16 @@ const FIXTURE_EFFECTS: &[Effect] = &[
     (
         "block-exit.k816",
         &[
+            ("jmp     :++", 2),
+            ("jmp     :---", 1),
             ("jmp     @out", 2),
             ("rep     #$10", 1),
             ("rep     #$20", 2),
             ("sep     #$10", 1),
             ("sep     #$20", 2),
         ],
-        &[("sep     #$30", 1)],
-        "three block enters whose bodies observe nothing, a restore the loop re-enters through, the nested pad's pair folded, and each pad's jump to the label immediately below it",
+        &[("bra     :++", 2), ("bra     :---", 1), ("sep     #$30", 1)],
+        "three block enters whose bodies observe nothing, a restore the loop re-enters through, the nested pad's pair folded, each pad's jump to the label immediately below it, and three lowered jumps a `bra` reaches",
     ),
     (
         "opt-tail-labels.k816",
@@ -3049,14 +3060,43 @@ const FIXTURE_EFFECTS: &[Effect] = &[
         &[
             ("clc", 1),
             ("cld", 1),
+            ("jmp     a:control", 1),
             ("lda     #$01", 1),
             ("rts", 1),
             ("sep     #$20", 1),
             ("txa", 1),
             ("tyx", 1),
         ],
-        &[],
-        "five writes the next line overwrites — not `cli` before `sei` nor `txs` before `tcs`, which the hardware reads between the two (`READ_BY_INTERRUPTS`) — one redundant `sep`, and the implicit return after an unconditional `bra`",
+        &[("bra     control", 1)],
+        "five writes the next line overwrites — not `cli` before `sei` nor `txs` before `tcs`, which the hardware reads between the two (`READ_BY_INTERRUPTS`) — one redundant `sep`, the implicit return after an unconditional `bra`, and the user's `jmp control`, which a `bra` reaches",
+    ),
+    (
+        "readable-hla.kk",
+        &[("jmp     :-", 1)],
+        &[("bra     :-", 1)],
+        "the back edge `loop { } always` lowers to, which a `bra` reaches; its K65 twin gives up the same byte",
+    ),
+    (
+        "hla-branches.k816",
+        &[
+            ("jmp     :+", 1),
+            ("jmp     :++", 1),
+            ("jmp     :-", 2),
+            ("jmp     a:@c", 1),
+            ("jmp     a:@done", 1),
+            ("jmp     a:@head", 1),
+            ("jmp     a:@out", 1),
+        ],
+        &[
+            ("bra     :+", 1),
+            ("bra     :++", 1),
+            ("bra     :-", 2),
+            ("bra     @c", 1),
+            ("bra     @done", 1),
+            ("bra     @head", 1),
+            ("bra     @out", 1),
+        ],
+        "every jump — the written ones and the ones `always`, `else` and `break` lower to — reaches its target as a `bra`, which pass 11 swaps in",
     ),
     (
         "native-reloc.k816",
@@ -4701,4 +4741,104 @@ fn the_readable_spellings_link_to_their_k65_twins_bytes() {
         readable.len()
     );
     assert_eq!(readable, k65);
+}
+
+// ---------------------------------------------------------------------------
+// Pass 11 swaps a `JMP` for a `BRA` when the target is in reach (the user,
+// 2026-10-15: "BRA should be an optimisation of JMP"). Each case is linked,
+// so a wrong bound is ca65's `Range error`, not a silent one.
+
+/// The jumps of `body` after optimization, `jmp` or `bra`, as written out.
+fn jumps_after(test: &str, body: &str, optimize: bool) -> (Vec<String>, Vec<u8>) {
+    let text = format!("func work @a8 @i8 {{\n{body}\n}}\n");
+    let options = Options {
+        optimize,
+        ..Default::default()
+    };
+    let mut map = SourceMap::new();
+    let file = map.add_file("jumps.k816", text.as_str());
+    let result = compile_to_ca65(&map, file, &options);
+    let jumps = instruction_lines(&result.assembly.expect("compiles"))
+        .into_iter()
+        .filter(|line| line.starts_with("jmp") || line.starts_with("bra"))
+        .map(|line| {
+            line.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    let (bytes, _) = compile_and_link(test, "jumps.k816", &text, &options);
+    (jumps, bytes)
+}
+
+/// A jump whose target a `bra` reaches is a `bra`, written or lowered: a
+/// native `jmp` back and forward, the back edge of `loop { } always`, the
+/// jump over an `else`, and an unconditional `break`.
+#[test]
+fn a_jump_a_branch_reaches_is_the_branch() {
+    for body in [
+        ".top:\n    inx\n    jmp .top",
+        "    jmp .past\n    inx\n.past:",
+        "    loop {\n        inx\n    } always",
+        "    a?#1\n    == {\n        inx\n    } else {\n        dex\n    }",
+        "    loop {\n        inx\n        break\n    } always",
+    ] {
+        let (jumps, _) = jumps_after("jump-reaches", body, true);
+        assert!(
+            !jumps.is_empty() && jumps.iter().all(|jump| jump == "bra"),
+            "{body}: {jumps:?}"
+        );
+    }
+}
+
+/// The reach is exactly a relative branch's, counted from the end of the
+/// `bra`: forward 127 bytes is in reach and 128 is not; backward the `bra`
+/// counts itself, so 126 bytes before it is -128 and in reach, and 127 is not.
+#[test]
+fn a_jump_is_a_branch_exactly_within_a_branchs_reach() {
+    for (body, expected, test) in [
+        ("    jmp .t\n    * 127\n.t:", "bra", "jump-forward-127"),
+        ("    jmp .t\n    * 128\n.t:", "jmp", "jump-forward-128"),
+        (".t:\n    * 126\n    jmp .t", "bra", "jump-backward-126"),
+        (".t:\n    * 127\n    jmp .t", "jmp", "jump-backward-127"),
+    ] {
+        let (jumps, _) = jumps_after(test, body, true);
+        assert_eq!(jumps, [expected], "{test}");
+    }
+}
+
+/// Each shortened jump brings every target spanning it a byte closer, so one
+/// that was a byte out of reach comes into it: the pass runs to a fixpoint.
+#[test]
+fn a_shortened_jump_brings_another_into_reach() {
+    let body = "    jmp .t\n    * 125\n.u:\n    jmp .u\n.t:";
+    let (jumps, _) = jumps_after("jump-fixpoint", body, true);
+    assert_eq!(jumps, ["bra", "bra"]);
+}
+
+/// What stays a `JMP`: a tail jump to another routine, whose distance this
+/// function's stream does not hold; one inside a `nocross` run, whose length
+/// the link-time assertion records; and every jump of an unoptimized build.
+#[test]
+fn a_jump_the_pass_cannot_measure_or_may_not_touch_stays() {
+    let mut map = SourceMap::new();
+    let text = "func other @a8 @i8 {\n    nop\n}\n\nfunc work @a8 @i8 {\n    jmp other\n}\n";
+    let file = map.add_file("tail.k816", text);
+    let tail = instruction_lines(
+        &compile_to_ca65(&map, file, &Options::default())
+            .assembly
+            .expect("compiles"),
+    );
+    assert!(tail.iter().any(|line| line.starts_with("jmp")), "{tail:?}");
+
+    let (jumps, _) = jumps_after(
+        "jump-nocross",
+        "    nocross {\n.top:\n        inx\n        jmp .top\n    }",
+        true,
+    );
+    assert_eq!(jumps, ["jmp"]);
+
+    let (jumps, _) = jumps_after("jump-no-opt", ".top:\n    inx\n    jmp .top", false);
+    assert_eq!(jumps, ["jmp"]);
 }

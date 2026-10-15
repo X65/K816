@@ -4019,7 +4019,7 @@ func work @a8 @i8 {
     a = ready
   } while >=0           // repeat while bit 7 is clear (BPL back)
 
-  loop { x++ } always   // forever (JMP back to the top)
+  loop { x++ } always   // forever (JMP back to the top: a BRA when it reaches)
   loop { x++ } never    // once: a block `break` can leave
 }
 ```
@@ -4034,7 +4034,7 @@ func work @a8 @i8 {
     x++
     < break             // leave the loop on carry clear (BCC past the end)
     != repeat           // back to the top on not-zero (BNE)
-    break               // leave unconditionally (JMP past the end)
+    break               // leave unconditionally (JMP past the end, or a BRA)
   } always
 }
 ```
@@ -4054,6 +4054,8 @@ func work @a8 @i8 {
 ```
 
 ### Flow Control Instructions
+
+A jump K816 emits — `goto`, a written `jmp`, and the ones `always`, `else` and `break` lower to — is a two-byte `BRA` after optimization wherever its target is in the same function and within a branch's reach, and a `JMP` otherwise.
 
 ```k65
 goto label             // JMP absolute

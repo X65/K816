@@ -500,6 +500,17 @@ Both remove bytes, so both run **before** branch shrinking rather than after
 it: shrinking measures distances, and a distance taken before those bytes are
 gone is a branch left in its long form for no reason.
 
+Branch shrinking has two halves, in one fixpoint. One puts a long-form branch
+back into its short form once the distance fits. The other is the user's rule
+that **a `JMP` is a `BRA` wherever the `BRA` reaches**: the two do the same
+thing to the same registers, and on the 65816 — the only CPU K816 emits for —
+`BRA` does it in two bytes instead of three. Whether the jump was written or
+lowered from `loop { } always`, `else` or `break` does not matter. A target in
+another routine has no distance this function's stream can measure, and stays
+a `JMP`; so does a jump inside a `nocross` run and every jump of a `--no-opt`
+build. Each shrink brings every other target that spans it closer, which is
+why the two halves share a fixpoint.
+
 ## 9. Diagnostics as an internal protocol
 
 Diagnostics should be structured data, never pre-rendered strings:

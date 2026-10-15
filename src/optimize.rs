@@ -92,8 +92,10 @@ pub enum Pass {
     /// 10 — remove a return that another return, immediately above it,
     /// already made.
     CollapseDuplicateReturns,
-    /// 11 — shrink a long-form branch E emitted conservatively, once the
-    /// byte-removing passes have run and the distance is known.
+    /// 11 — shrink a long-form branch E emitted conservatively, and a `JMP`
+    /// whose target a `BRA` reaches, once the byte-removing passes have run
+    /// and the distance is known. One fixpoint for both: each shrink brings
+    /// every other target that spans it closer.
     ///
     /// Last, because it measures distances and every pass above it removes
     /// bytes — which is a constraint on the sequence rather than a position
@@ -2764,14 +2766,30 @@ fn size_bound(op: &KOp) -> Bound {
 /// Every shrunk branch is gated on ca65 accepting the output, because a wrong
 /// bound is a `Range error` and not a silent one — which is the one mercy in
 /// this pass.
+///
+/// A `JMP` is the same pass's other half (the user, 2026-10-15: "BRA should
+/// be an optimisation of JMP. If the JMP target is reachable via BRA it
+/// should be swapped to BRA"): the two do the same thing to the same
+/// registers, and `BRA` does it in two bytes instead of three — the same
+/// cycles in native mode, and one more in emulation mode only when it
+/// crosses a page, which is what `nocross` is for. Whether the jump was
+/// written or lowered (`loop { } always`, `else`, `break`) does not matter,
+/// and only a target in this function's own stream has a distance to
+/// measure: a tail jump to another routine stays a `JMP`.
 fn shrink_branches(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
     loop {
         let flow = Flow::build(ops, unit);
-        let Some((index, shrunk)) = first_shrinkable(ops, &flow) else {
+        let found = first_shrinkable(ops, &flow)
+            .map(|(index, shrunk)| (index, 3, shrunk, LONG_BRANCH_FITS))
+            .or_else(|| {
+                first_shortenable_jump(ops, &flow)
+                    .map(|(index, shortened)| (index, 1, shortened, JUMP_FITS))
+            });
+        let Some((index, replaced, shrunk, justification)) = found else {
             return;
         };
-        let before = ops[index..index + 3].to_vec();
-        ops.splice(index..index + 3, [shrunk.clone()]);
+        let before = ops[index..index + replaced].to_vec();
+        ops.splice(index..index + replaced, [shrunk.clone()]);
         log.changes.push(Change {
             pass: Pass::ShrinkBranches,
             site: Site {
@@ -2781,12 +2799,51 @@ fn shrink_branches(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLo
             before,
             after: vec![shrunk],
             witness: None,
-            justification: String::from(
-                "the target is within a relative branch's reach now, by an upper bound over \
-                 every operation between them",
-            ),
+            justification: String::from(justification),
         });
     }
+}
+
+const LONG_BRANCH_FITS: &str = "the target is within a relative branch's reach now, by an upper \
+     bound over every operation between them";
+
+const JUMP_FITS: &str = "the jump's target is within a `BRA`'s reach, by an upper bound over \
+     every operation between them, and `BRA` does what `JMP` does in a byte less";
+
+/// The first `JMP` whose target a `BRA` reaches, and the `BRA`.
+fn first_shortenable_jump(ops: &[KOp], flow: &Flow) -> Option<(usize, KOp)> {
+    (0..ops.len()).find_map(|index| shortenable_jump(ops, flow, index))
+}
+
+/// The `JMP` at `index` as a `BRA`, when the target is in this stream and in
+/// reach.
+fn shortenable_jump(ops: &[KOp], flow: &Flow, index: usize) -> Option<(usize, KOp)> {
+    // A `nocross` guard records the byte length of the run it closes.
+    if flow.frozen[index] {
+        return None;
+    }
+    let KOpKind::Instruction(jump) = &ops[index].kind else {
+        return None;
+    };
+    if jump.mnemonic != Mnemonic::Jmp || jump.mode != crate::isa::AddressingMode::Absolute {
+        return None;
+    }
+    let operand = match jump.operand.clone()? {
+        Operand::Address {
+            expr, index: None, ..
+        } => Operand::Label(expr),
+        anchor @ Operand::Anchor(_) => anchor,
+        _ => return None,
+    };
+    let mut shortened = ops[index].clone();
+    shortened.kind = KOpKind::Instruction(crate::op::Instruction::new(
+        Mnemonic::Bra,
+        crate::isa::AddressingMode::Relative,
+        Some(operand.clone()),
+    ));
+    let mut candidate: Vec<KOp> = ops.to_vec();
+    candidate[index] = shortened.clone();
+    reaches(&candidate, index, &operand).then_some((index, shortened))
 }
 
 /// The first long-form branch whose short form reaches, and what replaces it.
@@ -2859,14 +2916,23 @@ fn shrinkable(ops: &[KOp], flow: &Flow, index: usize) -> Option<(usize, KOp)> {
     // makes the fixpoint terminate on distances rather than on a counter.
     let mut candidate: Vec<KOp> = ops.to_vec();
     candidate.splice(index..index + 3, [shrunk.clone()]);
-    let target = match &operand {
+    reaches(&candidate, index, &operand).then_some((index, shrunk))
+}
+
+/// Whether the relative branch at `index` of `candidate` reaches `operand`'s
+/// target, by an upper bound over every operation between them.
+fn reaches(candidate: &[KOp], index: usize, operand: &Operand) -> bool {
+    let target = match operand {
         Operand::Anchor(anchor) => candidate
             .iter()
-            .position(|op| op.kind == KOpKind::Anchor(*anchor))?,
+            .position(|op| op.kind == KOpKind::Anchor(*anchor)),
         Operand::Label(KExpr::Symbol(symbol)) => candidate
             .iter()
-            .position(|op| op.kind == KOpKind::Label(*symbol))?,
-        _ => return None,
+            .position(|op| op.kind == KOpKind::Label(*symbol)),
+        _ => None,
+    };
+    let Some(target) = target else {
+        return false;
     };
     // A relative branch counts from the instruction after it, so the span is
     // the operations *between* the two — and the bound is summed over exactly
@@ -2882,13 +2948,13 @@ fn shrinkable(ops: &[KOp], flow: &Flow, index: usize) -> Option<(usize, KOp)> {
     for op in &candidate[span] {
         match size_bound(op) {
             Bound::Bytes(size) => distance += i64::from(size),
-            Bound::Unbounded => return None,
+            Bound::Unbounded => return false,
         }
     }
     if target <= index {
         distance = -distance;
     }
-    (-128..=127).contains(&distance).then_some((index, shrunk))
+    (-128..=127).contains(&distance)
 }
 
 #[cfg(test)]

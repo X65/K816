@@ -480,22 +480,24 @@ const OPTIMIZER_EFFECT: &[(&str, &[&str], &str)] = &[
     ),
     (
         "examples/k65/atari-xl/dli-example/main.k65",
-        &["rts"],
+        &["jmp     :-", "rts"],
         "the implicit return after a handler that ends in an unconditional \
-         transfer, which no edge reaches. Nothing else moves: the two reads of \
-         a hardware register stay, because value tracking never reads memory",
+         transfer, which no edge reaches, and that transfer itself — an \
+         `always` back edge — as the `bra` that reaches it. Nothing else moves: \
+         the two reads of a hardware register stay, because value tracking \
+         never reads memory",
     ),
     (
         "examples/k65/atari-xl/landscape/main.k65",
-        &["rts"],
+        &["jmp     :-", "rts"],
         "the implicit return after a `main` that loops forever. Both reads of \
          the POKEY random-number register survive, which is the case decision \
-         14 is written for",
+         14 is written for; and pass 11 shortens its `jmp` to the `bra` that reaches the same place",
     ),
     (
         "examples/k65/atari-xl/rainbow/main.k65",
-        &["rts"],
-        "the implicit return after a `main` that loops forever",
+        &["jmp     :-", "rts"],
+        "the implicit return after a `main` that loops forever; and pass 11 shortens its `jmp` to the `bra` that reaches the same place",
     ),
     (
         "examples/k65/atari-xl/starfield/main.k65",
@@ -578,6 +580,26 @@ fn every_corpus_program_survives_the_optimizer_with_its_difference_stated() {
             }
         }
         removed.sort();
+        // One instruction the optimizer emits that the unoptimized run does
+        // not: a `bra` where pass 11 shortened a `jmp` to the same target.
+        // Each pairs with a removed jump, which the row names as removed.
+        let mut jumps: Vec<String> = removed
+            .iter()
+            .filter_map(|line| line.strip_prefix("jmp"))
+            .map(|target| target.trim().trim_start_matches("a:").to_owned())
+            .collect();
+        remaining.retain(|line| {
+            let Some(target) = line.strip_prefix("bra").map(str::trim) else {
+                return true;
+            };
+            match jumps.iter().position(|jump| jump == target) {
+                Some(index) => {
+                    jumps.remove(index);
+                    false
+                }
+                None => true,
+            }
+        });
         assert!(
             remaining.is_empty(),
             "{path}: the optimizer emitted instructions the unoptimized run did not: \

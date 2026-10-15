@@ -62,7 +62,9 @@ pub fn statement(
         HlaStatement::Step(step) => step_by_one(resolver, step, site),
         HlaStatement::Flag(flag) => set_or_clear_flag(resolver, flag, site),
         HlaStatement::Stack(stack) => push_or_pull(resolver, stack, site),
-        HlaStatement::PushConstant(value) => push_constant(resolver, value, site),
+        HlaStatement::PushConstant { value, marked } => {
+            push_constant(resolver, value, *marked, site)
+        }
         HlaStatement::Nop { count } => nops(resolver, count.as_ref(), site),
         HlaStatement::Break => breakpoint(resolver, site),
     }
@@ -445,7 +447,52 @@ fn nops(resolver: &mut Resolver, count: Option<&Expr>, site: Span) -> Option<Vec
 /// One constant of a `push` list: `PEA`, which pushes two bytes whatever
 /// `M` says — the reason a constant's written width is checked
 /// (`plans/14-readable-hla.md` decision 9).
-fn push_constant(resolver: &mut Resolver, value: &Expr, site: Span) -> Option<Vec<Classified>> {
+fn push_constant(
+    resolver: &mut Resolver,
+    value: &Expr,
+    marked: bool,
+    site: Span,
+) -> Option<Vec<Classified>> {
+    // A bare name of a variable or a label is the place, as it is in
+    // `a = mem` — and `push` takes no place (decision 9: `pei` stays a
+    // mnemonic). Its address is `push #mem`, said with the marker.
+    // A `:word` view of a value is still the value, viewed.
+    let mut probe = value;
+    while let ExprKind::TypedView(view) = &probe.kind {
+        probe = &view.base;
+    }
+    let operand = HlaOperand {
+        kind: HlaOperandKind::Memory(crate::ast::AddressOperand {
+            encoding: None,
+            offset_marker: None,
+            value: probe.clone(),
+            index: None,
+        }),
+        span: value.span,
+    };
+    if !marked && resolver.hla_value(&operand).is_none() {
+        resolver.report(
+            Diagnostic::error(
+                DiagnosticCode::PUSH_PLACE,
+                "`push` pushes a value, and this names a place",
+                Label::new(
+                    value.span,
+                    "a name in HLA is the place it names, as in `a = mem`",
+                ),
+            )
+            .with_note(
+                "`push mem` would read like the value at the accumulator's width; `PEI` \
+                 pushes the word at a direct-page address whatever `M` says, and stays a \
+                 mnemonic",
+            )
+            .with_help(
+                "write `push #NAME` to push its address, `pei (NAME)` to push the word a \
+                 direct-page variable holds, or load it and `push a`",
+            )
+            .with_docs("doc/syntax-reference.md#push-and-pull"),
+        );
+        return None;
+    }
     Some(vec![resolver.classify_source(
         Mnemonic::Pea,
         crate::resolve::OperandSource::Immediate(value),

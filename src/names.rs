@@ -254,7 +254,7 @@ fn hla_names(hla: &HlaStatement, visit: &mut impl FnMut(&Name, NameRole)) {
         HlaStatement::Step(step) => hla_operand_names(&step.target, visit),
         HlaStatement::Flag(_) => {}
         HlaStatement::Stack(_) => {}
-        HlaStatement::PushConstant(value) => expr_names(value, visit),
+        HlaStatement::PushConstant { value, .. } => expr_names(value, visit),
         HlaStatement::Nop { count } => {
             if let Some(count) = count {
                 expr_names(count, visit);

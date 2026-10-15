@@ -153,6 +153,11 @@ const FAMILY: &[Case] = &[
         caret: "&<mem",
     },
     Case {
+        source: "var mem = $10\nfunc work @a16 @i16 {\n    push mem\n}\n",
+        code: DiagnosticCode::PUSH_PLACE,
+        caret: "mem",
+    },
+    Case {
         source: "var dp ptr:byte\nfunc work @a8 @i8 { lda (ptr) }\n",
         code: DiagnosticCode::INDIRECT_POINTER_WIDTH,
         caret: "ptr",

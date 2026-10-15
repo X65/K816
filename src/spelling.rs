@@ -104,7 +104,9 @@ impl Checker<'_> {
         }
         let k816 = self.source.dialect() == Dialect::K816;
         match &statement.kind {
-            StatementKind::Hla(HlaStatement::PushConstant(value)) => self.pushed_constant(value),
+            StatementKind::Hla(HlaStatement::PushConstant { value, .. }) => {
+                self.pushed_constant(value)
+            }
             StatementKind::Hla(HlaStatement::Stack(stack)) if k816 => {
                 self.stack_shorthand(stack, statement.span)
             }

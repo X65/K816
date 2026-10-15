@@ -1191,7 +1191,7 @@ impl StrictWalk<'_> {
             // the seven letter forms that replaced them are `PLP`/`PHP` under
             // a misleading name, which K816 refuses (`instr-stack-flags`). So
             // the spelling K816 offers instead is one the original never had.
-            HlaStatement::PushConstant(value) => {
+            HlaStatement::PushConstant { value, .. } => {
                 self.mark("k816-stack-words", span);
                 self.expr(value);
             }

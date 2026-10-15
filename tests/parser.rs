@@ -313,7 +313,7 @@ fn dump_ast(file: &AstFile) -> String {
                                 dump_register(stack.register.kind)
                             ),
                         },
-                        StatementKind::Hla(HlaStatement::PushConstant(value)) => {
+                        StatementKind::Hla(HlaStatement::PushConstant { value, .. }) => {
                             format!("hla push {}", dump_expr(&value.kind))
                         }
                         StatementKind::Hla(HlaStatement::Nop { count }) => match count {

@@ -652,8 +652,10 @@ pub enum HlaStatement {
     /// `a!!`, `dpr??`, `p!!` — or one register of `push a, x` / `pull x, a`.
     Stack(HlaStack),
     /// One constant of `push a, $0012, x`: `PEA`, two bytes whatever `M`
-    /// says.
-    PushConstant(Expr),
+    /// says. `marked` when it was written with `#`, which is what lets a
+    /// variable's address be pushed: a bare name is the place, as in
+    /// `a = mem`, and `push` takes no place.
+    PushConstant { value: Expr, marked: bool },
     /// `*` or `* N` — one or N `NOP`s.
     Nop { count: Option<Expr> },
     /// `%` — the one-character `brk #0` breakpoint marker.

@@ -304,6 +304,12 @@ fn a_pushed_constant_is_written_as_the_word_it_pushes() {
         ("push (&<mem)", vec!["K816-E0175"], vec!["(&<mem):word"]),
         ("push 'a'", vec!["K816-E0175"], vec!["('a'):word"]),
         ("push LIMIT:byte", vec!["K816-E0175"], vec!["LIMIT:word"]),
+        // A bare name is the place it names, as in `a = mem`, and `push`
+        // takes no place; its address is said with the marker.
+        ("push mem", vec!["K816-E0177"], vec![]),
+        ("push work", vec!["K816-E0177"], vec![]),
+        ("push #mem", vec![], vec![]),
+        ("push #work", vec![], vec![]),
     ] {
         assert_eq!(
             pushed(body),
@@ -427,4 +433,42 @@ fn a_number_used_as_a_place_is_refused_and_its_fix_is_the_mnemonic() {
     // The zero store keeps its own refusal of a numeric target.
     let (codes, _) = fixed("unit.kk", &unit("$10 = 0"));
     assert!(!codes.contains(&"K816-E0176"), "{codes:?}");
+}
+
+/// `loop`, `push` and `pull` are keywords only where their line says so — a
+/// `{` after `loop`, an operand after `push` or `pull` — so a routine of each
+/// name is declared, called by its bare name and jumped to as any other.
+#[test]
+fn a_routine_may_be_called_loop_push_or_pull() {
+    let text = "\
+func loop @a8 @i8 {
+    nop
+}
+
+func push @a8 @i8 {
+    nop
+}
+
+func pull @a8 @i8 {
+    nop
+}
+
+func work @a8 @i8 {
+    loop
+    push
+    pull
+    jsr push
+    jmp loop
+}
+";
+    let (codes, lines) = code("unit.kk", text);
+    assert_eq!(codes, Vec::<&str>::new());
+    for wanted in ["jsr a:loop", "jsr a:push", "jsr a:pull", "jmp a:loop"] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.split_whitespace().collect::<Vec<_>>().join(" ") == wanted),
+            "no `{wanted}` in {lines:#?}"
+        );
+    }
 }

@@ -1408,10 +1408,14 @@ impl AstBuilder<'_> {
                     op_span: span,
                     spelling: StackSpelling::Word,
                 }),
-                "immediate" => {
-                    HlaStatement::PushConstant(self.expr(item.child_by_field_name("value"), item))
-                }
-                _ => HlaStatement::PushConstant(self.expr(Some(item), node)),
+                "immediate" => HlaStatement::PushConstant {
+                    value: self.expr(item.child_by_field_name("value"), item),
+                    marked: true,
+                },
+                _ => HlaStatement::PushConstant {
+                    value: self.expr(Some(item), node),
+                    marked: false,
+                },
             };
             statements.push(Statement::new(StatementKind::Hla(kind), span));
         }

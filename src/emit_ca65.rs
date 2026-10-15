@@ -580,7 +580,59 @@ fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
                 }
             };
             out.push_str(&annotated(&text, &annotation(map, op)));
+            if let DataOp::Byte(values) | DataOp::Word(values) | DataOp::Far(values) = data {
+                for value in values {
+                    fit_guards(value, &source_line(map, op.span), names, out);
+                }
+            }
         }
+    }
+}
+
+/// The ld65 assertion each narrowed link-time value in `expr` needs.
+///
+/// An `extern const` used narrower than it is imported is emitted as its low
+/// bits (`.lobyte`, `.loword`), which ca65 accepts whatever the value is, so
+/// ld65 is asked whether the low bits are the whole value: whether the
+/// import's bits, read as a two's-complement pattern of that size, lie in
+/// −2^(n−1) … 2^n−1 for the use's *n* (`plans/15-constant-sizes.md`
+/// decision 10).
+///
+/// The value is masked to the import's size before it is compared. ld65
+/// reads a constant export as an unsigned 32-bit number on a host whose
+/// `long` is 64 bits and as a signed one where it is 32, so an exported −1
+/// is 4294967295 to one and −1 to the other; masked, it is `$FFFF` to both,
+/// and every literal in the comparison has its top bit clear.
+///
+/// The message names the K816 line, `at`: ld65 reports an assertion at the
+/// line of the assembly ca65 read, which is not a line the author wrote.
+fn fit_guards(expr: &KExpr, at: &str, names: &Names<'_>, out: &mut String) {
+    match expr {
+        KExpr::Unary {
+            op: UnaryOp::Narrow { to, from },
+            operand,
+        } => {
+            fit_guards(operand, at, names, out);
+            let value = format_expr(operand, names);
+            let (to, from) = (u32::from(*to) * 8, u32::from(*from) * 8);
+            let mask = (1u64 << from) - 1;
+            let masked = format!("({value} .bitand ${mask:X})");
+            let above = 1u64 << to;
+            let below = (1u64 << from) - (1u64 << (to - 1));
+            out.push_str(&annotated(
+                &format!(
+                    "        .assert  ({masked} < ${above:X}) .or ({masked} >= ${below:X}), \
+                     lderror, \"{at}: {value} does not fit the {to} bits this use takes\""
+                ),
+                "k816: the linked value must fit its use",
+            ));
+        }
+        KExpr::Unary { operand, .. } => fit_guards(operand, at, names, out),
+        KExpr::Binary { left, right, .. } => {
+            fit_guards(left, at, names, out);
+            fit_guards(right, at, names, out);
+        }
+        KExpr::Number(_) | KExpr::Symbol(_) => {}
     }
 }
 
@@ -971,6 +1023,9 @@ fn emit_instruction(
         Origin::CompilerGenerated => format!("k816: {}", reason_text(op, unit)),
     };
     out.push_str(&annotated(text.trim_end(), &comment));
+    if let Some(Operand::Immediate(expr)) = &instruction.operand {
+        fit_guards(expr, &source_line(map, op.span), names, out);
+    }
 
     // Keep the assembler's width tracking in sync after mode changes.
     widths.apply(
@@ -991,8 +1046,13 @@ fn format_operand(
     match operand {
         Operand::Immediate(expr) => {
             let spec = spec(instruction.mnemonic, instruction.mode);
-            let sigil = spec.is_none_or(|spec| spec.operand.ca65_immediate_sigil);
             let width_class = spec.and_then(|spec| spec.immediate_width());
+            // ca65 takes a `brk`, `cop` or `wdm` signature with a `#` as well
+            // as without, and a link-time one *needs* it: `cop .lobyte(ROWS)`
+            // against an absolute import is "Suspicious address expression",
+            // read as an address the instruction does not have.
+            let sigil = spec.is_none_or(|spec| spec.operand.ca65_immediate_sigil)
+                || (expr.is_link_time() && width_class == Some(ImmediateWidthClass::Fixed8));
             let text = match expr.value() {
                 Some(value) => format_immediate_value(value, width_class, widths),
                 None => format_expr(expr, names),
@@ -1147,7 +1207,11 @@ fn format_expr(expr: &KExpr, names: &Names<'_>) -> String {
                     UnaryOp::Negate => format!("(0 - {inner})"),
                     UnaryOp::BitNot => format!("(~ {inner})"),
                     UnaryOp::Long => inner,
-                    UnaryOp::LowByte | UnaryOp::HighByte | UnaryOp::BankByte | UnaryOp::Word => {
+                    UnaryOp::LowByte
+                    | UnaryOp::HighByte
+                    | UnaryOp::BankByte
+                    | UnaryOp::Word
+                    | UnaryOp::Narrow { .. } => {
                         unreachable!("these operators have a named ca65 form")
                     }
                 },
@@ -1190,6 +1254,12 @@ fn source_comment(map: &SourceMap, span: Span) -> String {
         line + 1,
         one_line(source.span_text(span))
     )
+}
+
+/// `file:line` of `span`, as the author would look it up.
+fn source_line(map: &SourceMap, span: Span) -> String {
+    let source = map.file(span.file);
+    format!("{}:{}", source.name(), source.line_col(span.start).line + 1)
 }
 
 /// `text` with every run of whitespace collapsed to a single space.

@@ -1052,6 +1052,10 @@ fn dump_expr(expr: &KExpr, symbols: &crate::symbol::SymbolTable) -> String {
                 crate::value::UnaryOp::BankByte => format!("bank({inner})"),
                 crate::value::UnaryOp::Word => format!("&&{inner}"),
                 crate::value::UnaryOp::Long => format!("&&&{inner}"),
+                // No K65 spelling: the use's width is what narrows it.
+                crate::value::UnaryOp::Narrow { to, from } => {
+                    format!("narrow{}({inner}, from {})", to * 8, from * 8)
+                }
             }
         }
         KExpr::Binary { op, left, right } => format!(

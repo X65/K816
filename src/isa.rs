@@ -454,7 +454,9 @@ pub struct OperandConstraint {
     /// Not derivable from the source form: K65 writes `pea #addr`,
     /// `brk #sig`, and `cop #sig` with a `#`, while ca65 spells all three
     /// without one, because on the hardware they are Stack-mode instructions
-    /// rather than Immediate-mode ones.
+    /// rather than Immediate-mode ones. ca65 accepts a signature byte with a
+    /// `#` too, and emission writes one where the signature is link-time
+    /// (`emit_ca65::format_operand`); `pea #` it refuses.
     pub ca65_immediate_sigil: bool,
 }
 

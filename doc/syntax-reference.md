@@ -692,16 +692,20 @@ An `extern const` has **no number**. Every use of it stays a symbolic expression
 extern const ROWS
 
 func main @a8 @i8 {
-    a = #ROWS            // lda #ROWS
+    a = #ROWS            // lda #.lobyte(ROWS), and ld65 checks it fits
     rts
 }
 
-data table { ROWS }      // .byte ROWS
+data table { ROWS }      // .byte .lobyte(ROWS), checked the same way
 ```
+
+A use gives it the width it needs, as it gives any constant without a size ([A constant's size](#a-constants-size)), and only ld65 can check that the value fits. An `extern const` is the bits of the size it is imported at: two bytes for a plain `.import`, one for `extern const ROWS:byte`, which is an `.importzp`, three for `:far`. A use narrower than that takes the low bits — `.lobyte(ROWS)`, `.loword(ROWS)` — and is followed by an ld65 assertion that they are the whole value: the import's bits, read as a two's-complement pattern, must lie in −2^(n−1) … 2^n−1 for the use's *n* bits. So an imported `$FFFF` is −1 and is `$FF` in a byte, and 300 fails the link with a message that names the K816 line. Without the low byte ca65 refuses `lda #ROWS` at `.a8` against an absolute import, and without the assertion 300 would silently be `$2C`.
+
+A use as wide as the import, or wider, takes the value as ld65 links it, zero-extended: ld65 reads a constant export as an unsigned number, so the sign of a negative one does not cross. A constant ca65 code exports with no size and a negative value is `long`, which no `.import` can name, and ld65 warns about the mismatch; the check reads the import's low bits all the same.
 
 Every position that needs the number *now* refuses it with `K816-E0167`: a `#if` condition, an evaluator bracket, an array extent, an allocation count, a placement, and another `const`'s value. The refusal is its own code rather than the generic "must be known at compile time" a label's address earns, because the two have different answers — a label's address is ld65's and always will be, and a link-time constant is a number somebody could have written here instead.
 
-It is imported absolute (`.import ROWS`), which is what an ordinary `const` in another K816 unit exports as when it fits `$0000` … `$FFFF` (`.export ROWS : abs = $0019`, [A constant's size](#a-constants-size)), so the two agree without an ld65 address-size warning.
+It is imported absolute (`.import ROWS`), which is what an ordinary `const` in another K816 unit exports as when it fits `$0000` … `$FFFF` (`.export ROWS : abs = $0019`), so the two agree without an ld65 address-size warning. A declared size changes both sides alike: `const ROWS:byte` exports zeropage and `extern const ROWS:byte` imports it.
 
 ### Two declarations of one name
 

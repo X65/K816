@@ -149,6 +149,13 @@ pub enum UnaryOp {
     Word,
     /// `&&&x` — the 24-bit address value.
     Long,
+    /// A link-time value used narrower than it is linked: an `extern const`
+    /// imported at `from` bytes and used at `to`. Emitted as `.lobyte` or
+    /// `.loword` and followed by an ld65 assertion that the value, read as a
+    /// pattern of `from` bytes, fits `to` (`plans/15-constant-sizes.md`
+    /// decision 10). K65 has no spelling for it; the width of the use is the
+    /// spelling.
+    Narrow { to: u8, from: u8 },
 }
 
 impl UnaryOp {
@@ -160,6 +167,8 @@ impl UnaryOp {
             Self::HighByte => Some(".hibyte"),
             Self::BankByte => Some(".bankbyte"),
             Self::Word => Some(".loword"),
+            Self::Narrow { to: 1, .. } => Some(".lobyte"),
+            Self::Narrow { .. } => Some(".loword"),
             Self::Negate | Self::BitNot | Self::Long => None,
         }
     }
@@ -325,6 +334,7 @@ pub fn apply_unary(op: UnaryOp, value: Value) -> Value {
         UnaryOp::BankByte => (value >> 16) & 0xFF,
         UnaryOp::Word => value & 0xFFFF,
         UnaryOp::Long => value & 0xFF_FFFF,
+        UnaryOp::Narrow { to, .. } => Value::new(value).truncated(u32::from(to)).get(),
     })
 }
 

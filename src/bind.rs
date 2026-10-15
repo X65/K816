@@ -598,7 +598,15 @@ fn declare(
         if let Some(value) = symbol.value {
             let _ = write!(comment, ", = ${value:X}");
         }
-        format!("extern const {}", symbol.name)
+        // ca65 gives an exported constant the size its value needs, so
+        // `.export K = 25` is zeropage, and an import has to say so or ld65
+        // warns the two disagree (`plans/15-constant-sizes.md` decision 9).
+        let size = match symbol.addrsize.as_str() {
+            "zeropage" => ":byte",
+            "far" => ":far",
+            _ => "",
+        };
+        format!("extern const {}{size}", symbol.name)
     } else if db.is_data(symbol) {
         let storage = match symbol.addrsize.as_str() {
             "zeropage" => "dp ",

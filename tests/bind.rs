@@ -227,7 +227,8 @@ fn an_interface_for_one_module_declares_exactly_what_it_imports() {
         "extern var lib_table",
         "extern var lib_counter : word",
         "extern var dp lib_zp : far",
-        "extern const K",
+        // `.export K = 25` is zeropage to ca65, and the import says so.
+        "extern const K:byte",
     ] {
         assert!(
             lines.iter().any(|line| line == expected),
@@ -284,6 +285,7 @@ fn the_generated_interface_links_against_the_objects_it_describes() {
          \x20   jsr lib_fn\n\
          \x20   lda lib_table\n\
          \x20   lda #K\n\
+         \x20   sta lib_table\n\
          \x20   lda [lib_zp]\n\
          \x20   @a16 { lda lib_counter }\n\
          \x20   return\n\
@@ -292,7 +294,10 @@ fn the_generated_interface_links_against_the_objects_it_describes() {
     .expect("write use.k816");
     let assembly = compile(&unit);
     let text = std::fs::read_to_string(&assembly).expect("read the assembly");
-    for directive in [".import lib_fn", ".importzp lib_zp", ".import K"] {
+    // `lda #K` is stored before the next load, so the optimizer keeps it and
+    // ca65 has to accept it: against the absolute `.import K` this tool used
+    // to write, an 8-bit immediate was a range error nothing assembled.
+    for directive in [".import lib_fn", ".importzp lib_zp", ".importzp K", "lda     #K"] {
         assert!(text.contains(directive), "no `{directive}` in:\n{text}");
     }
     let object = assemble(&build.dir, &assembly, false);
@@ -300,6 +305,22 @@ fn the_generated_interface_links_against_the_objects_it_describes() {
     // here needs, and is left out.
     let objects = vec![object, build.objects[1].clone()];
     link(&build.dir, &objects, "mixed");
+    // And agreed is checked, not assumed: ld65 links a mismatched address
+    // size with a warning, which is what an absolute `K` against ca65's
+    // zeropage export was until `extern const` could say `:byte`.
+    let output = Command::new(tool("LD65", "ld65"))
+        .arg("-C")
+        .arg(build.dir.join("link.cfg"))
+        .arg("-o")
+        .arg(build.dir.join("mixed-quiet.bin"))
+        .args(&objects)
+        .output()
+        .expect("run ld65");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && said.is_empty(),
+        "ld65 said:\n{said}"
+    );
 }
 
 /// Without `--for`, every export some module uses, grouped by the file

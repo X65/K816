@@ -802,3 +802,344 @@ fn a_size_less_constant_is_exported_at_abs_or_with_no_size() {
         let _ = link_quietly("constants-export", &assembly);
     }
 }
+
+// ---------------------------------------------------------------------------
+// `extern const`: the same rule, checked by ld65
+// ---------------------------------------------------------------------------
+
+/// The patterns a ca65 module exports for an import `bytes` wide: both sides
+/// of each boundary a narrower use has, read as two's complement.
+fn patterns(bytes: u32) -> Vec<u64> {
+    let top = 1u64 << (8 * bytes);
+    let mut out = vec![0, 0x7F, 0x80, 0xFF, top - 0x81, top - 0x80, top - 1];
+    if bytes >= 2 {
+        out.extend([0x100, 0x7FFF, 0x8000, 0xFFFF, top - 0x8001, top - 0x8000]);
+    }
+    if bytes == 3 {
+        out.extend([0x1_0000, 0x7F_FFFF, 0x80_0000]);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The matrix again, for a value ld65 decides: every use, every import size,
+/// both sides of every boundary. A use as wide as the import or wider takes
+/// the bits ld65 links, zero-extended; a narrower one takes the low bits,
+/// and ld65 refuses the link, naming the K816 line, when they are not the
+/// whole value read as a pattern of the import's size
+/// (`plans/15-constant-sizes.md` decision 10).
+#[test]
+fn every_use_gives_an_extern_const_its_width_and_ld65_checks_it() {
+    // `None` is the plain `.import`, two bytes.
+    for (size, imported) in [
+        (None, 2),
+        (Some("byte"), 1),
+        (Some("word"), 2),
+        (Some("far"), 3),
+    ] {
+        let suffix = size.map_or(String::new(), |size| format!(":{size}"));
+        let export = match imported {
+            1 => "zp",
+            2 => "abs",
+            _ => "far",
+        };
+        for (index, the) in USES.iter().enumerate() {
+            let source = format!(
+                "extern const VALUE{suffix}\n\n{}",
+                the.program.replace(
+                    "{uses}",
+                    &format!("    {}\n", the.line.replace("{c}", "VALUE"))
+                )
+            );
+            let (assembly, codes) = compile("extern.kk", &source);
+            if the.refuses_a_byte && size == Some("byte") {
+                assert_eq!(codes, [PUSHED_BYTE], "{}:\n{source}", the.what);
+                continue;
+            }
+            assert_eq!(codes, Vec::<String>::new(), "{}:\n{source}", the.what);
+            let assembly = assembly.expect("compiles");
+            let test = format!("constants-extern-{imported}-{index}");
+            for pattern in patterns(imported) {
+                let exporter =
+                    format!(".setcpu \"65816\"\n.export VALUE : {export} = ${pattern:X}\n");
+                let use_bits = 8 * the.emits;
+                let import_bits = 8 * imported;
+                let fits = the.emits >= imported
+                    || pattern < (1 << use_bits)
+                    || pattern >= (1 << import_bits) - (1 << (use_bits - 1));
+                let linked = try_link_with_ca65(&test, &assembly, &exporter);
+                let what = format!("{} of a {import_bits}-bit ${pattern:X}", the.what);
+                if fits {
+                    let mut expected = the.opcode.to_vec();
+                    expected.extend(encoded(pattern as i64, the.emits));
+                    assert_eq!(linked, Ok(expected), "{what}\n{assembly}");
+                } else {
+                    let said = linked.expect_err(&what);
+                    assert!(
+                        said.contains(&format!(
+                            "extern.kk:4: VALUE does not fit the {use_bits} bits this use takes"
+                        )) || said.contains(&format!(
+                            "extern.kk:7: VALUE does not fit the {use_bits} bits this use takes"
+                        )),
+                        "{what}: ld65 said\n{said}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// [`link_with_ca65`] for a link that may fail: the bytes, or what ld65 said.
+/// Success still has to be silent.
+fn try_link_with_ca65(test: &str, assembly: &str, other: &str) -> Result<Vec<u8>, String> {
+    let dir = work_dir(test);
+    let config =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    let mut objects = Vec::new();
+    for (name, text) in [("k816", assembly), ("ca65", other)] {
+        let source = dir.join(format!("{name}.s"));
+        let object = dir.join(format!("{name}.o"));
+        std::fs::write(&source, text).expect("write assembly");
+        quiet(
+            test,
+            "ca65",
+            Command::new(tool("CA65", "ca65"))
+                .arg(&source)
+                .arg("-o")
+                .arg(&object),
+        );
+        objects.push(object);
+    }
+    let binary = dir.join("out.bin");
+    let _ = std::fs::remove_file(&binary);
+    let output = Command::new(tool("LD65", "ld65"))
+        .arg("-C")
+        .arg(&config)
+        .arg("-o")
+        .arg(&binary)
+        .args(&objects)
+        .output()
+        .expect("run ld65");
+    let said = String::from_utf8_lossy(&output.stderr).into_owned();
+    if !output.status.success() {
+        return Err(said);
+    }
+    assert!(said.is_empty(), "{test}: ld65 said:\n{said}");
+    Ok(std::fs::read(&binary).expect("read linked binary"))
+}
+
+/// A `brk`, `cop` or `wdm` signature that ld65 decides is written with a `#`.
+///
+/// K816 writes the three without one, as ca65 spells them, and for a number
+/// that is right; for a link-time signature ca65 reads the bare expression
+/// as an address and warns "Suspicious address expression". Found by the
+/// extern matrix above at `cop #VALUE`, and older than it: `cop #&<table`
+/// had the warning from the start.
+#[test]
+fn a_link_time_signature_byte_takes_its_sigil() {
+    let source = "naked uses @a8 @i8 {\n    cop #&<table\n    brk #&<table\n    cop #$12\n}\n\n\
+                  data table {\n    0\n}\n";
+    let (assembly, codes) = compile("signature.kk", source);
+    assert_eq!(codes, Vec::<String>::new());
+    let assembly = assembly.expect("compiles");
+    assert!(assembly.contains("cop     #.lobyte(table)"), "{assembly}");
+    assert!(
+        assembly.contains("cop     $12"),
+        "a number keeps ca65's spelling:\n{assembly}"
+    );
+    let bytes = link_quietly("constants-signature", &assembly);
+    assert_eq!(bytes, [0x02, 0x06, 0x00, 0x06, 0x02, 0x12, 0x00]);
+}
+
+/// An export with no size is `long` to ld65, which no 65816 import names,
+/// so the link warns — and the check still reads the import's low bits.
+///
+/// A K816 constant without a size that is negative is exported that way
+/// (`.export EUNKNOWN = -1`), and a 64-bit ld65 sees it as 4294967295. The
+/// mask is what makes −1 fit a byte and −129 not: compared unmasked, both
+/// are above `$FF80`.
+#[test]
+fn a_negative_export_with_no_size_is_checked_through_its_low_bits() {
+    let source = "extern const VALUE\n\nnaked uses @a8 @i8 {\n    lda #VALUE\n}\n";
+    let (assembly, codes) = compile("unsized.kk", source);
+    assert_eq!(codes, Vec::<String>::new());
+    let assembly = assembly.expect("compiles");
+    // The import is absolute, so what the check reads is the low sixteen
+    // bits: −65536 would be `$0000` and fit, and the size mismatch ld65
+    // warns about is what tells the author the two sides disagree.
+    for (value, fits) in [
+        ("-1", true),
+        ("-128", true),
+        ("-129", false),
+        ("-32769", false),
+    ] {
+        let exporter = format!(".setcpu \"65816\"\n.export VALUE = {value}\n");
+        let (bytes, said) = link_noisily("constants-unsized-export", &assembly, &exporter);
+        if fits {
+            // A failed assertion ends the link before ld65 compares sizes.
+            assert!(
+                said.contains("Address size mismatch for"),
+                "{value}: ld65 warns that `long` is not `absolute`:\n{said}"
+            );
+            let low = value.parse::<i64>().expect("a number") as u8;
+            assert_eq!(bytes, Some(vec![0xA9, low]), "{value}:\n{said}");
+        } else {
+            assert_eq!(bytes, None, "{value} does not fit a byte:\n{said}");
+            assert!(
+                said.contains("unsized.kk:4: VALUE does not fit the 8 bits"),
+                "{said}"
+            );
+        }
+    }
+}
+
+/// A byte the source selected is not narrowed again, and nothing but an
+/// `extern const` is narrowed at all: `&<ROWS` says which byte, and a label
+/// in a byte is an address the source has to select a byte of.
+#[test]
+fn only_an_extern_const_is_narrowed_and_only_where_the_source_did_not_select() {
+    let source = "extern const ROWS\n\nnaked uses @a8 @i8 {\n    lda #&<ROWS\n    lda #&>ROWS\n}\n";
+    let (assembly, codes) = compile("selected.kk", source);
+    assert_eq!(codes, Vec::<String>::new());
+    let assembly = assembly.expect("compiles");
+    assert!(assembly.contains("lda     #.lobyte(ROWS)"), "{assembly}");
+    assert!(assembly.contains("lda     #.hibyte(ROWS)"), "{assembly}");
+    assert!(!assembly.contains(".assert"), "{assembly}");
+
+    let (assembly, _) = compile(
+        "label.kk",
+        "naked uses @a8 @i8 {\n    lda #table\n}\n\ndata table {\n    0\n}\n",
+    );
+    let assembly = assembly.expect("compiles");
+    assert!(assembly.contains("lda     #table"), "{assembly}");
+    assert!(!assembly.contains(".assert"), "{assembly}");
+}
+
+/// Links like [`try_link_with_ca65`] but lets ld65 speak: the bytes, if it
+/// linked, and everything it said either way.
+fn link_noisily(test: &str, assembly: &str, other: &str) -> (Option<Vec<u8>>, String) {
+    let dir = work_dir(test);
+    let config =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    let mut objects = Vec::new();
+    for (name, text) in [("k816", assembly), ("ca65", other)] {
+        let source = dir.join(format!("{name}.s"));
+        let object = dir.join(format!("{name}.o"));
+        std::fs::write(&source, text).expect("write assembly");
+        quiet(
+            test,
+            "ca65",
+            Command::new(tool("CA65", "ca65"))
+                .arg(&source)
+                .arg("-o")
+                .arg(&object),
+        );
+        objects.push(object);
+    }
+    let binary = dir.join("out.bin");
+    let _ = std::fs::remove_file(&binary);
+    let output = Command::new(tool("LD65", "ld65"))
+        .arg("-C")
+        .arg(&config)
+        .arg("-o")
+        .arg(&binary)
+        .args(&objects)
+        .output()
+        .expect("run ld65");
+    let said = String::from_utf8_lossy(&output.stderr).into_owned();
+    let bytes = output
+        .status
+        .success()
+        .then(|| std::fs::read(&binary).expect("read linked binary"));
+    (bytes, said)
+}
+
+// ---------------------------------------------------------------------------
+// The documents
+// ---------------------------------------------------------------------------
+
+/// The first `k65` listing under `heading` in the syntax reference.
+fn documented(heading: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("doc/syntax-reference.md");
+    let text = std::fs::read_to_string(path).expect("read the syntax reference");
+    let (_, after) = text
+        .split_once(&format!("\n{heading}\n"))
+        .unwrap_or_else(|| panic!("no `{heading}` in the syntax reference"));
+    let (_, listing) = after.split_once("```k65\n").expect("a listing");
+    listing
+        .split_once("```")
+        .expect("the listing ends")
+        .0
+        .to_owned()
+}
+
+/// "A constant's size" shows one constant at five widths, and says in each
+/// comment what that use emits. Each comment is checked against the
+/// assembly, and the listing is assembled and linked.
+#[test]
+fn the_documented_size_less_constant_emits_what_its_comments_say() {
+    let listing = documented("### A constant's size");
+    let (assembly, codes) = compile("doc.kk", &listing);
+    assert_eq!(codes, Vec::<String>::new(), "{listing}");
+    let assembly = assembly.expect("compiles");
+    for line in [
+        "lda     #$FFFF",
+        "ldx     #$FF",
+        "pea     $FFFF",
+        ".byte    $FF",
+        ".word    $FFFF",
+        ".faraddr $FFFFFF",
+    ] {
+        assert!(assembly.contains(line), "`{line}` in\n{assembly}");
+    }
+    let _ = link_quietly("constants-doc-size-less", &assembly);
+}
+
+/// "A declared size" shows three exports and one refusal. The refusal is
+/// the only diagnostic; without that line the listing compiles, exports
+/// what the comments say, and assembles quietly.
+#[test]
+fn the_documented_declared_sizes_export_what_their_comments_say() {
+    let listing = documented("#### A declared size");
+    let (_, codes) = compile("doc.kk", &listing);
+    assert_eq!(codes, [OUTSIDE_ITS_SIZE], "{listing}");
+    let clean: String = listing
+        .lines()
+        .filter(|line| !line.contains(OUTSIDE_ITS_SIZE))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let (assembly, codes) = compile("doc.kk", &clean);
+    assert_eq!(codes, Vec::<String>::new(), "{clean}");
+    let assembly = assembly.expect("compiles");
+    for line in [
+        ".export ERROR : zp = $FF",
+        ".export PAGE : abs = $1234",
+        ".export BANK : far = $7E0000",
+    ] {
+        assert!(assembly.contains(line), "`{line}` in\n{assembly}");
+    }
+    let _ = link_quietly("constants-doc-declared", &assembly);
+}
+
+/// The `extern const` listing did not assemble before sub-plan P: ca65
+/// refused `lda #ROWS` at `.a8` against an absolute import, and no gate ran
+/// ca65 on it. It links now against a module that exports `ROWS`, and a
+/// `ROWS` that does not fit a byte fails the link at the line that used it.
+#[test]
+fn the_documented_extern_const_links_and_is_checked() {
+    let listing = documented("### `extern const`: a value the linker decides");
+    let (assembly, codes) = compile("doc.kk", &listing);
+    assert_eq!(codes, Vec::<String>::new(), "{listing}");
+    let assembly = assembly.expect("compiles");
+    let exporter = |value: &str| format!(".setcpu \"65816\"\n.export ROWS : abs = {value}\n");
+    let bytes = try_link_with_ca65("constants-doc-extern", &assembly, &exporter("25"))
+        .expect("ROWS = 25 links");
+    assert_eq!(bytes, [0xA9, 0x19, 0x60, 0x19]);
+    let said = try_link_with_ca65("constants-doc-extern", &assembly, &exporter("300"))
+        .expect_err("300 does not fit a byte");
+    assert!(
+        said.contains("doc.kk:4: ROWS does not fit the 8 bits this use takes"),
+        "{said}"
+    );
+}

@@ -1662,6 +1662,59 @@ impl<'a> Resolver<'a> {
             .or_else(|| self.symbols.lookup(name))
     }
 
+    /// A link-time value at a use `bytes` wide.
+    ///
+    /// An `extern const` is the bits of the size it is imported at — two
+    /// bytes without a declared size, since `.import` is absolute — and a
+    /// use narrower than that takes the low bits explicitly, with ld65
+    /// checking that they are the whole value (`plans/15-constant-sizes.md`
+    /// decision 10). Without the narrowing ca65 refuses `lda #ROWS` at
+    /// `.a8` against an absolute import, and without the check a 300 would
+    /// become `$2C`.
+    ///
+    /// Only an expression of `extern const`s and numbers is narrowed. A
+    /// label or a variable in it makes it an address, which a byte use has
+    /// to select a byte of in the source, with `&<`.
+    fn narrowed(&self, expr: KExpr, bytes: u32) -> KExpr {
+        match self.link_size(&expr) {
+            Some(from) if bytes < from => KExpr::unary(
+                UnaryOp::Narrow {
+                    to: bytes as u8,
+                    from: from as u8,
+                },
+                expr,
+            ),
+            _ => expr,
+        }
+    }
+
+    /// The bytes an expression of `extern const`s is linked at, or `None`
+    /// when anything else in it is a symbol.
+    fn link_size(&self, expr: &KExpr) -> Option<u32> {
+        match expr {
+            KExpr::Number(_) => Some(0),
+            KExpr::Symbol(id) => match self.symbols.kind(*id) {
+                SymbolKind::Const { value: None, size } => {
+                    Some(size.map_or(2, crate::symbol::DataWidth::bytes))
+                }
+                _ => None,
+            },
+            KExpr::Unary { op, operand } => {
+                let inner = self.link_size(operand)?;
+                Some(match op {
+                    UnaryOp::LowByte | UnaryOp::HighByte | UnaryOp::BankByte => 1,
+                    UnaryOp::Word => 2,
+                    UnaryOp::Long => 3,
+                    UnaryOp::Narrow { to, .. } => u32::from(*to),
+                    UnaryOp::Negate | UnaryOp::BitNot => inner,
+                })
+            }
+            KExpr::Binary { left, right, .. } => {
+                Some(self.link_size(left)?.max(self.link_size(right)?))
+            }
+        }
+    }
+
     /// The size a `const` named `name` declares, when it declares one.
     pub(crate) fn declared_const_size(&self, name: &str) -> Option<crate::symbol::DataWidth> {
         match self.symbols.kind(self.scoped_symbol(name)?) {
@@ -2047,6 +2100,10 @@ impl<'a> Resolver<'a> {
                     }
                 }
             }
+        } else if let Some(class) = spec.immediate_width()
+            && let Some(bytes) = class.bytes(self.widths.a.width(), self.widths.i.width())
+        {
+            expr = self.narrowed(expr, bytes);
         }
         Some(Classified::new(spec, Some(Operand::Immediate(expr))))
     }
@@ -3797,6 +3854,8 @@ impl Resolver<'_> {
                         return None;
                     }
                     folded = KExpr::Number(known.truncated(1));
+                } else if width.is_none() {
+                    folded = self.narrowed(folded, 1);
                 }
                 Some(match width {
                     Some(2) => DataOp::Word(vec![folded]),
@@ -3897,6 +3956,8 @@ impl Resolver<'_> {
                         // The entry's width is the value's size here, as an
                         // operand's is: `-1` in a `word` entry is `$FFFF`.
                         value = KExpr::Number(known.truncated(width.bytes()));
+                    } else {
+                        value = self.narrowed(value, width.bytes());
                     }
                     folded.push(value);
                 }

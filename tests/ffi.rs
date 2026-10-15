@@ -503,9 +503,16 @@ fn a_link_time_const_is_symbolic_wherever_it_may_stay_symbolic() {
                 data table { ROWS }\n";
     let assembly = assembly(text);
     // Its own name, not a number: nothing folded it, because nothing could.
-    assert!(assembly.contains("lda     #ROWS"), "{assembly}");
-    assert!(assembly.contains("lda     #(ROWS + $01)"), "{assembly}");
-    assert!(assembly.contains(".byte    ROWS"), "{assembly}");
+    // An 8-bit use of a value imported at sixteen takes its low byte, which
+    // ld65 checks is the whole value (`plans/15-constant-sizes.md` decision
+    // 10) — `lda #ROWS` against an absolute import is a ca65 range error.
+    assert!(assembly.contains("lda     #.lobyte(ROWS)"), "{assembly}");
+    assert!(
+        assembly.contains("lda     #.lobyte((ROWS + $01))"),
+        "{assembly}"
+    );
+    assert!(assembly.contains(".byte    .lobyte(ROWS)"), "{assembly}");
+    assert_eq!(assembly.matches(".assert").count(), 3, "{assembly}");
     // And ld65 is asked for it. Absolute, which is what an exported `const`
     // is declared as, so the two agree without a size warning.
     assert!(assembly.contains(".import ROWS"), "{assembly}");

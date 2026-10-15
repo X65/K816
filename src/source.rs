@@ -124,6 +124,38 @@ pub enum Origin {
     Imported,
 }
 
+/// Which of K816's two dialects a source is written in.
+///
+/// The grammar is one (master plan §3, decision 2), so both dialects parse
+/// alike; the dialect is what analysis is told. K65's own spellings of the
+/// forms `plans/14-readable-hla.md` respells — `{ ... } !=`, `c+?`, `a!!` —
+/// are accepted in a `.k65` source, for as long as K65 compatibility lasts,
+/// and refused in a K816 source with a fix that writes the K816 form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Dialect {
+    /// A `.k65` source: K816, with the original K65 spellings still accepted.
+    K65,
+    /// A `.kk` or `.k816` source, and any name with neither extension.
+    K816,
+}
+
+impl Dialect {
+    /// The dialect a file called `name` is written in.
+    ///
+    /// Decided by the extension and nothing else, so the command line, an
+    /// editor naming a document by its URI and an `import` reaching a file by
+    /// its path all give one file one dialect. A name with no recognised
+    /// extension is K816: K65 is the legacy, and only a file that says so is
+    /// read as it.
+    pub fn of_name(name: &str) -> Self {
+        let k65 = std::path::Path::new(name)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("k65"));
+        if k65 { Self::K65 } else { Self::K816 }
+    }
+}
+
 /// One source file: its name, unmodified text, and a line-start index.
 #[derive(Debug)]
 pub struct SourceFile {
@@ -182,6 +214,11 @@ impl SourceFile {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The dialect this file is written in, read off its name.
+    pub fn dialect(&self) -> Dialect {
+        Dialect::of_name(&self.name)
     }
 
     pub fn text(&self) -> &str {

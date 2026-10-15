@@ -1,6 +1,6 @@
-# K65 Syntax Reference
+# K816 Syntax Reference
 
-This reference documents the K65 assembly language syntax. Behavior is cross-checked with the reference compiler grammar in `vendor/src/compiler.inc`.
+This reference documents the K816 language, which grew from K65's syntax. Where K816 writes a form its own way — a loop, a flag test, the stack — a `.k65` source still accepts K65's spelling of it ([`k65-compat.md`](k65-compat.md), "Two dialects, one grammar"); the examples here are K816. Behavior is cross-checked with the reference compiler grammar in `vendor/src/compiler.inc`.
 
 ## Comments
 
@@ -482,9 +482,9 @@ A label can be placed at the beginning of a statement. During assembly, the labe
 var SCREEN=0x400
 
 func main {
-  x=0 {
-    a=hello,x z-?{ SCREEN,x=a x++ }
-  } z-?
+  x=0 loop {
+    a=hello,x !z?{ SCREEN,x=a x++ }
+  } while !z?
 
   return
 }
@@ -523,17 +523,17 @@ func draw_level {
   .LT+1=.LD+1=a=&<screen_1+224 .RT+1=.RD+1=a=&<screen_1+225
   .LT+2=.RT+2=a=&>screen_1+0x100 .LD+2=.RD+2=a=&>screen_2+0x100
 
-  y=[LV_SIZE] {
+  y=[LV_SIZE] loop {
     .LV_TO_DRAW: a=levels,y
 
     x=a .LT: screen_1=x x++ .RT: screen_1+1=x
     a|0x20
     x=a .LD: screen_2=x x++ .RD: screen_2+1=x
 
-    c+ a=.LT+1 a-2 .LT+1=.LD+1=a c-?{ .LT+2-- .RT+2-- .LD+2-- .RD+2-- } x=a x++ .RT+1=.RD+1=x
+    c+ a=.LT+1 a-2 .LT+1=.LD+1=a !c?{ .LT+2-- .RT+2-- .LD+2-- .RD+2-- } x=a x++ .RT+1=.RD+1=x
 
     y--
-  } !=
+  } while !=
 }
 ```
 
@@ -703,7 +703,7 @@ The special name `main` designates the program entry point. Its register widths 
 ```k65
 func main {
   a=0        // set accumulator to 0
-  {} always  // loop forever
+  loop {} always  // loop forever
 }
 ```
 
@@ -782,7 +782,7 @@ func check @a8 @i8 (a) -> a, c {   // the carry is a result
 
 func caller @a8 @i8 {
   check a -> a, c
-  c-? { ... }                      // reading an answer
+  !c? { ... }                      // reading an answer
 }
 ```
 
@@ -1001,7 +1001,7 @@ var bcol=0xd020
 
 func main {
   data { 0xEA 0xEA 0xEA }
-  { bcol++ } always
+  loop { bcol++ } always
 }
 
 // produces:
@@ -1751,6 +1751,23 @@ func main {
 }
 ```
 
+### A number is a value
+
+In HLA a number is always a value and never a place: `a = $10` loads `#$10`, `a + 1` adds one, and `x?5` compares with five. Memory is reached through a named variable — `a = flags`, `flags,x = a`, `ptr++`, `a = (ptr),y` — so in a `.kk` or `.k816` source a number in any memory shape is refused, `K816-E0176`:
+
+```k65
+var flags = $10
+
+func work @a8 @i8 {
+  a = flags,x           // a named place
+  a = 3,s               // a displacement from S, which no variable can name
+  a = &2,x              // an offset from the address in X, said with `&`
+  lda $10,x             // a native mnemonic takes an address as written
+}
+```
+
+`a = $10,x`, `$10 = a`, `$10++` and `a = ($10),y` would use one number as two things a line apart, so each is refused, with the native mnemonic as the fix where the statement is one instruction. A native mnemonic is the escape hatch: it takes an address as written, exactly as ca65 does. A `.k65` source keeps the reading these shapes had before the rule.
+
 ## Zero-Store Shortcut
 
 `mem = 0` compiles directly to a single `STZ` instruction — no accumulator traffic, no peephole needed:
@@ -1875,14 +1892,14 @@ func main @a8 @i8 {
 - `B` high byte of the accumulator (8 bit) — an `a~b` operand and nothing else, because `XBA` swaps one register's halves rather than copying between two. Not a transfer operand, not a contract output, not a stack target.
 - `X` index register X (8/16 bit)
 - `Y` index register Y (8/16 bit)
-- `DPR` direct page register (16 bit) — `dpr = a` is `TCD`, `dpr!!` is `PHD`. Spelled `dpr` and not `dp`, because `dp` is the storage-class prefix in `var dp counter`.
-- `DBR` data bank register (8 bit) — `dbr!!` / `dbr??` are `PHB` / `PLB`.
+- `DPR` direct page register (16 bit) — `dpr = a` is `TCD`, `push dpr` is `PHD`. Spelled `dpr` and not `dp`, because `dp` is the storage-class prefix in `var dp counter`.
+- `DBR` data bank register (8 bit) — `push dbr` / `pull dbr` are `PHB` / `PLB`.
 - `S` stack pointer (16 bit)
 - `PC` program counter (16 bit; CPU architectural register, not an HLA assignment target)
 - `PBR` program bank register — **no HLA name.** No instruction loads, stores, or transfers it: only `PHK` names it as a source, and there is no `PLK`. Which bank code runs in is decided by a section's `far` declaration and by the linker, not by a program writing the register, so `phk` is the whole of the surface.
 - `P` processor status register **NVMXDIZC** (8 bit; stack shorthand target as `p` — **not** as an individual flag name, see below). One spelling: `flag` was an alias for it and is gone, because a second name for one register is a thing the reader has to know are the same thing.
 
-**A flag letter is not a stack shorthand target.** `z??`, `c!!`, `n??`, `v!!`, `i??`, `b!!` and `d??` are legal K65, and there the letter is decoration: all seven of `z c n v b i d` assemble to plain `PLP`/`PHP`, so every one of the fourteen spellings means the same two instructions. K816 refuses all seven with `K816-K65-0005` and names `p??` / `p!!`, which is those two instructions without the suggestion that one flag moves on its own.
+**A flag letter is not a stack shorthand target.** `z??`, `c!!`, `n??`, `v!!`, `i??`, `b!!` and `d??` are legal K65, and there the letter is decoration: all seven of `z c n v b i d` assemble to plain `PLP`/`PHP`, so every one of the fourteen spellings means the same two instructions. K816 refuses all seven with `K816-K65-0005` and names `pull p` / `push p` (`p??` / `p!!` in a `.k65` source), which is those two instructions without the suggestion that one flag moves on its own.
 
 **Every register and flag spelling is reserved as a name.** A `var`, `const`, `func`, `data`, `inline` or label may not be called `a b x y s p dpr dbr c d i v n z o`, in any case — `K816-E0158`. A name that is also a register would mean two things in one statement, which is the ambiguity the convention exists to remove.
 
@@ -1925,13 +1942,45 @@ C ....  Carry
 E ....  Emulation mode (65816, hidden, can be exchanged with Carry flag via XCE instruction)
 ```
 
-Flag shorthand operations: `c+` (SEC), `c-` (CLC), `d+` (SED), `d-` (CLD), `i+` (SEI), `i-` (CLI), `v-` (CLV).
+Flag shorthand operations: `c+` (SEC), `c-` (CLC), `d+` (SED), `d-` (CLD), `i+` (SEI), `i-` (CLI), `v-` (CLV). A flag something has set is tested with its letter and a `?` — `c?` when it is set, `!c?` when it is clear — for `c`, `z`, `n` and `v` ([Branch and Flow Control](#branch-and-flow-control)).
 
-The overflow flag is `v` in every construct. The K65 grammar is not consistent about it — the set/clear shorthand is `o-` and the branch tests are `v-?` / `v+?`, one flag under two letters — so `o` in the flag slot is refused with `K816-K65-0006` and `v` named. `o` remains an ordinary identifier: `var o` is a declaration. There is no `SEV` on the 65816, so `v+` has no form at all.
+The overflow flag is `v` in every construct. The K65 grammar is not consistent about it — the set/clear shorthand is `o-` and the branch tests are `v-?` / `v+?`, one flag under two letters — so `o` in the flag slot is refused with `K816-K65-0006` and `v` named. K816 tests it with `v?` / `!v?`. `o` remains an ordinary identifier: `var o` is a declaration. There is no `SEV` on the 65816, so `v+` has no form at all.
 
 ### Processor Stack
 
 **LIFO**, descending. In emulation mode the stack is page-1 based (`0x0100 - 0x01FF`); in native mode the 65816 uses the 16-bit `S` register.
+
+### Push and pull
+
+`push` and `pull` move a list through the stack, one instruction per item, in the order written:
+
+```k65
+const STATUS = $0012
+
+func frame @a16 @i16 {
+  push a, x, y          // PHA PHX PHY
+  push STATUS, $0001    // PEA #$0012  PEA #$0001
+  pull x, x             // PLX PLX: drop the two words
+  pull y, x, a          // PLY PLX PLA
+  push p, dbr, dpr      // PHP PHB PHD
+  pull dpr, dbr, p      // PLD PLB PLP
+  @a16 @i16             // P came back, and the widths with it: say them
+}
+```
+
+A register is pushed by its own instruction — `a`, `x`, `y`, `p`, `dbr` and `dpr` have one — and how many bytes it moves is its width at that point, which the width model knows. `pull` takes registers only.
+
+**A constant is `PEA`, which pushes two bytes whatever `M` says**, so a constant has to be written as the word it pushes:
+
+| Written | What K816 says |
+|---|---|
+| `push $0012`, `push 300`, `push LIMIT`, `push LIMIT + 1` | nothing: a word, or a constant that says nothing about its width |
+| `push $12`, `push 18`, `push %00010010` | `K816-W0174`, with a fix that writes `$0012` |
+| `push &<mem`, `push &>mem`, `push 'a'`, `push LIMIT:byte` | `K816-E0175`: one byte by construction, which no 65816 instruction pushes. The fix writes `(&<mem):word` — the zero high byte said out loud |
+
+A constant ends at the end of its line, as a mnemonic's operand does, so `push LIMIT` above a `* 3` wait is a push and a wait. A comma at the end of a line carries the list on. `pei` and `per` stay mnemonics: `pei (ptr)` pushes the word at a direct-page address, which a `push ptr` would make read like the value at the accumulator's width.
+
+`push` and `pull` are keywords only with an operand after them on their line, so `jsr push` still calls a routine of that name. K65 spells the same instructions `a!!` and `a??`, one register at a time, which a `.k65` source accepts and a K816 one refuses with `K816-K65-0010`.
 
 ### Bytes, Words, Addressing
 
@@ -2023,12 +2072,12 @@ ASL  Shift Left One Bit (Memory or Accumulator)
 
 ### `BCC` branch on carry clear
 
-- `>={ ... }`
+- `>= { ... }`
 - `< goto label`
-- `{ ... } <`
-- `c+?{ ... }`
-- `c-? goto label`
-- `{ ... } c-?`
+- `loop { ... } while <`
+- `c? { ... }`
+- `!c? goto label`
+- `loop { ... } while !c?`
 
 ```none
 BCC  Branch on Carry Clear
@@ -2045,12 +2094,12 @@ BCC  Branch on Carry Clear
 
 ### `BCS` branch on carry set
 
-- `<{ ... }`
+- `< { ... }`
 - `>= goto label`
-- `{ ... } >=`
-- `c-?{ ... }`
-- `c+? goto label`
-- `{ ... } c+?`
+- `loop { ... } while >=`
+- `!c? { ... }`
+- `c? goto label`
+- `loop { ... } while c?`
 
 ```none
 BCS  Branch on Carry Set
@@ -2067,12 +2116,12 @@ BCS  Branch on Carry Set
 
 ### `BEQ` branch on equal (zero set)
 
-- `!={ ... }`
+- `!= { ... }`
 - `== goto label`
-- `{ ... } ==`
-- `z-?{ ... }`
-- `z+? goto label`
-- `{ ... } z+?`
+- `loop { ... } while ==`
+- `!z? { ... }`
+- `z? goto label`
+- `loop { ... } while z?`
 
 ```none
 BEQ  Branch on Result Zero
@@ -2112,12 +2161,12 @@ BIT  Test Bits in Memory with Accumulator
 
 ### `BMI` branch on minus (negative set)
 
-- `>=0{ ... }`
+- `>=0 { ... }`
 - `<0 goto label`
-- `{ ... } <0`
-- `n-?{ ... }`
-- `n+? goto label`
-- `{ ... } n+?`
+- `loop { ... } while <0`
+- `!n? { ... }`
+- `n? goto label`
+- `loop { ... } while n?`
 
 ```none
 BMI  Branch on Result Minus
@@ -2134,12 +2183,12 @@ BMI  Branch on Result Minus
 
 ### `BNE` branch on not equal (zero clear)
 
-- `=={ ... }`
+- `== { ... }`
 - `!= goto label`
-- `{ ... } !=`
-- `z+?{ ... }`
-- `z-? goto label`
-- `{ ... } z-?`
+- `loop { ... } while !=`
+- `z? { ... }`
+- `!z? goto label`
+- `loop { ... } while !z?`
 
 ```none
 BNE  Branch on Result not Zero
@@ -2156,12 +2205,12 @@ BNE  Branch on Result not Zero
 
 ### `BPL` branch on plus (negative clear)
 
-- `<0{ ... }`
+- `<0 { ... }`
 - `>=0 goto label`
-- `{ ... } >=0`
-- `n+?{ ... }`
-- `n-? goto label`
-- `{ ... } n-?`
+- `loop { ... } while >=0`
+- `n? { ... }`
+- `!n? goto label`
+- `loop { ... } while !n?`
 
 ```none
 BPL  Branch on Result Plus
@@ -2201,12 +2250,9 @@ BRK  Force Break
 
 ### `BVC` branch on overflow clear
 
-- `<<={ ... }`
-- `>>= goto label`
-- `{ ... } >>=`
-- `v+?{ ... }`
-- `v-? goto label`
-- `{ ... } v-?`
+- `v? { ... }`
+- `!v? goto label`
+- `loop { ... } while !v?`
 
 ```none
 BVC  Branch on Overflow Clear
@@ -2223,12 +2269,9 @@ BVC  Branch on Overflow Clear
 
 ### `BVS` branch on overflow set
 
-- `>>={ ... }`
-- `<<= goto label`
-- `{ ... } <<=`
-- `v-?{ ... }`
-- `v+? goto label`
-- `{ ... } v+?`
+- `!v? { ... }`
+- `v? goto label`
+- `loop { ... } while v?`
 
 ```none
 BVS  Branch on Overflow Set
@@ -2718,7 +2761,7 @@ ORA  OR Memory with Accumulator
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`a!!`|||||||
+|`push a`|||||||
 
 ```none
 PHA  Push Accumulator on Stack
@@ -2737,7 +2780,7 @@ PHA  Push Accumulator on Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`p!!`|||||||
+|`push p`|||||||
 
 ```none
 PHP  Push Processor Status on Stack
@@ -2756,7 +2799,7 @@ PHP  Push Processor Status on Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`a??`|||||||
+|`pull a`|||||||
 
 ```none
 PLA  Pull Accumulator from Stack
@@ -2775,7 +2818,7 @@ PLA  Pull Accumulator from Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`p??`|||||||
+|`pull p`|||||||
 
 ```none
 PLP  Pull Processor Status from Stack
@@ -3286,7 +3329,7 @@ X|`a=x` TXA|-|-|-|`y=x` TXY|`s=x` TXS
 Y|`a=y` TYA|-|-|`x=y` TYX|-|-
 S|`a=s` TSC|-|-|`x=s` TSX|-|-
 
-`a=s` and `s=a` are `TSC` and `TCS`, which move all sixteen bits regardless of `M` — the accumulator is one register and `a` names it at either width. `DBR` has no transfer: `PHB`/`PLB` are the only instructions that move it, spelled `dbr!!` and `dbr??`.
+`a=s` and `s=a` are `TSC` and `TCS`, which move all sixteen bits regardless of `M` — the accumulator is one register and `a` names it at either width. `DBR` has no transfer: `PHB`/`PLB` are the only instructions that move it, spelled `push dbr` and `pull dbr`.
 
 `x=a`, `y=a`, `a=x` and `a=y` are the four that cross between the accumulator's width and the index registers', and each moves the **destination's** width: `TAX` moves as many bytes as `@i` says, `TXA` as many as `@a` says. Where both widths are known and differ, the transfer carries a high byte the source does not hold or drops the one it does, and K816 refuses it (`K816-E0171`) — declare both axes the same width around the transfer, or leave one width unstated where the full-width move is what you mean. See `doc/register-width-aware-syntax.md`, "Transfers between the two axes".
 
@@ -3329,7 +3372,7 @@ BRA  Branch Always
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`x!!`|||||||
+|`push x`|||||||
 
 Width follows `@i8`/`@i16` — a 16-bit X pushes 2 bytes.
 
@@ -3350,7 +3393,7 @@ PHX  Push Index X on Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`y!!`|||||||
+|`push y`|||||||
 
 Width follows `@i8`/`@i16`.
 
@@ -3371,7 +3414,7 @@ PHY  Push Index Y on Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`x??`|||||||
+|`pull x`|||||||
 
 Width follows `@i8`/`@i16`.
 
@@ -3392,7 +3435,7 @@ PLX  Pull Index X from Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`y??`|||||||
+|`pull y`|||||||
 
 Width follows `@i8`/`@i16`.
 
@@ -3523,7 +3566,7 @@ STP  Stop the Processor
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`b!!`|||||||
+|`push dbr`|||||||
 
 See the `example-reset-vector` fixture for real-world PLB use during startup.
 
@@ -3544,7 +3587,7 @@ PHB  Push Data Bank Register on Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`b??`|||||||
+|`pull dbr`|||||||
 
 ```none
 PLB  Pull Data Bank Register from Stack
@@ -3563,7 +3606,7 @@ PLB  Pull Data Bank Register from Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`d!!`|||||||
+|`push dpr`|||||||
 
 D is always 16-bit, so PHD always pushes 2 bytes.
 
@@ -3584,7 +3627,7 @@ PHD  Push Direct Page Register on Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`d??`|||||||
+|`pull dpr`|||||||
 
 ```none
 PLD  Pull Direct Page Register from Stack
@@ -3766,7 +3809,7 @@ SEP  Set P Bits
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
 
-Raw mnemonic: `pea #addr`. Pushes a 16-bit immediate onto the stack. Despite the `#` syntax, the operand is typically a 16-bit address constant — useful for building stack frames or pushing return targets.
+Raw mnemonic: `pea #addr`. Pushes a 16-bit immediate onto the stack. Despite the `#` syntax, the operand is typically a 16-bit address constant — useful for building stack frames or pushing return targets. In HLA it is a constant in a `push` list, `push $1234` — see [Push and pull](#push-and-pull), which holds the constant to the word it pushes.
 
 ```none
 PEA  Push Effective Absolute Address
@@ -3909,83 +3952,103 @@ MVP  Block Move Positive (source > dest, copy descending)
 
 ## Branch and Flow Control
 
-### Branch Operator Mapping
+A condition tests flags something has already set. It is never a comparison of its own: a compare is a statement — `a?10`, `x?mem`, `a&?mem` — and the condition after it reads the flags the compare left. That is why a condition has no operand, and why `if (a < x)` has no spelling: the 65816 cannot compare two registers, and nothing here pretends it can.
 
-Comparison|Flag|Prefix|Goto|Postfix|6502
-:---|:---|:---|:---|:---|:---
-`<`|`c-?`|`>={ ... }`|`< goto label`|`{ ... } <`|BCC
-`>=`|`c+?`|`<{ ... }`|`>= goto label`|`{ ... } >=`|BCS
-`==`|`z+?`|`!={ ... }`|`== goto label`|`{ ... } ==`|BEQ
-`!=`|`z-?`|`=={ ... }`|`!= goto label`|`{ ... } !=`|BNE
-`<0`|`n+?`|`>=0{ ... }`|`<0 goto label`|`{ ... } <0`|BMI
-`>=0`|`n-?`|`<0{ ... }`|`>=0 goto label`|`{ ... } >=0`|BPL
-`>>=`|`v-?`|`<<={ ... }` or `v+?{ ... }`|`>>= goto label` or `v-? goto label`|`{ ... } >>=` or `{ ... } v-?`|BVC
-`<<=`|`v+?`|`>>={ ... }` or `v-?{ ... }`|`<<= goto label` or `v+? goto label`|`{ ... } <<=` or `{ ... } v+?`|BVS
+After a compare the condition is a relation — `<`, `>=`, `==`, `!=`, `<0`, `>=0` — which says what the compare found, and the carry convention behind it is the compiler's to remember. For flags something else set — a load, a shift, an addition, a call answering in the carry — the condition names the flag: `c?` when it is set and `!c?` when it is clear, for `c`, `z`, `n` and `v`.
 
-Note: prefix form inverts the condition (block executes when condition is false, branch skips over it).
+### Conditions
 
-### Prefix Form
+Condition|Flag test|Taken by|A block skips with
+:---|:---|:---|:---
+`<`|`!c?`|BCC|BCS
+`>=`|`c?`|BCS|BCC
+`==`|`z?`|BEQ|BNE
+`!=`|`!z?`|BNE|BEQ
+`<0`|`n?`|BMI|BPL
+`>=0`|`!n?`|BPL|BMI
+—|`v?`|BVS|BVC
+—|`!v?`|BVC|BVS
 
-Prefix form emits a branch *over* the block, so the parser uses the opposite branch mnemonic for the block condition:
+A condition goes in three places, and in each the thing happens when the condition holds:
+
+- before a block — `>= { x++ }` runs `x++` when A >= 10, and K816 skips the block with the opposite branch, the last column;
+- before a jump — `< goto done`, `< break`, `!= repeat` are taken when it holds;
+- after a loop's `while` — `loop { x-- } while !=` repeats while it holds.
+
+`<=` and `>` are relations too, and cost two branches each ([Efficiency Warnings](#efficiency-warnings)).
+
+### Conditional Blocks
 
 ```k65
-a?10
->={ x++ }             // executes x++ only when A >= 10 (BCC skips over)
+var mem = $10
 
-c-?{ mem++ }          // executes mem++ only when carry is clear (BCS skips over)
+func work @a8 @i8 {
+  a?10
+  >= { x++ }            // x++ only when A >= 10 (BCC skips it)
+  !c? { mem++ }         // mem++ only when the carry is clear (BCS skips it)
+}
 ```
 
-### Goto Form
-
-The condition followed by `goto label` branches to the label when true:
+### Conditional Jumps
 
 ```k65
-a?10
-< goto done           // branch to 'done' when A < 10 (BCC)
-c-? goto done         // branch when carry clear
-```
-
-### Postfix Form
-
-The condition after `{ ... }` branches back to the start of the block:
-
-```k65
-x=10 {
-  x--
-} !=                   // loop while X != 0 (BNE back to start)
-
-{
-  a=ready
-} n-?                  // loop until negative flag set (BPL back)
+func work @a8 @i8 {
+  a?10
+  < goto done           // to `done` when A < 10 (BCC)
+  !c? goto done         // to `done` when the carry is clear (BCC)
+  x++
+done:
+}
 ```
 
 ### Loops
 
+A loop says where it begins: `loop`, a block, and a condition after it.
+
 ```k65
-{ ... } always         // unconditional loop (JMP back to start)
-{ ... } never          // one-shot block (no branch back)
+var ready = $10
+
+func work @a8 @i8 {
+  x = 10
+  loop {
+    x--
+  } while !=            // repeat while X != 0 (BNE back to the top)
+
+  loop {
+    a = ready
+  } while >=0           // repeat while bit 7 is clear (BPL back)
+
+  loop { x++ } always   // forever (JMP back to the top)
+  loop { x++ } never    // once: a block `break` can leave
+}
 ```
+
+`loop` is a keyword only before a `{` on its own line, so `bne loop` still branches to a label of that name.
 
 ### `break` and `repeat`
 
-Within loop blocks:
-
 ```k65
-{
-  x++
-  < break              // exit loop on carry clear (BCC forward)
-  != repeat            // restart loop on not-zero (BNE back)
-  break                // unconditional exit (JMP forward)
-} always
+func work @a8 @i8 {
+  loop {
+    x++
+    < break             // leave the loop on carry clear (BCC past the end)
+    != repeat           // back to the top on not-zero (BNE)
+    break               // leave unconditionally (JMP past the end)
+  } always
+}
 ```
+
+`repeat` goes to the top of the loop, never to its `while` test: the test reads flags the body sets, and the body has not run yet. A conditional repeat has a test of its own.
 
 ### If-Else
 
 ```k65
-=={
-  a=1
-} else {
-  a=2
+func work @a8 @i8 {
+  == {
+    a = 1
+  } else {
+    a = 2
+  }
 }
 ```
 
@@ -4006,10 +4069,14 @@ return_i               // RTI
 The `nocross` modifier ensures a code block fits within a single page:
 
 ```k65
-nocross {
-  a=mem
-  x++
-} !=
+var mem = $10
+
+func work @a8 @i8 {
+  nocross loop {
+    a = mem
+    x++
+  } while !=
+}
 ```
 
 ### Wait-Loop Patterns
@@ -4017,9 +4084,27 @@ nocross {
 Common polling patterns:
 
 ```k65
-{ a&?READY } n-?       // BIT-based wait (wait for bit 7 clear)
-{ a=ready } n-?        // LDA-based wait (poll until positive)
+var status = $D000
+var ready = $10
+
+func work @a8 @i8 {
+  loop { a&?status } while !n?   // BIT-based: loops while bit 7 of `status` is clear
+  loop { a = ready } while >=0   // LDA-based: loops while `ready` is positive
+}
 ```
+
+### K65's Spellings
+
+A `.k65` source also accepts K65's own spellings of these forms, which a `.kk` or `.k816` source refuses with a fix that writes the K816 one ([`k65-compat.md`](k65-compat.md), "Two dialects, one grammar"). Each pair compiles to the same bytes.
+
+K65|K816|Refused in K816 as
+:---|:---|:---
+`{ x-- } !=`|`loop { x-- } while !=`|`K816-K65-0007`
+`{ ... } always`, `{ ... } never`|`loop { ... } always`, `loop { ... } never`|`K816-K65-0007`
+`nocross { ... } !=`|`nocross loop { ... } while !=`|`K816-K65-0007`
+`c+?`, `c-?`|`c?`, `!c?`|`K816-K65-0008`
+`<<=`, `>>=`|`v?`, `!v?`|`K816-K65-0009`
+`a!!`, `a??`|`push a`, `pull a`|`K816-K65-0010`
 
 ### Efficiency Warnings
 
@@ -4029,16 +4114,19 @@ instruction for. Unsigned `>` is "carry set *and* not equal" and unsigned
 wherever it is written, and K816 warns with `K816-W0157`:
 
 ```k65
-{ x++ } >              // beq over the branch, then bcs back to the loop
-{ x++ } <=             // bcc back to the loop, then beq back to the loop
-> { x++ }              // bcc past the body, then beq past the body
-<= { x++ }             // beq over the branch, then bcs past the body
-> goto done            // beq over the branch, then bcs to `done`
+func work @a8 @i8 {
+  loop { x++ } while >   // beq over the branch, then bcs back to the loop
+  loop { x++ } while <=  // bcc back to the loop, then beq back to the loop
+  > { x++ }              // bcc past the body, then beq past the body
+  <= { x++ }             // beq over the branch, then bcs past the body
+  > goto done            // beq over the branch, then bcs to `done`
+done:
+}
 ```
 
 The warning is about the *expansion*, so it fires at every form and not only
-the postfix loop, and its note names the two instructions that form emits.
-Which two they are depends on the form rather than on the operator: a prefix
+in a loop, and its note names the two instructions that form emits.
+Which two they are depends on the form rather than on the operator: a
 block branches *past* its body, so it tests the complement, and `<=` and `>`
 are each other's complement. There is no form in which either of them is one
 instruction.

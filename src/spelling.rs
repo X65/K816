@@ -354,7 +354,7 @@ impl Checker<'_> {
                 "in HLA a number is always a value — `a = $10` loads `#$10` — so a number \
                  cannot also be an address; a native mnemonic takes one as written",
             )
-            .with_docs("doc/syntax-reference.md#variable-declaration");
+            .with_docs("doc/syntax-reference.md#a-number-is-a-value");
             diagnostic = match native {
                 Some(native) => diagnostic
                     .with_help(format!(

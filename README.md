@@ -4,7 +4,7 @@ K816 is a high-level assembler (HLA) for the WDC 65816 microprocessor.
 
 It is a direct port of **K65**: <https://github.com/Krzysiek-K/k65>
 
-K816 aims to combine a familiar, readable, C-like source format with the control and predictability of hand-written assembly, while providing a small set of high-level conveniences that remove boilerplate and improve code clarity.
+K816 aims to combine a familiar, readable source format — C-like blocks, loops and conditions over the instructions themselves — with the control and predictability of hand-written assembly, while providing a small set of high-level conveniences that remove boilerplate and improve code clarity. Every statement is one instruction or a fixed few, and a condition tests the flags an instruction set, so a program says what the machine does and nothing the machine cannot do has a spelling.
 
 ## Goals
 
@@ -18,7 +18,7 @@ K816 aims to combine a familiar, readable, C-like source format with the control
 
 ## Quick Taste
 
-Want to get a feel for [K65-style code](doc/syntax-reference.md)? This is the vibe:
+Want to get a feel for [K816 code](doc/syntax-reference.md)? This is the vibe:
 
 ```k65
 var SCREEN = $0400
@@ -260,7 +260,9 @@ You do not have to run the three tools yourself. `cl65`, the cc65 driver,
 knows the pipeline: it compiles a `.k816`, `.k65` or `.kk` file with
 `k816`, assembles what `k816` emits with `ca65`, and links the objects with
 `ld65`. One installation provides all four, and `cl65` finds them beside
-itself.
+itself. The extension names the dialect: `.kk` and `.k816` are K816, and
+`.k65` also accepts K65's own spellings of a loop, a flag test and the stack
+([`doc/k65-compat.md`](doc/k65-compat.md), "Two dialects, one grammar").
 
 ```bash
 cl65 -t none --no-target-lib -C fullstack.cfg -o fullstack.bin startup.asm main.k816

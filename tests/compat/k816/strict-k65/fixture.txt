@@ -32,9 +32,10 @@ spends an odd one through `NOP $80` (`instr-nop-wait`, decision 11).
 
 The `#` is last because it is inside the body and the ordering is by span.  It
 is worth a line of its own: the original has no `#` anywhere outside its
-preprocessor, because `Arg -> Number` *is* the immediate there - so `a + 1`
-adds one in K65 and adds the byte at `$0001` in K816, and the marker's absence
-is as much a difference as its presence.
+preprocessor, because `Arg -> Number` *is* the immediate there.  K816 reads
+a bare number the same way - `a + 1` adds one in both - so `a + #1` is the
+same instruction with a marker K65 does not have, which is what makes the
+marker the extension and its absence not one.
 
 The `* 3` opens its body rather than following the `a + #MASK`, and that is
 K65's own rule rather than a workaround: the language is newline-insensitive

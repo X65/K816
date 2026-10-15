@@ -312,7 +312,7 @@ file a `binary` includes, and only the compiler knows the last two. That is
 what a build generator needs, and with CMake it is the whole integration:
 
 ```cmake
-set( CMAKE_ASM_SOURCE_FILE_EXTENSIONS s;asm;k65;k816 )
+set( CMAKE_ASM_SOURCE_FILE_EXTENSIONS s;asm;k65;k816;kk )
 ```
 
 A program of several units needs nothing more. The generator compiles one

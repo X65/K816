@@ -72,6 +72,26 @@ func main {
 }
 ```
 
+A width statement in front of a label is that label's entry width, and the
+label is entered the way a function is: the code that falls into it runs the
+statement where it is written, and a branch that arrives at another width is
+switched in front of the branch, by the caller. Nothing runs at the label, so a
+loop whose back edge is already at the width pays nothing per iteration:
+
+```k65
+var RDY = $FFE0
+
+func poll @a16 @i16 {
+  tax
+  @a8                 // SEP #$20 here, once, before the loop
+.wait:
+  bit RDY
+  dex
+  bne .wait           // already 8-bit: no switch on the back edge
+  @a16
+}
+```
+
 See [register-width-aware-syntax.md](doc/register-width-aware-syntax.md) for full details.
 
 ## Symbolic Subscripts

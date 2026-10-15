@@ -1035,7 +1035,13 @@ fn spellings() -> Vec<Spelling> {
     let mut found = Vec::new();
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
-        let Some(rest) = line.strip_prefix("### `") else {
+        // The 65816's additions are `####` sections under a `###` group,
+        // and their tables are the same claim: `PHB`'s said `b!!`, a spelling
+        // K816 had retired, for as long as only `###` was read.
+        let Some(rest) = line
+            .strip_prefix("### `")
+            .or_else(|| line.strip_prefix("#### `"))
+        else {
             continue;
         };
         let Some(mnemonic) = rest.split('`').next() else {
@@ -1115,7 +1121,14 @@ fn every_documented_spelling_selects_the_instruction_it_claims() {
                 attempt = Some((statement, Err("does not parse".to_owned()), None));
                 continue;
             }
-            let (model, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+            let (model, mut diagnostics) = k816::semantic::analyze_file(&parsed.file);
+            // And as a K816 source: a table is the K816 reference, so a K65
+            // spelling there (`a!!` where K816 writes `push a`) is as wrong
+            // as one that selects another instruction.
+            diagnostics.extend(k816::spelling::check(
+                model.program(&parsed.file),
+                map.file(file),
+            ));
             if diagnostics
                 .iter()
                 .any(k816::diagnostic::Diagnostic::is_error)

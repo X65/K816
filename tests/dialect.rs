@@ -472,3 +472,50 @@ func work @a8 @i8 {
         );
     }
 }
+
+/// A bare number in HLA is a value, in either dialect: `a + 1` adds one. A
+/// compatibility fixture's note once said it read the byte at `$0001`, and
+/// nothing checked the claim.
+#[test]
+fn a_bare_number_in_hla_is_a_value_in_either_dialect() {
+    for name in ["unit.kk", "unit.k65"] {
+        let (codes, lines) = code(
+            name,
+            "func work @a8 @i8 {\n    a + 1\n    a = $10\n    x?5\n    a & $0F\n}\n",
+        );
+        assert_eq!(codes, Vec::<&str>::new(), "{name}");
+        let instructions: Vec<String> = lines
+            .iter()
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        for wanted in ["adc #$01", "lda #$10", "cpx #$05", "and #$0F"] {
+            assert!(
+                instructions.iter().any(|line| line == wanted),
+                "{name}: no `{wanted}`"
+            );
+        }
+    }
+}
+
+/// The help a K816 source is given names the K816 spelling: before sub-plan
+/// O it said `p??`, `v-?` and `dbr!!`, which a K816 source now refuses.
+#[test]
+fn the_help_a_k816_source_gets_names_k816s_spelling() {
+    for (body, code, wanted) in [
+        ("z??", "K816-K65-0005", "pull p"),
+        ("o-", "K816-K65-0006", "!v?"),
+        ("b!!", "K816-E0158", "push dbr"),
+    ] {
+        let mut map = SourceMap::new();
+        let text = format!("func work @a8 @i8 {{\n    {body}\n}}\n");
+        let file = map.add_file("unit.kk", text.as_str());
+        let result = compile_to_ca65(&map, file, &Options::default());
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code.as_str() == code)
+            .unwrap_or_else(|| panic!("`{body}` did not report {code}"));
+        let help = diagnostic.help.as_deref().unwrap_or_default();
+        assert!(help.contains(wanted), "`{body}`: {help}");
+    }
+}

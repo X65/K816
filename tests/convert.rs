@@ -1072,3 +1072,67 @@ fn a_raise_that_would_change_the_program_keeps_its_labels() {
     has(&text, ".skip:");
     assert!(!text.contains("!= {"), "{text}");
 }
+
+/// A comment after a raised branch keeps the space before it. A mnemonic's
+/// span runs to its comment, spaces included, and the first draft replaced
+/// the spaces with the branch: `} while !=// again`.
+#[test]
+fn a_raised_branch_keeps_the_space_before_its_comment() {
+    let (text, _) = faithful(
+        "raise-spacing",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n@next:  inc total\n        dex\n        bne @next       ; again\n        rts\n",
+    );
+    let line = text
+        .lines()
+        .find(|line| line.contains("} while !="))
+        .unwrap_or_else(|| panic!("no loop in\n{text}"));
+    assert!(
+        line.contains("!= ") && line.ends_with("// again"),
+        "{line:?}"
+    );
+    assert!(!line.contains("!=//"), "{line:?}");
+}
+
+/// A skipping branch's comment and the label's own are said once, together,
+/// at the closing brace — the first draft wrote both, `// a // b`.
+#[test]
+fn a_skip_and_its_labels_comments_are_one_comment_at_the_close() {
+    let (text, _) = faithful(
+        "raise-two-comments",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        beq @done       ; nothing to count\n        inc total\n@done:                  ; counted\n        rts\n",
+    );
+    has(&text, "} // nothing to count; counted");
+    assert!(!text.contains("// nothing to count //"), "{text}");
+}
+
+/// A loop and a skip that cross — a branch inside the loop over its back
+/// edge to a label after it — cannot both be raised, and the loop is the one
+/// that is. The first draft raised the smaller skip and lost the loop.
+#[test]
+fn a_loop_is_raised_before_a_skip_that_crosses_it() {
+    let (text, _) = faithful(
+        "raise-crossing",
+        ".zeropage\nslots:  .res 8\n.code\n.a8\n.i8\nfirst:  ldx #0\n@loop:  lda slots,x\n        beq @found\n        inx\n        cpx #8\n        bne @loop\n        sec\n        rts\n@found: clc\n        rts\n",
+    );
+    has(&text, "loop {");
+    has(&text, "} while !=");
+    has(&text, "beq .found");
+    assert!(!text.contains(".loop"), "{text}");
+}
+
+/// A branch from inside a loop to the label after it is a `break` even when
+/// something before the loop branches there too: the label stays for that
+/// use, and the branch over the loop is then a block of its own. The first
+/// draft raised a `break` only when the loop's branches were the label's
+/// only uses.
+#[test]
+fn a_break_is_raised_when_the_exit_is_also_reached_from_outside() {
+    let (text, _) = faithful(
+        "raise-shared-exit",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n        lda total\n        beq @out\n@top:   lda total\n        beq @out\n        dex\n        bne @top\n@out:   rts\n",
+    );
+    for line in ["!= {", "loop {", "== break", "} while !="] {
+        has(&text, line);
+    }
+    assert!(!text.contains(".out") && !text.contains(".top"), "{text}");
+}

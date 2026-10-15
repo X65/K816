@@ -351,3 +351,97 @@ func main @a8 @i8 {
             operand: (address
               value: (identifier))))
         condition: (branch_condition)))))
+
+================================================================================
+A loop that says where it begins
+================================================================================
+
+func main {
+  loop { x-- } while !=
+  loop { a = ready } while >=0
+  loop { x++ } always
+  loop { < break } never
+  nocross loop { y++ } while !=
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (branch_condition)))
+      (loop_statement
+        body: (block
+          (hla_assignment
+            operand: (register)
+            operand: (address
+              value: (identifier))))
+        condition: (while_condition
+          condition: (branch_condition)))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (loop_condition))
+      (loop_statement
+        body: (block
+          (conditional_jump
+            condition: (branch_condition)
+            jump: (break_statement)))
+        condition: (loop_condition))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (branch_condition))))))
+
+================================================================================
+Flag tests without the sign
+================================================================================
+
+func main {
+  c? { x++ }
+  !c? { x-- }
+  !z? goto done
+  v? break
+  loop { a&?mem } while !n?
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (conditional_block
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (conditional_block
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (conditional_jump
+        condition: (branch_condition)
+        jump: (goto_statement
+          target: (identifier)))
+      (conditional_jump
+        condition: (branch_condition)
+        jump: (break_statement))
+      (loop_statement
+        body: (block
+          (hla_arithmetic
+            register: (register)
+            operand: (address
+              value: (identifier))))
+        condition: (while_condition
+          condition: (branch_condition))))))

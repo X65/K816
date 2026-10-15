@@ -169,7 +169,13 @@ export default grammar({
   // across the break dies at it, and nothing written on one line parses
   // differently. `_error_sentinel` is never produced; it is how the scanner
   // knows the parser is recovering.
-  externals: $ => [$._line_end, $._error_sentinel],
+  externals: $ => [
+    $._line_end,
+    $._error_sentinel,
+    $._loop_keyword,
+    $._push_keyword,
+    $._pull_keyword,
+  ],
 
   // Words that never lex as an identifier. Without this, recovery from a
   // malformed statement swallows the keyword that starts the *next* one —
@@ -908,6 +914,16 @@ export default grammar({
             choice('+', '-'),
             '?',
           ),
+          // K816's spelling of the same tests: `c?` when the flag is set,
+          // `!c?` when it is clear (`plans/14-readable-hla.md` decision 4).
+          // One token with its letter, like the signed form, so a bare `c`
+          // lexes nowhere else differently. `o` is listed so that `o?` is
+          // the overflow spelling's own refusal rather than a parse error.
+          seq(
+            optional('!'),
+            choice('c', 'C', 'n', 'N', 'z', 'Z', 'v', 'V', 'o', 'O'),
+            '?',
+          ),
         ),
       ),
 
@@ -946,6 +962,26 @@ export default grammar({
       ),
 
     loop_condition: _ => choice('always', 'never'),
+
+    // `loop { ... } always`, `loop { ... } never`, `loop { ... } while !=`:
+    // a loop that says where it begins (`plans/14-readable-hla.md` decision
+    // 5). Every loop is the keyword, a block and a condition, so nothing
+    // after a plain `}` binds back to it — the hazard `postfix_loop` above
+    // has to rank its way out of does not arise. `nocross` in front wraps
+    // it, as it wraps the postfix form.
+    //
+    // The keyword is the scanner's, and it is one only with the `{` on its
+    // own line (`src/scanner.c`): `bne loop` above a block is a branch to a
+    // label called `loop`, which is the commonest label name there is.
+    loop_statement: $ =>
+      seq(
+        optional(field('nocross', 'nocross')),
+        alias($._loop_keyword, 'loop'),
+        field('body', $.block),
+        field('condition', choice($.loop_condition, $.while_condition)),
+      ),
+
+    while_condition: $ => seq('while', field('condition', $.branch_condition)),
 
     // `goto done`, `goto .loop`, `goto (vec)`, `goto far handler`. A local
     // label is as ordinary a target as a global one — the documentation's
@@ -1036,6 +1072,8 @@ export default grammar({
         $.hla_step,
         $.hla_flag,
         $.hla_stack,
+        $.push_statement,
+        $.pull_statement,
         $.hla_stack_flag,
         $.hla_nop,
         $.hla_break,
@@ -1046,6 +1084,7 @@ export default grammar({
         $.conditional_block,
         $.conditional_jump,
         $.postfix_loop,
+        $.loop_statement,
         $.goto_statement,
         $.break_statement,
         $.repeat_statement,
@@ -1294,6 +1333,27 @@ export default grammar({
     // a!! (PHA), a?? (PLA), p!! (PHP), b!! (PHB), d?? (PLD), ...
     hla_stack: $ =>
       seq(field('register', $.register), field('operator', choice('!!', '??'))),
+
+    // `push a, $0012, x` and `pull x, a` — the stack in words, in the order
+    // written (`plans/14-readable-hla.md` decision 9). `push` takes
+    // registers and constants, a constant being `pea`; `pull` takes
+    // registers only, because nothing else can be pulled into. Both
+    // keywords are the scanner's, and one only with an operand after it on
+    // its line, so `jsr push` still calls a routine of that name.
+    //
+    // A constant ends at the end of its line, as a mnemonic's operand does
+    // (`native_instruction`): `push LIMIT` above a `* 3` wait is a push and
+    // a wait, not a push of `LIMIT * 3`. A comma at the end of a line still
+    // carries the list on, because no line end is valid after one.
+    push_statement: $ =>
+      seq(
+        alias($._push_keyword, 'push'),
+        commaSep1(field('item', choice($.register, $.immediate, $._expression))),
+        optional($._line_end),
+      ),
+
+    pull_statement: $ =>
+      seq(alias($._pull_keyword, 'pull'), commaSep1(field('register', $.register))),
 
     // `z??`, `n!!`, `v??`, `i!!` — the K65 spellings where the letter names a
     // *flag*. In the original every one of the seven letters is plain

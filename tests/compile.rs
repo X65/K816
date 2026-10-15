@@ -4673,3 +4673,32 @@ func reader @a16 @i16 {
         "{assembly}"
     );
 }
+
+/// `readable-hla.kk` links to the bytes of `readable-hla.k65`: K816's
+/// spellings of a loop, a flag test and the stack are its K65 spellings
+/// respelled, and change nothing in the image (`plans/14-readable-hla.md`
+/// decision 13).
+#[test]
+fn the_readable_spellings_link_to_their_k65_twins_bytes() {
+    let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let read = |name: &str| std::fs::read_to_string(golden.join(name)).expect("read golden");
+    let options = Options::default();
+    let (readable, _) = compile_and_link(
+        "readable-hla-kk",
+        "readable-hla.kk",
+        &read("readable-hla.kk"),
+        &options,
+    );
+    let (k65, _) = compile_and_link(
+        "readable-hla-k65",
+        "readable-hla.k65",
+        &read("readable-hla.k65"),
+        &options,
+    );
+    assert!(
+        readable.len() > 40,
+        "the program linked to {} bytes",
+        readable.len()
+    );
+    assert_eq!(readable, k65);
+}

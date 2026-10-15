@@ -1318,6 +1318,10 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
         ("kk-k65.kk", "a_kk_source_takes_k65_and_full_k816_alike"),
         ("kk-native.kk", "a_kk_source_takes_k65_and_full_k816_alike"),
         ("kk-lib.k816", "a_kk_source_takes_k65_and_full_k816_alike"),
+        (
+            "readable-hla.kk",
+            "the_readable_spellings_link_to_their_k65_twins_bytes",
+        ),
     ];
 
     /// The fixtures that cannot reach ca65, and why. Every one of them pins a

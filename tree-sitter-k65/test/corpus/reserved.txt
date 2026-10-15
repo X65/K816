@@ -232,3 +232,67 @@ data stars {
             argument: (number)
             argument: (number)
             argument: (number)))))))
+
+================================================================================
+Labels named like the statement keywords
+================================================================================
+
+func main {
+loop:
+push:
+pull:
+  bne loop
+  { x++ } !=
+  jsr push
+  lda pull,x
+  goto loop
+  call pull
+  nop loop { x++ } always
+  pla push a
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (label
+        name: (identifier))
+      (label
+        name: (identifier))
+      (label
+        name: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (postfix_loop
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (branch_condition))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (goto_statement
+        target: (identifier))
+      (call_statement
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (loop_condition))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (push_statement
+        item: (register)))))

@@ -1725,6 +1725,8 @@ fn hla_expressions(hla: &crate::ast::HlaStatement) -> Vec<&Expr> {
         HlaStatement::Nop { count } => {
             return count.iter().collect();
         }
+        // A pushed constant is an immediate, and a bracket is legal there.
+        HlaStatement::PushConstant(value) => return vec![value],
         HlaStatement::Exchange(_)
         | HlaStatement::Flag(_)
         | HlaStatement::Stack(_)

@@ -342,3 +342,67 @@ func main @a8 @i8 {
         operand: (address
           value: (eval_bracket
             (identifier)))))))
+
+================================================================================
+Push and pull lists
+================================================================================
+
+func main {
+  push a, $0012, x
+  push LIMIT
+  push (&<mem):word
+  pull x, a
+  push p, dbr, dpr
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (push_statement
+        item: (register)
+        item: (number)
+        item: (register))
+      (push_statement
+        item: (identifier))
+      (push_statement
+        item: (typed_view
+          base: (parenthesized_expression
+            (address_of_expression
+              operand: (identifier)))
+          type: (type_suffix)))
+      (pull_statement
+        register: (register)
+        register: (register))
+      (push_statement
+        item: (register)
+        item: (register)
+        item: (register)))))
+
+================================================================================
+A push constant ends at the end of its line
+================================================================================
+
+func main {
+  push LIMIT
+  * 3
+  push $0012, LIMIT,
+    x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (push_statement
+        item: (identifier))
+      (hla_nop
+        count: (number))
+      (push_statement
+        item: (number)
+        item: (identifier)
+        item: (register)))))

@@ -379,8 +379,22 @@ pub struct BranchCondition {
 pub enum BranchConditionKind {
     /// `<`, `>=`, `==`, `!=`, `<0`, `>=0`, `<=`, `>`, `<<=`, `>>=`
     Comparison(ComparisonKind),
-    /// `c+?`, `n-?`, `z+?`, `v-?`
-    Flag { flag: TestableFlag, set: bool },
+    /// `c+?`, `n-?`, `z+?`, `v-?` — or K816's `c?`, `!n?`, `z?`, `!v?`
+    Flag {
+        flag: TestableFlag,
+        set: bool,
+        spelling: FlagTestSpelling,
+    },
+}
+
+/// How a flag test was written. Both mean the same branch; a K816 source may
+/// use only the second (`plans/14-readable-hla.md` decisions 4 and 11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagTestSpelling {
+    /// K65's `c+?` / `c-?`.
+    Signed,
+    /// K816's `c?` / `!c?`.
+    Bare,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -435,6 +449,18 @@ pub struct LoopStatement {
     /// `nocross { ... } !=` — the wrapper form.
     pub nocross: bool,
     pub condition: LoopCondition,
+    pub spelling: LoopSpelling,
+}
+
+/// How a loop was written. Both mean the same loop; a K816 source may use
+/// only the second (`plans/14-readable-hla.md` decisions 5 and 11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopSpelling {
+    /// K65's `{ ... } !=`, `{ ... } always`, `{ ... } never`.
+    Postfix,
+    /// K816's `loop { ... } while !=`, `loop { ... } always`,
+    /// `loop { ... } never`.
+    Keyword,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -623,8 +649,11 @@ pub enum HlaStatement {
     Step(HlaStep),
     /// `c+`, `d-`, `i+`, `v-`
     Flag(HlaFlag),
-    /// `a!!`, `d??`, `p!!`
+    /// `a!!`, `dpr??`, `p!!` — or one register of `push a, x` / `pull x, a`.
     Stack(HlaStack),
+    /// One constant of `push a, $0012, x`: `PEA`, two bytes whatever `M`
+    /// says.
+    PushConstant(Expr),
     /// `*` or `* N` — one or N `NOP`s.
     Nop { count: Option<Expr> },
     /// `%` — the one-character `brk #0` breakpoint marker.
@@ -727,6 +756,18 @@ pub struct HlaStack {
     pub register: Register,
     pub op: StackOp,
     pub op_span: Span,
+    pub spelling: StackSpelling,
+}
+
+/// How a push or pull was written. Both mean the same instruction; a K816
+/// source may use only the second (`plans/14-readable-hla.md` decisions 9 and
+/// 11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StackSpelling {
+    /// K65's `a!!` / `a??`.
+    Shorthand,
+    /// K816's `push a` / `pull a`, one register of a list.
+    Word,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

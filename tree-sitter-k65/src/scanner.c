@@ -48,7 +48,114 @@ enum TokenType {
      * recovers from an error, and a scanner that answers then decides the
      * recovery; this one names that state so it can stay out of it. */
     ERROR_SENTINEL,
+    /* `loop`, `push` and `pull`, as keywords. They begin statements, and a
+     * statement may begin wherever a mnemonic's operand may — `bne loop`
+     * is either — so a keyword the internal lexer knew would take every
+     * label of that name (keyword extraction prefers the keyword wherever
+     * both are valid). Each is a keyword only when what follows it on the
+     * same line says so: `loop` before `{`, `push` and `pull` before an
+     * operand. Anything else is left to the internal lexer, which reads an
+     * identifier. */
+    LOOP_KEYWORD,
+    PUSH_KEYWORD,
+    PULL_KEYWORD,
 };
+
+static bool is_word_char(int32_t c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+static bool is_horizontal_space(int32_t c)
+{
+    return c == ' ' || c == '\t' || c == '\f' || c == '\v';
+}
+
+/* Consumes `rest` if it is what comes next, and reports whether it was. */
+static bool consume(TSLexer *lexer, const char *rest)
+{
+    for (; *rest; rest++) {
+        if (lexer->lookahead != *rest) {
+            return false;
+        }
+        lexer->advance(lexer, false);
+    }
+    return true;
+}
+
+/* What may follow `push` on its line: a register, a number, a name, `#`, a
+ * parenthesis, an address-byte operator, a character, or a sign. */
+static bool starts_push_item(int32_t c)
+{
+    return is_word_char(c) || c == '$' || c == '%' || c == '#' || c == '(' || c == '&' ||
+           c == '\'' || c == '-' || c == '~' || c == '[';
+}
+
+/* `loop`, `push` or `pull` at the lexer, if what follows makes it one. */
+static bool keyword(TSLexer *lexer, const bool *valid_symbols)
+{
+    enum TokenType word;
+    switch (lexer->lookahead) {
+    case 'l':
+        if (!valid_symbols[LOOP_KEYWORD]) {
+            return false;
+        }
+        lexer->advance(lexer, false);
+        if (!consume(lexer, "oop") || is_word_char(lexer->lookahead)) {
+            return false;
+        }
+        lexer->mark_end(lexer);
+        while (is_horizontal_space(lexer->lookahead)) {
+            lexer->advance(lexer, false);
+        }
+        if (lexer->lookahead != '{') {
+            return false;
+        }
+        lexer->result_symbol = LOOP_KEYWORD;
+        return true;
+    case 'p':
+        if (!valid_symbols[PUSH_KEYWORD] && !valid_symbols[PULL_KEYWORD]) {
+            return false;
+        }
+        lexer->advance(lexer, false);
+        if (!consume(lexer, "u")) {
+            return false;
+        }
+        if (lexer->lookahead == 's') {
+            lexer->advance(lexer, false);
+            word = PUSH_KEYWORD;
+            if (!consume(lexer, "h")) {
+                return false;
+            }
+        } else if (lexer->lookahead == 'l') {
+            lexer->advance(lexer, false);
+            word = PULL_KEYWORD;
+            if (!consume(lexer, "l")) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+        if (!valid_symbols[word] || is_word_char(lexer->lookahead)) {
+            return false;
+        }
+        lexer->mark_end(lexer);
+        while (is_horizontal_space(lexer->lookahead)) {
+            lexer->advance(lexer, false);
+        }
+        /* `pull` takes registers, which are letters; `push` anything it
+         * can push. */
+        if (word == PULL_KEYWORD ? !is_word_char(lexer->lookahead) ||
+                                       (lexer->lookahead >= '0' && lexer->lookahead <= '9')
+                                 : !starts_push_item(lexer->lookahead)) {
+            return false;
+        }
+        lexer->result_symbol = word;
+        return true;
+    default:
+        return false;
+    }
+}
 
 void *tree_sitter_k65_external_scanner_create(void) { return NULL; }
 
@@ -73,8 +180,20 @@ bool tree_sitter_k65_external_scanner_scan(void *payload, TSLexer *lexer,
                                            const bool *valid_symbols)
 {
     (void)payload;
-    if (valid_symbols[ERROR_SENTINEL] || !valid_symbols[LINE_END]) {
+    if (valid_symbols[ERROR_SENTINEL]) {
         return false;
+    }
+    bool keywords =
+        valid_symbols[LOOP_KEYWORD] || valid_symbols[PUSH_KEYWORD] || valid_symbols[PULL_KEYWORD];
+    if (!valid_symbols[LINE_END]) {
+        if (!keywords) {
+            return false;
+        }
+        while (is_horizontal_space(lexer->lookahead) || lexer->lookahead == '\n' ||
+               lexer->lookahead == '\r') {
+            lexer->advance(lexer, true);
+        }
+        return keyword(lexer, valid_symbols);
     }
     lexer->result_symbol = LINE_END;
     for (;;) {
@@ -101,7 +220,9 @@ bool tree_sitter_k65_external_scanner_scan(void *payload, TSLexer *lexer,
                 lexer->mark_end(lexer);
                 return true;
             }
-            return false;
+            /* The line goes on, so this is no line end; it may still be
+             * one of the keywords, after a mnemonic that stands alone. */
+            return keywords && keyword(lexer, valid_symbols);
         }
     }
 }

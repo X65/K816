@@ -55,7 +55,7 @@
 [
   "var" "const" "segment" "abstract" "binary" "evalfunc" "data" "eval"
   "evaluator" "charset" "align" "address" "nocross" "code" "image" "bank"
-  "import" "extern"
+  "import" "extern" "push" "pull"
 ] @keyword
 
 ["func" "naked" "inline" "far"] @keyword.function
@@ -65,7 +65,7 @@
 ; `break` is a statement node rather than a token of its own.
 (break_statement) @keyword.return
 
-["else" "always" "never" "if" "while" "for"] @keyword.control
+["else" "always" "never" "if" "while" "for" "loop"] @keyword.control
 
 ; A width annotation is a type: it says how wide the register is, which is
 ; the only type the language has.

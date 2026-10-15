@@ -34,16 +34,17 @@ use crate::ast::{
     ContractOutput, ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind,
     DataValue, EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind,
     ExternDeclaration, ExternExit, ExternFunction, ExternKind, ExternVar, FieldAccess,
-    FieldDeclaration, FlagKind, Function, FunctionKind, GotoStatement, HlaArithmetic,
-    HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift, HlaStack,
-    HlaStatement, HlaStep, IllegalOpcode, ImportDeclaration, IndexRegister, IndexRegisterKind,
-    IndirectOperand, Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand,
-    LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name, NativeInstruction,
-    NativeOperand, PreprocessorDirective, PreprocessorKind, Register, RegisterKind, ReservedCall,
-    ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp, Statement, StatementKind,
-    StepOp, StmtId, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth,
-    TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
-    WidthAnnotationKind, WidthBlock,
+    FieldDeclaration, FlagKind, FlagTestSpelling, Function, FunctionKind, GotoStatement,
+    HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift,
+    HlaStack, HlaStatement, HlaStep, IllegalOpcode, ImportDeclaration, IndexRegister,
+    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
+    LongIndirectOperand, LoopCondition, LoopSpelling, LoopStatement, MetadataQuery,
+    MetadataQueryKind, Name, NativeInstruction, NativeOperand, PreprocessorDirective,
+    PreprocessorKind, Register, RegisterKind, ReservedCall, ReservedConstruct, ReservedKind,
+    ReturnKind, ShiftOp, StackOp, StackSpelling, Statement, StatementKind, StepOp, StmtId,
+    StorageClass, StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind,
+    TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind,
+    WidthBlock,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -676,6 +677,8 @@ impl AstBuilder<'_> {
                 "hla_step" => statements.extend(self.hla_step(child)),
                 "hla_flag" => statements.push(self.hla_flag(child)),
                 "hla_stack" => statements.push(self.hla_stack(child)),
+                "push_statement" => statements.extend(self.push_statement(child)),
+                "pull_statement" => statements.extend(self.pull_statement(child)),
                 "hla_nop" => statements.push(Statement::new(
                     StatementKind::Hla(HlaStatement::Nop {
                         count: child
@@ -727,6 +730,7 @@ impl AstBuilder<'_> {
                 "conditional_block" => statements.push(self.conditional_block(child)),
                 "conditional_jump" => statements.push(self.conditional_jump(child)),
                 "postfix_loop" => statements.push(self.postfix_loop(child)),
+                "loop_statement" => statements.push(self.loop_statement(child)),
                 "goto_statement" => statements.push(self.goto_statement(child)),
                 "break_statement" => {
                     statements.push(Statement::new(StatementKind::Break, self.span(child)))
@@ -1383,9 +1387,55 @@ impl AstBuilder<'_> {
                     StackOp::Pull
                 },
                 op_span,
+                spelling: StackSpelling::Shorthand,
             })),
             span,
         )
+    }
+
+    /// `push a, $0012, x` — one statement per item, in the order written,
+    /// as an assignment chain is one per step. A register is pushed by its
+    /// own instruction, and anything else is a constant for `PEA`.
+    fn push_statement(&mut self, node: Node<'_>) -> Vec<Statement> {
+        let mut statements = Vec::new();
+        let mut cursor = node.walk();
+        for item in node.children_by_field_name("item", &mut cursor) {
+            let span = self.span(item);
+            let kind = match item.kind() {
+                "register" => HlaStatement::Stack(HlaStack {
+                    register: self.register(Some(item), node),
+                    op: StackOp::Push,
+                    op_span: span,
+                    spelling: StackSpelling::Word,
+                }),
+                "immediate" => {
+                    HlaStatement::PushConstant(self.expr(item.child_by_field_name("value"), item))
+                }
+                _ => HlaStatement::PushConstant(self.expr(Some(item), node)),
+            };
+            statements.push(Statement::new(StatementKind::Hla(kind), span));
+        }
+        statements
+    }
+
+    /// `pull x, a` — one statement per register, in the order written.
+    fn pull_statement(&mut self, node: Node<'_>) -> Vec<Statement> {
+        let mut statements = Vec::new();
+        let mut cursor = node.walk();
+        for item in node.children_by_field_name("register", &mut cursor) {
+            let span = self.span(item);
+            let stack = HlaStack {
+                register: self.register(Some(item), node),
+                op: StackOp::Pull,
+                op_span: span,
+                spelling: StackSpelling::Word,
+            };
+            statements.push(Statement::new(
+                StatementKind::Hla(HlaStatement::Stack(stack)),
+                span,
+            ));
+        }
+        statements
     }
 
     fn hla_exchange(&mut self, node: Node<'_>) -> Statement {
@@ -1439,6 +1489,12 @@ impl AstBuilder<'_> {
             ">" => BranchConditionKind::Comparison(ComparisonKind::Greater),
             "<=" => BranchConditionKind::Comparison(ComparisonKind::LessEqual),
             flag_test => {
+                // `!c?` is K816's spelling of a clear flag, `c?` of a set one,
+                // and `c-?` / `c+?` K65's of the same two.
+                let (negated, flag_test) = match flag_test.strip_prefix('!') {
+                    Some(rest) => (true, rest),
+                    None => (false, flag_test),
+                };
                 let mut characters = flag_test.chars();
                 let flag = match characters.next() {
                     Some('c') => TestableFlag::Carry,
@@ -1462,9 +1518,17 @@ impl AstBuilder<'_> {
                         return fallback;
                     }
                 };
-                BranchConditionKind::Flag {
-                    flag,
-                    set: characters.next() == Some('+'),
+                match characters.next() {
+                    Some('?') => BranchConditionKind::Flag {
+                        flag,
+                        set: !negated,
+                        spelling: FlagTestSpelling::Bare,
+                    },
+                    sign => BranchConditionKind::Flag {
+                        flag,
+                        set: sign == Some('+'),
+                        spelling: FlagTestSpelling::Signed,
+                    },
                 }
             }
         };
@@ -1535,6 +1599,33 @@ impl AstBuilder<'_> {
                 body,
                 nocross,
                 condition,
+                spelling: LoopSpelling::Postfix,
+            }),
+            span,
+        )
+    }
+
+    /// `loop { ... } always`, `loop { ... } never`, `loop { ... } while !=`,
+    /// with `nocross` in front of any of them: the same loop as the postfix
+    /// form, with the keyword saying where it begins.
+    fn loop_statement(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let body = self.body_of(node);
+        let condition_node = node.child_by_field_name("condition");
+        let condition = match condition_node {
+            Some(condition) if condition.kind() == "while_condition" => LoopCondition::Branch(
+                self.branch_condition(condition.child_by_field_name("condition"), condition),
+            ),
+            Some(condition) if self.text(condition) == "always" => LoopCondition::Always,
+            Some(condition) if self.text(condition) == "never" => LoopCondition::Never,
+            _ => LoopCondition::Branch(self.branch_condition(None, node)),
+        };
+        Statement::new(
+            StatementKind::Loop(LoopStatement {
+                body,
+                nocross: node.child_by_field_name("nocross").is_some(),
+                condition,
+                spelling: LoopSpelling::Keyword,
             }),
             span,
         )

@@ -868,6 +868,10 @@
           "named": true
         },
         {
+          "type": "loop_statement",
+          "named": true
+        },
+        {
           "type": "mode_set",
           "named": true
         },
@@ -885,6 +889,14 @@
         },
         {
           "type": "preprocessor_directive",
+          "named": true
+        },
+        {
+          "type": "pull_statement",
+          "named": true
+        },
+        {
+          "type": "push_statement",
           "named": true
         },
         {
@@ -5180,6 +5192,46 @@
     "fields": {}
   },
   {
+    "type": "loop_statement",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "loop_condition",
+            "named": true
+          },
+          {
+            "type": "while_condition",
+            "named": true
+          }
+        ]
+      },
+      "nocross": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "nocross",
+            "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "metadata_query",
     "named": true,
     "fields": {
@@ -5581,6 +5633,98 @@
         "types": [
           {
             "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "pull_statement",
+    "named": true,
+    "fields": {
+      "register": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "push_statement",
+    "named": true,
+    "fields": {
+      "item": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "immediate",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "register",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
             "named": true
           }
         ]
@@ -6506,6 +6650,22 @@
     }
   },
   {
+    "type": "while_condition",
+    "named": true,
+    "fields": {
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "branch_condition",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "width_block",
     "named": true,
     "fields": {
@@ -6910,6 +7070,10 @@
     "named": true
   },
   {
+    "type": "loop",
+    "named": false
+  },
+  {
     "type": "mnemonic",
     "named": true
   },
@@ -6931,6 +7095,14 @@
   },
   {
     "type": "offsetof",
+    "named": false
+  },
+  {
+    "type": "pull",
+    "named": false
+  },
+  {
+    "type": "push",
     "named": false
   },
   {

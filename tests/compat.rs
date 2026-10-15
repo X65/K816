@@ -1285,8 +1285,9 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     (
         "HlaStatement",
         "Stack",
-        "instr-stack-a instr-stack-flags k816-status-register-stack",
+        "instr-stack-a instr-stack-flags k816-status-register-stack k816-stack-words",
     ),
+    ("HlaStatement", "PushConstant", "k816-stack-words"),
     ("HlaStatement", "Nop", "instr-nop-wait"),
     ("HlaStatement", "Break", "instr-nop-wait"),
     // ---- StorageClassKind ----------------------------------------------
@@ -1349,6 +1350,10 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     ("LoopCondition", "Branch", "instr-branch-block"),
     ("LoopCondition", "Always", "instr-branch-block"),
     ("LoopCondition", "Never", "instr-branch-block"),
+    ("LoopSpelling", "Postfix", "instr-branch-block"),
+    ("LoopSpelling", "Keyword", "k816-loop-keyword"),
+    ("FlagTestSpelling", "Signed", "branchop"),
+    ("FlagTestSpelling", "Bare", "k816-bare-flag-test"),
     // ---- CallArgument --------------------------------------------------
     ("CallArgument", "Register", "k816-call-contracts"),
     ("CallArgument", "Immediate", "k816-call-contracts"),
@@ -1409,6 +1414,8 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     // ---- StackOp -------------------------------------------------------
     ("StackOp", "Push", "instr-stack-a instr-stack-flags"),
     ("StackOp", "Pull", "instr-stack-a instr-stack-flags"),
+    ("StackSpelling", "Shorthand", "instr-stack-a"),
+    ("StackSpelling", "Word", "k816-stack-words"),
     // ---- HlaOperandKind ------------------------------------------------
     ("HlaOperandKind", "Register", "register-tokens"),
     ("HlaOperandKind", "Immediate", "k816-immediate-marker"),
@@ -1943,7 +1950,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
 
     assert_eq!(
         marked.len(),
-        29,
+        32,
         "the manifest marks {} rows for the flag; if that is deliberate, move the \
          number here so the count stays a statement someone made",
         marked.len()

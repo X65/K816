@@ -37,9 +37,10 @@
 use crate::ast::{
     AstFile, BinaryOp, Block, BranchCondition, BranchConditionKind, CallArgument, ComparisonKind,
     ContractOutput, DataBlock, DataEntry, DataEntryKind, DataValue, EvalExpr, EvalExprKind, Expr,
-    ExprKind, FieldDeclaration, Function, HlaOperand, HlaOperandKind, HlaStatement, Item, ItemKind,
-    LoopCondition, NativeOperand, Register, RegisterKind, Statement, StatementKind,
-    StorageClassKind, UnaryOp, VarDeclaration,
+    ExprKind, FieldDeclaration, FlagTestSpelling, Function, HlaOperand, HlaOperandKind,
+    HlaStatement, Item, ItemKind, LoopCondition, LoopSpelling, NativeOperand, Register,
+    RegisterKind, StackSpelling, Statement, StatementKind, StorageClassKind, UnaryOp,
+    VarDeclaration,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::Span;
@@ -567,6 +568,9 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-indexed-offset", K816Extension, Rejects),
     row("k816-import", K816Extension, Rejects),
     row("k816-extern", K816Extension, Rejects),
+    row("k816-loop-keyword", K816Extension, Rejects),
+    row("k816-bare-flag-test", K816Extension, Rejects),
+    row("k816-stack-words", K816Extension, Rejects),
     row("k65-global-namespace", IntentionallyChanged, Quiet),
     row("optimizer-branch-to-next-label", BackendDifferent, Quiet),
     row("optimizer-duplicate-return", BackendDifferent, Quiet),
@@ -767,6 +771,23 @@ const REPORTED: &[Reported] = &[
         instead: Some(
             "K65 has no way to name a symbol another object provides, because it had no \
              other language to meet",
+        ),
+    },
+    Reported {
+        id: "k816-loop-keyword",
+        what: "a `loop` statement",
+        instead: Some("K65 writes the loop as a block with its condition after it: `{ x-- } !=`"),
+    },
+    Reported {
+        id: "k816-bare-flag-test",
+        what: "a flag test without its sign",
+        instead: Some("K65 writes `c+?` for a set flag and `c-?` for a clear one"),
+    },
+    Reported {
+        id: "k816-stack-words",
+        what: "`push` / `pull`",
+        instead: Some(
+            "K65 writes `a!!` and `a??`, one register at a time, and has no way to push a constant",
         ),
     },
 ];
@@ -1092,6 +1113,9 @@ impl StrictWalk<'_> {
                 self.statement(&jump.jump);
             }
             StatementKind::Loop(loop_statement) => {
+                if loop_statement.spelling == LoopSpelling::Keyword {
+                    self.mark("k816-loop-keyword", statement.span);
+                }
                 if let LoopCondition::Branch(condition) = &loop_statement.condition {
                     self.condition(condition);
                 }
@@ -1128,6 +1152,10 @@ impl StrictWalk<'_> {
             BranchConditionKind::Comparison(ComparisonKind::LessEqual) => {
                 self.mark("k816-postfix-le", condition.span);
             }
+            BranchConditionKind::Flag {
+                spelling: FlagTestSpelling::Bare,
+                ..
+            } => self.mark("k816-bare-flag-test", condition.span),
             _ => {}
         }
     }
@@ -1156,7 +1184,14 @@ impl StrictWalk<'_> {
             // the seven letter forms that replaced them are `PLP`/`PHP` under
             // a misleading name, which K816 refuses (`instr-stack-flags`). So
             // the spelling K816 offers instead is one the original never had.
+            HlaStatement::PushConstant(value) => {
+                self.mark("k816-stack-words", span);
+                self.expr(value);
+            }
             HlaStatement::Stack(stack) => {
+                if stack.spelling == StackSpelling::Word {
+                    self.mark("k816-stack-words", stack.op_span);
+                }
                 if stack.register.kind == RegisterKind::P {
                     self.mark("k816-status-register-stack", stack.register.span);
                 }

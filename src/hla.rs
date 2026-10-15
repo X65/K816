@@ -62,6 +62,7 @@ pub fn statement(
         HlaStatement::Step(step) => step_by_one(resolver, step, site),
         HlaStatement::Flag(flag) => set_or_clear_flag(resolver, flag, site),
         HlaStatement::Stack(stack) => push_or_pull(resolver, stack, site),
+        HlaStatement::PushConstant(value) => push_constant(resolver, value, site),
         HlaStatement::Nop { count } => nops(resolver, count.as_ref(), site),
         HlaStatement::Break => breakpoint(resolver, site),
     }
@@ -436,6 +437,17 @@ fn nops(resolver: &mut Resolver, count: Option<&Expr>, site: Span) -> Option<Vec
             .classify_implied(Mnemonic::Nop, site)?
             .repeated(count),
     ])
+}
+
+/// One constant of a `push` list: `PEA`, which pushes two bytes whatever
+/// `M` says — the reason a constant's written width is checked
+/// (`plans/14-readable-hla.md` decision 9).
+fn push_constant(resolver: &mut Resolver, value: &Expr, site: Span) -> Option<Vec<Classified>> {
+    Some(vec![resolver.classify_source(
+        Mnemonic::Pea,
+        crate::resolve::OperandSource::Immediate(value),
+        site,
+    )?])
 }
 
 /// `%` — the one-character breakpoint, which is `brk #0`.
@@ -869,7 +881,15 @@ fn negate(condition: BranchConditionKind) -> BranchConditionKind {
                 C::LessEqual => C::Greater,
             })
         }
-        BranchConditionKind::Flag { flag, set } => BranchConditionKind::Flag { flag, set: !set },
+        BranchConditionKind::Flag {
+            flag,
+            set,
+            spelling,
+        } => BranchConditionKind::Flag {
+            flag,
+            set: !set,
+            spelling,
+        },
     }
 }
 
@@ -888,7 +908,7 @@ fn single(condition: BranchConditionKind) -> Mnemonic {
         BranchConditionKind::Comparison(C::NotNegative) => Mnemonic::Bpl,
         BranchConditionKind::Comparison(C::OverflowSet) => Mnemonic::Bvs,
         BranchConditionKind::Comparison(C::OverflowClear) => Mnemonic::Bvc,
-        BranchConditionKind::Flag { flag, set } => match (flag, set) {
+        BranchConditionKind::Flag { flag, set, .. } => match (flag, set) {
             (TestableFlag::Carry, true) => Mnemonic::Bcs,
             (TestableFlag::Carry, false) => Mnemonic::Bcc,
             (TestableFlag::Zero, true) => Mnemonic::Beq,

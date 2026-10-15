@@ -25,11 +25,11 @@
 
 use k816::ast::{
     AddressEncoding, ArithmeticOp, AstFile, BinaryOp, BranchConditionKind, CallArgument,
-    ComparisonKind, ContractOutput, EvalExprKind, ExprKind, ExternKind, FlagKind, FunctionKind,
-    HlaOperandKind, HlaStatement, IndexRegister, IndexRegisterKind, ItemKind, LabelScope,
-    LoopCondition, MetadataQueryKind, NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp,
-    StatementKind, StepOp, StorageClassKind, TestableFlag, TypeWidthKind, UnaryOp,
-    WidthAnnotationKind,
+    ComparisonKind, ContractOutput, EvalExprKind, ExprKind, ExternKind, FlagKind, FlagTestSpelling,
+    FunctionKind, HlaOperandKind, HlaStatement, IndexRegister, IndexRegisterKind, ItemKind,
+    LabelScope, LoopCondition, LoopSpelling, MetadataQueryKind, NativeOperand, RegisterKind,
+    ReturnKind, ShiftOp, StackOp, StackSpelling, StatementKind, StepOp, StorageClassKind,
+    TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -295,14 +295,27 @@ fn dump_ast(file: &AstFile) -> String {
                             },
                             if flag.set { "+" } else { "-" }
                         ),
-                        StatementKind::Hla(HlaStatement::Stack(stack)) => format!(
-                            "hla {}{}",
-                            dump_register(stack.register.kind),
-                            match stack.op {
-                                StackOp::Push => "!!",
-                                StackOp::Pull => "??",
-                            }
-                        ),
+                        StatementKind::Hla(HlaStatement::Stack(stack)) => match stack.spelling {
+                            StackSpelling::Shorthand => format!(
+                                "hla {}{}",
+                                dump_register(stack.register.kind),
+                                match stack.op {
+                                    StackOp::Push => "!!",
+                                    StackOp::Pull => "??",
+                                }
+                            ),
+                            StackSpelling::Word => format!(
+                                "hla {} {}",
+                                match stack.op {
+                                    StackOp::Push => "push",
+                                    StackOp::Pull => "pull",
+                                },
+                                dump_register(stack.register.kind)
+                            ),
+                        },
+                        StatementKind::Hla(HlaStatement::PushConstant(value)) => {
+                            format!("hla push {}", dump_expr(&value.kind))
+                        }
                         StatementKind::Hla(HlaStatement::Nop { count }) => match count {
                             Some(count) => format!("hla * {}", dump_expr(&count.kind)),
                             None => "hla *".to_owned(),
@@ -371,7 +384,11 @@ fn dump_ast(file: &AstFile) -> String {
                             format!("{} jump", dump_condition(jump.condition.kind))
                         }
                         StatementKind::Loop(loop_statement) => format!(
-                            "loop{} ({} statements) {}",
+                            "{}loop{} ({} statements) {}",
+                            match loop_statement.spelling {
+                                LoopSpelling::Postfix => "",
+                                LoopSpelling::Keyword => "keyword ",
+                            },
                             if loop_statement.nocross {
                                 " nocross"
                             } else {
@@ -455,16 +472,24 @@ fn dump_condition(kind: BranchConditionKind) -> String {
             ComparisonKind::LessEqual => "<=",
         }
         .to_owned(),
-        BranchConditionKind::Flag { flag, set } => format!(
-            "{}{}?",
-            match flag {
+        BranchConditionKind::Flag {
+            flag,
+            set,
+            spelling,
+        } => {
+            let letter = match flag {
                 TestableFlag::Carry => "c",
                 TestableFlag::Negative => "n",
                 TestableFlag::Zero => "z",
                 TestableFlag::Overflow => "v",
-            },
-            if set { "+" } else { "-" }
-        ),
+            };
+            match (spelling, set) {
+                (FlagTestSpelling::Signed, true) => format!("{letter}+?"),
+                (FlagTestSpelling::Signed, false) => format!("{letter}-?"),
+                (FlagTestSpelling::Bare, true) => format!("{letter}?"),
+                (FlagTestSpelling::Bare, false) => format!("!{letter}?"),
+            }
+        }
     }
 }
 
@@ -891,6 +916,60 @@ func work @a8 @i16 @20..90
   hla SCREEN = a @67..77
   return @82..88
 "
+    );
+}
+
+/// K816's spellings of a loop, a flag test and the stack reach the AST as the
+/// statements their K65 spellings are, each marked with how it was written —
+/// the one fact a dialect needs to refuse the other (`plans/14-readable-hla.md`
+/// decisions 4, 5, 9 and 13). A list is one statement per item, in order.
+#[test]
+fn the_readable_spellings_reach_the_ast_marked_with_how_they_were_written() {
+    let source = "\
+func work {
+    loop { x-- } while !=
+    { x-- } !=
+    nocross loop { y++ } always
+    loop { } never
+    c? { x++ }
+    !z? goto done
+    c-? { x++ }
+    push a, $0012, x
+    pull x, a
+    a!!
+loop:
+done:
+}
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("spellings.kk", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let dump = dump_ast(&result.file);
+    let lines: Vec<&str> = dump
+        .lines()
+        .skip(1)
+        .map(|line| line.trim().split(" @").next().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "keyword loop (1 statements) !=",
+            "loop (1 statements) !=",
+            "keyword loop nocross (1 statements) always",
+            "keyword loop (0 statements) never",
+            "if c? (1 statements)",
+            "!z? jump",
+            "if c-? (1 statements)",
+            "hla push a",
+            "hla push 18",
+            "hla push x",
+            "hla pull x",
+            "hla pull a",
+            "hla a!!",
+            "label loop",
+            "label done",
+        ]
     );
 }
 

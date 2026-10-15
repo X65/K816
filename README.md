@@ -410,10 +410,7 @@ binary with those arguments alone, and without `lsp` that is the compiler,
 which waits for a file while the editor waits for the server.
 
 **Not offered**, deliberately: inlay hints, code lens, folding ranges, and
-signature help. The [K816 Language
-Support](https://marketplace.visualstudio.com/items?itemName=X65-Project.vscode-k816)
-extension was written against an older server that had all four, so their
-absence is a difference to expect rather than a fault to report.
+signature help.
 
 **The program the server analyzes is the open documents plus what they
 import**, transitively, read from disk. So a name another unit defines

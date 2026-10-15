@@ -1026,18 +1026,52 @@ fn a_branch_out_of_a_loop_is_a_break_and_one_back_to_its_top_a_repeat() {
     assert!(!text.contains(".top") && !text.contains(".out"), "{text}");
 }
 
-/// A loop closed by `bra` stays a label: K816's `always` jumps back with
-/// `JMP`, a byte longer than the source's `BRA`, and the measurement is what
-/// refuses it. The branch over the `bra` is still a block.
+/// A loop closed by `bra` is `loop { … } always`, and the branch out of it a
+/// `break`: K816 closes `always` with a `JMP`, which the optimizer shortens to
+/// the `BRA` the source wrote wherever the target is in reach. Before that
+/// optimisation the measurement refused it, a byte longer.
 #[test]
-fn a_loop_closed_by_bra_keeps_its_label() {
+fn a_loop_closed_by_bra_is_an_always_loop() {
     let (text, _) = faithful(
         "raise-bra",
         ".code\n.a8\n.i8\nfirst:  ldx #8\n@top:   dex\n        beq @out\n        bra @top\n@out:   rts\n",
     );
-    has(&text, ".top:");
-    has(&text, "bra .top");
-    assert!(!text.contains("loop {"), "{text}");
+    for line in ["loop {", "== break", "} always"] {
+        has(&text, line);
+    }
+    assert!(!text.contains(".top") && !text.contains(".out"), "{text}");
+}
+
+/// A branch over a run that ends in a jump over a second run, to the label
+/// that begins it, is `COND { … } else { … }`; the branch's comment says where
+/// it lands, at the `} else {`.
+#[test]
+fn a_branch_over_a_run_that_jumps_over_another_is_an_else() {
+    let (text, _) = faithful(
+        "raise-else",
+        ".code\n.a8\n.i8\nfirst:  cmp #10\n        bcc @digit      ; use digit\n        adc #6\n        bra @done\n@digit: adc #'0'\n@done:  rts\n",
+    );
+    for line in [">= {", "} else { // use digit", "adc #'0'"] {
+        has(&text, line);
+    }
+    assert!(
+        !text.contains(".digit") && !text.contains(".done"),
+        "{text}"
+    );
+}
+
+/// Inside a loop, an unconditional jump back to its top that is not the jump
+/// closing it is a bare `repeat`, and one past its end a bare `break`.
+#[test]
+fn an_unconditional_jump_inside_a_loop_is_a_bare_break_or_repeat() {
+    let (text, _) = faithful(
+        "raise-bare",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n@top:   lda total\n        beq @idle\n        dec total\n        bra @top\n@idle:  dex\n        bne @more\n        bra @out\n@more:  inc total\n        cpx #2\n        bne @top\n@out:   rts\n",
+    );
+    let bare = |word: &str| text.lines().any(|line| line.trim() == word);
+    assert!(bare("repeat") && bare("break"), "{text}");
+    has(&text, "} while !=");
+    assert!(!text.contains(".top") && !text.contains(".out"), "{text}");
 }
 
 /// A branch into the middle of a run from outside it keeps the run's labels:

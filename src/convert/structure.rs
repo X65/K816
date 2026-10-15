@@ -141,6 +141,13 @@ fn compiled(map: &SourceMap, file: FileId) -> Option<Compiled> {
 /// The assembly's lines with comments, debug lines and label names taken
 /// out: a label definition becomes the position of the line after it, and a
 /// reference to it — `@name`, or an anonymous `:+` / `:-` — that position.
+///
+/// A width directive emits no byte, and the emitter places one where its own
+/// account of ca65's state needs it, which a loop and a label can give
+/// differently. What a directive decides is how wide an immediate assembles,
+/// so the directives go and each width-dependent immediate carries the width
+/// in force instead: two spellings compare equal exactly when they assemble
+/// to the same bytes.
 fn canonical(assembly: &str) -> Vec<String> {
     struct Line {
         text: String,
@@ -151,10 +158,33 @@ fn canonical(assembly: &str) -> Vec<String> {
     let mut locals: std::collections::HashMap<(usize, String), usize> = Default::default();
     let mut anonymous: Vec<usize> = Vec::new();
     let mut scope = 0;
+    let (mut accumulator, mut index) = ("m?", "x?");
     for raw in assembly.lines() {
-        let text = without_comment(raw).trim().to_owned();
+        let mut text = without_comment(raw).trim().to_owned();
         if text.is_empty() || text.starts_with(".dbg") {
             continue;
+        }
+        match text.as_str() {
+            ".a8" => accumulator = "m8",
+            ".a16" => accumulator = "m16",
+            ".i8" => index = "x8",
+            ".i16" => index = "x16",
+            _ => {}
+        }
+        if matches!(text.as_str(), ".a8" | ".a16" | ".i8" | ".i16") {
+            continue;
+        }
+        if let Some((mnemonic, operand)) = text.split_once(char::is_whitespace)
+            && operand.trim_start().starts_with('#')
+        {
+            let width = match mnemonic.to_ascii_lowercase().as_str() {
+                "lda" | "adc" | "and" | "cmp" | "eor" | "ora" | "sbc" | "bit" => accumulator,
+                "ldx" | "ldy" | "cpx" | "cpy" => index,
+                _ => "",
+            };
+            if !width.is_empty() {
+                text = format!("{text} @{width}");
+            }
         }
         if text == ":" {
             anonymous.push(lines.len());
@@ -331,6 +361,16 @@ fn taken(mnemonic: &str, after_compare: bool) -> &'static str {
     }
 }
 
+/// What a jump becomes inside a loop: `COND break` or `COND repeat` for a
+/// conditional branch, the bare word for an unconditional one.
+fn exit_word(jump: &Jump<'_>, previous: Option<&Statement>, word: &str) -> String {
+    if jump.conditional {
+        format!("{} {word}", taken(&jump.mnemonic, compares(previous)))
+    } else {
+        word.to_owned()
+    }
+}
+
 /// The branch taken exactly when `mnemonic` is not.
 fn inverse(mnemonic: &str) -> &'static str {
     match mnemonic {
@@ -423,9 +463,13 @@ fn in_block(
         }
         if let Some(jump) = jump(statement)
             && jump.conditional
-            && let Some(candidate) = a_block(function, statements, index, &jump, labels, text)
         {
-            found.push(candidate);
+            if let Some(candidate) = a_choice(function, statements, index, &jump, labels, text) {
+                found.push(candidate);
+            }
+            if let Some(candidate) = a_block(function, statements, index, &jump, labels, text) {
+                found.push(candidate);
+            }
         }
     }
 }
@@ -515,9 +559,6 @@ fn a_loop(
         .map(|(at, _)| at)
         .next_back()?;
     let closing = jump(&statements[close])?;
-    if !closing.conditional {
-        return None;
-    }
     let start = statements[index].span.start;
     let region = (start, statements[close].span.end);
     if !uses.iter().all(|&span| inside(span, region)) {
@@ -536,13 +577,17 @@ fn a_loop(
         (
             statements[close].span.start,
             statements[close].span.end,
-            format!(
-                "}} while {}",
-                taken(
-                    &closing.mnemonic,
-                    compares(close.checked_sub(1).map(|at| &statements[at]))
+            if closing.conditional {
+                format!(
+                    "}} while {}",
+                    taken(
+                        &closing.mnemonic,
+                        compares(close.checked_sub(1).map(|at| &statements[at]))
+                    )
                 )
-            ),
+            } else {
+                "} always".to_owned()
+            },
         ),
     ];
     for &span in uses {
@@ -554,13 +599,13 @@ fn a_loop(
         }
         let (branch, previous, nested_loop) = locate(body, span, false)?;
         let repeat = jump(branch)?;
-        if !repeat.conditional || nested_loop {
+        if nested_loop {
             return None;
         }
         edits.push((
             branch.span.start,
             branch.span.end,
-            format!("{} repeat", taken(&repeat.mnemonic, compares(previous))),
+            exit_word(&repeat, previous, "repeat"),
         ));
     }
     let mut removed = 1;
@@ -568,8 +613,8 @@ fn a_loop(
         && let StatementKind::Label(exit) = &after.kind
         && exit.scope == LabelScope::Local
     {
-        // Each conditional branch to it from inside the loop is a `break`;
-        // the label goes only when nothing else names it.
+        // Each branch or jump to it from inside the loop is a `break`; the
+        // label goes only when nothing else names it.
         let mut converted = 0;
         let exits = labels.uses(&exit.name.text);
         for &span in exits {
@@ -577,13 +622,13 @@ fn a_loop(
                 continue;
             };
             let Some(jump) = jump(branch) else { continue };
-            if !jump.conditional || nested_loop {
+            if nested_loop {
                 continue;
             }
             edits.push((
                 branch.span.start,
                 branch.span.end,
-                format!("{} break", taken(&jump.mnemonic, compares(previous))),
+                exit_word(&jump, previous, "break"),
             ));
             converted += 1;
         }
@@ -657,7 +702,7 @@ fn a_block(
     Some(Candidate {
         key: format!("{function} block {}", branch.target),
         labels: 1,
-        order: (1, region.1 - region.0),
+        order: (2, region.1 - region.0),
         edits: vec![
             (opener.start, opened, format!("{condition} {{")),
             (label.start, closed_at, closing),
@@ -699,5 +744,109 @@ mod tests {
         assert_eq!(lines[2], "bne <1>");
         assert_eq!(lines[3], "beq <5>");
         assert_eq!(lines[4], "bra <6>");
+    }
+}
+
+/// The comment after `statement` on its line, without its `//`, and where
+/// the line ends.
+fn trailing_comment(text: &str, statement: Span) -> (Option<&str>, u32) {
+    let end = statement.end as usize;
+    let line_end = text[end..].find('\n').map_or(text.len(), |at| end + at);
+    match text[end..line_end].trim().strip_prefix("//") {
+        Some(comment) => (Some(comment.trim()), line_end as u32),
+        None => (None, statement.end),
+    }
+}
+
+/// A conditional branch at `index` over a run that ends in a jump over a
+/// second run, to the label that begins the second: `COND { … } else { … }`.
+/// The branch is the `else`'s way in and the jump the `then`'s way out, so
+/// both labels go — each must be named by its own transfer only — and the
+/// comments the branch, the jump and the `else` label carried are said at
+/// the `} else {`, where the branch lands.
+fn a_choice(
+    function: &str,
+    statements: &[Statement],
+    index: usize,
+    branch: &Jump<'_>,
+    labels: &Labels,
+    text: &str,
+) -> Option<Candidate> {
+    let otherwise = statements.iter().enumerate().skip(index + 1).find_map(|(at, statement)| {
+        matches!(&statement.kind, StatementKind::Label(label) if label.name.text == branch.target)
+            .then_some(at)
+    })?;
+    let over = otherwise.checked_sub(1).filter(|&at| at > index)?;
+    let skip = jump(&statements[over]).filter(|jump| !jump.conditional)?;
+    let end = statements
+        .iter()
+        .enumerate()
+        .skip(otherwise + 1)
+        .find_map(|(at, statement)| {
+            matches!(&statement.kind, StatementKind::Label(label) if label.name.text == skip.target)
+                .then_some(at)
+        })?;
+    if labels.uses(branch.target).len() != 1 || labels.uses(skip.target).len() != 1 {
+        return None;
+    }
+    let region = (statements[index].span.start, statements[end].span.end);
+    if !closed(&statements[index + 1..over], region, labels)
+        || !closed(&statements[otherwise + 1..end], region, labels)
+    {
+        return None;
+    }
+    let condition = taken(
+        inverse(&branch.mnemonic),
+        compares(index.checked_sub(1).map(|at| &statements[at])),
+    );
+    let mut said: Vec<&str> = Vec::new();
+    let (comment, opened) = trailing_comment(text, statements[index].span);
+    said.extend(comment);
+    let (comment, jumped) = trailing_comment(text, statements[over].span);
+    said.extend(comment);
+    let (comment, labelled) = trailing_comment(text, statements[otherwise].span);
+    said.extend(comment);
+    let middle = if said.is_empty() {
+        "} else {".to_owned()
+    } else {
+        format!("}} else {{ // {}", said.join("; "))
+    };
+    Some(Candidate {
+        key: format!("{function} choice {}", branch.target),
+        labels: 2,
+        order: (1, region.1 - region.0),
+        edits: vec![
+            (
+                statements[index].span.start,
+                opened,
+                format!("{condition} {{"),
+            ),
+            (statements[over].span.start, jumped, middle),
+            (statements[otherwise].span.start, labelled, String::new()),
+            (
+                statements[end].span.start,
+                statements[end].span.end,
+                "}".to_owned(),
+            ),
+        ],
+    })
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::canonical;
+
+    /// A width directive emits nothing: where it stands does not matter, and
+    /// what it decides — an immediate's width — does.
+    #[test]
+    fn a_directive_counts_only_through_the_immediates_it_sizes() {
+        let here = "f:\n.a16\n  rep #$20\n.a16\n  sta mem\n  lda #$01\n";
+        let moved = "f:\n.a16\n  rep #$20\n  sta mem\n  lda #$01\n";
+        assert_eq!(canonical(here), canonical(moved));
+        let narrower = "f:\n.a16\n  rep #$20\n.a8\n  sta mem\n  lda #$01\n";
+        assert_ne!(canonical(here), canonical(narrower));
+        let index = "f:\n.i8\n  ldx #$01\n";
+        assert_ne!(canonical(index), canonical("f:\n.i16\n  ldx #$01\n"));
+        assert_eq!(canonical(index), canonical("f:\n.a16\n.i8\n  ldx #$01\n"));
     }
 }

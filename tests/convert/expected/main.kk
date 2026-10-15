@@ -33,13 +33,12 @@ naked reset {
     sta pointer
     @a8
     ldx #0
-.print:
-    lda banner,x
-    != {
+    loop {
+        lda banner,x
+        == break
         sta IO.data
         inx
-        bra .print
-    }
+    } always
     @a16
     queue_find
     bcs .reset_wait

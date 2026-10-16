@@ -1858,7 +1858,7 @@ fn every_branch_spelling_the_reference_lists_emits_its_branch() {
 /// `== {` in the If-Else example and the suite stayed green. Each `k65`
 /// fence that parses as a program is compiled here, and may draw none of
 /// the codes for a K65 spelling K816 writes its own way (`K816-K65-0007` to
-/// `0011`). The removed constructs' codes (`0001` to `0006`) are not among
+/// `0011`), nor sub-plan R's for a `c?` after `if` (`K816-E0182`). The removed constructs' codes (`0001` to `0006`) are not among
 /// them: the `image` examples show a refusal on purpose. Fragments — a
 /// statement shown outside a function — do not parse, and are counted
 /// rather than skipped silently; the read-back found the one bare form among
@@ -1904,9 +1904,12 @@ fn no_reference_example_spells_a_form_k816_refuses() {
             .iter()
             .map(|d| d.code.as_str())
             .filter(|code| {
-                code.strip_prefix("K816-K65-")
-                    .and_then(|number| number.parse::<u32>().ok())
-                    .is_some_and(|number| (7..=11).contains(&number))
+                // And sub-plan R's `c?` after `if` or `while`.
+                *code == "K816-E0182"
+                    || code
+                        .strip_prefix("K816-K65-")
+                        .and_then(|number| number.parse::<u32>().ok())
+                        .is_some_and(|number| (7..=11).contains(&number))
             })
             .collect();
         if !codes.is_empty() {

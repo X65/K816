@@ -33,8 +33,8 @@ func main {
     x = 0
     loop {
         a = hello, x
-        if !z? { SCREEN, x = a x++ }
-    } while !z?
+        if !z { SCREEN, x = a x++ }
+    } while !z
 }
 
 data text_data {

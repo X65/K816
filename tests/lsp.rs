@@ -3541,7 +3541,7 @@ fn a_hover_on_if_names_the_branch_it_compiles_to() {
                           if a?#10 == { x++ } else { y++ }\n    \
                           if <= { x++ }\n    \
                           loop {\n        \
-                          if c? break\n        \
+                          if c break\n        \
                           if != repeat\n    \
                           } always\n    \
                           if < goto .out\n\
@@ -3580,7 +3580,7 @@ fn a_hover_on_if_names_the_branch_it_compiles_to() {
                 "two branches",
             ],
         ),
-        (3, &["`if c?` leaves the loop", "branches with `BCS`"]),
+        (3, &["`if c` leaves the loop", "branches with `BCS`"]),
         (
             4,
             &["goes back to the top of the loop", "branches with `BNE`"],

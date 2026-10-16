@@ -140,6 +140,13 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::K65_BARE_CONDITION,
         caret: ">=",
     },
+    // After `if` or `while` a flag test is its letter
+    // (`plans/17-flag-tests.md` decision 2).
+    Case {
+        source: "func work @a8 @i8 {\n    if c? { x++ }\n}\n",
+        code: DiagnosticCode::FLAG_TEST_MARK,
+        caret: "c?",
+    },
     // The compare slot of an `if` holds a compare (decision 5).
     Case {
         source: "func work @a8 @i8 {\n    if a+#1 == { x++ }\n}\n",

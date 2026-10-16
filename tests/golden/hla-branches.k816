@@ -17,8 +17,8 @@ func prefix @a8 @i8 {
     if != { mem++ }
     if <0 { mem++ }
     if >=0 { mem++ }
-    if v? { mem++ }
-    if !v? { mem++ }
+    if v { mem++ }
+    if !v { mem++ }
     return
 }
 
@@ -53,11 +53,11 @@ func prefix_native @a8 @i8 {
 
 // The flag tests, which invert the same way.
 func flags @a8 @i8 {
-    if c? { mem++ }
-    if !c? { mem++ }
-    if z? { mem++ }
-    if !n? { mem++ }
-    if v? { mem++ }
+    if c { mem++ }
+    if !c { mem++ }
+    if z { mem++ }
+    if !n { mem++ }
+    if v { mem++ }
     return
 }
 

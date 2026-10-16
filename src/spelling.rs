@@ -73,6 +73,30 @@ fn previous_start(item: Span, gap: &str, kept: usize) -> u32 {
     item.start - (gap.len() - kept) as u32
 }
 
+/// A flag test's K816 spelling — the letter, with `!` for a clear flag —
+/// for every condition K816 writes as a flag test; `None` for a relation.
+fn letter(condition: BranchConditionKind) -> Option<String> {
+    let (letter, set) = match condition {
+        BranchConditionKind::Flag { flag, set, .. } => (
+            match flag {
+                TestableFlag::Carry => "c",
+                TestableFlag::Zero => "z",
+                TestableFlag::Negative => "n",
+                TestableFlag::Overflow => "v",
+            },
+            set,
+        ),
+        BranchConditionKind::Comparison(ComparisonKind::OverflowSet) => ("v", true),
+        BranchConditionKind::Comparison(ComparisonKind::OverflowClear) => ("v", false),
+        BranchConditionKind::Comparison(_) => return None,
+    };
+    Some(if set {
+        letter.to_owned()
+    } else {
+        format!("!{letter}")
+    })
+}
+
 /// Every spelling rule over one unit.
 pub fn check(program: &AstFile, source: &SourceFile) -> Vec<Diagnostic> {
     let mut checker = Checker {
@@ -149,7 +173,7 @@ impl Checker<'_> {
             StatementKind::Hla(hla) if k816 => self.numbered_places(hla, statement.span),
             StatementKind::Conditional(conditional) => {
                 if k816 {
-                    self.condition(&conditional.condition);
+                    self.condition(&conditional.condition, conditional.keyword.is_some());
                     if conditional.keyword.is_none() {
                         self.bare_condition(&conditional.condition, "block");
                     }
@@ -171,7 +195,7 @@ impl Checker<'_> {
             }
             StatementKind::ConditionalJump(jump) => {
                 if k816 {
-                    self.condition(&jump.condition);
+                    self.condition(&jump.condition, jump.keyword.is_some());
                     if jump.keyword.is_none() {
                         self.bare_condition(&jump.condition, "jump");
                     }
@@ -186,8 +210,10 @@ impl Checker<'_> {
             StatementKind::Loop(loop_statement) => {
                 if k816 {
                     self.postfix_loop(loop_statement);
+                    // A loop's condition is after `while`, or is once
+                    // `K816-K65-0007`'s fix has written it.
                     if let LoopCondition::Branch(condition) = &loop_statement.condition {
-                        self.condition(condition);
+                        self.condition(condition, true);
                     }
                 } else {
                     self.k65_loop(statement.span, loop_statement);
@@ -215,8 +241,15 @@ impl Checker<'_> {
     /// `>= { … }` or `< goto done` in a K816 source: the conditional K816
     /// writes `if >= { … }`. The fix inserts the keyword, which is the whole
     /// difference — the parser builds the same statements from both.
+    ///
+    /// A flag test K816 spells otherwise — K65's `c+?`, sub-plan O's `c?`,
+    /// the overflow relations — is written as its letter in the same edit,
+    /// so that this one fix leaves a K816 condition (`plans/17-flag-tests.md`
+    /// decision 2); the refusals of those spellings offer no fix of their own
+    /// here, where theirs and this one would overlap.
     fn bare_condition(&mut self, condition: &BranchCondition, guarded: &str) {
-        let text = self.source.span_text(condition.span);
+        let text = letter(condition.kind)
+            .unwrap_or_else(|| self.source.span_text(condition.span).to_owned());
         let what = if guarded == "block" {
             format!("if {text} {{ ... }}")
         } else {
@@ -236,9 +269,9 @@ impl Checker<'_> {
                 "write `{what}`, or name the file `.k65` to keep K65's spelling"
             ))
             .with_fix(Fix {
-                title: "insert `if`".to_owned(),
+                title: format!("write `if {text}`"),
                 applicability: Applicability::MachineApplicable,
-                edits: vec![TextEdit::insert(condition.span, "if ")],
+                edits: vec![TextEdit::replace(condition.span, format!("if {text}"))],
             })
             .with_docs("doc/syntax-reference.md#branch-and-flow-control"),
         );
@@ -389,13 +422,13 @@ impl Checker<'_> {
         let BranchConditionKind::Flag {
             flag,
             set,
-            spelling: FlagTestSpelling::Bare,
+            spelling: FlagTestSpelling::Bare | FlagTestSpelling::Letter,
         } = condition.kind
         else {
             return;
         };
         let text = self.source.span_text(condition.span);
-        let letter = text.trim_start_matches('!').trim_end_matches('?');
+        let letter = text.trim_start_matches('!').trim_end_matches('?').trim();
         let written = match (flag, set) {
             (TestableFlag::Overflow, true) => "<<=".to_owned(),
             (TestableFlag::Overflow, false) => ">>=".to_owned(),
@@ -558,7 +591,11 @@ impl Checker<'_> {
         let after = match loop_statement.condition {
             LoopCondition::Branch(condition) => {
                 edits.push(TextEdit::insert(condition.span, "while "));
-                format!("while {}", self.source.span_text(condition.span))
+                // A flag test is written as its letter there, by its own
+                // refusal's fix (`plans/17-flag-tests.md`).
+                let condition = letter(condition.kind)
+                    .unwrap_or_else(|| self.source.span_text(condition.span).to_owned());
+                format!("while {condition}")
             }
             LoopCondition::Always => "always".to_owned(),
             LoopCondition::Never => "never".to_owned(),
@@ -589,62 +626,73 @@ impl Checker<'_> {
         );
     }
 
-    /// `c+?` / `c-?` and the overflow relations `<<=` / `>>=`: the flag tests
-    /// K816 writes `c?` / `!c?` and `v?` / `!v?`.
-    fn condition(&mut self, condition: &BranchCondition) {
-        let text = self.source.span_text(condition.span);
-        let (code, title, written) = match condition.kind {
+    /// `c+?` / `c-?`, the overflow relations `<<=` / `>>=`, and sub-plan O's
+    /// `c?` / `!c?`: the flag tests K816 writes as the flag's letter after
+    /// `if` or `while` (`plans/17-flag-tests.md`).
+    ///
+    /// `guarded` says the condition already stands after `if` or `while`.
+    /// Where it does not, the condition's `K816-K65-0011` writes `if` and the
+    /// letter in one edit, and this refusal carries no fix of its own.
+    fn condition(&mut self, condition: &BranchCondition, guarded: bool) {
+        let Some(written) = letter(condition.kind) else {
+            return;
+        };
+        let (code, title, note) = match condition.kind {
+            // Already K816's.
             BranchConditionKind::Flag {
-                set,
+                spelling: FlagTestSpelling::Letter,
+                ..
+            } => return,
+            BranchConditionKind::Flag {
                 spelling: FlagTestSpelling::Signed,
                 ..
+            } => (
+                DiagnosticCode::K65_SIGNED_FLAG_TEST,
+                "a K816 source writes a flag test as its letter",
+                "`c` after `if` or `while` is `c+?`, and `!c` is `c-?`: the same branch",
+            ),
+            BranchConditionKind::Flag {
+                spelling: FlagTestSpelling::Bare,
+                ..
             } => {
-                let letter = text.get(..1).unwrap_or("c");
+                // Sub-plan O's `c?` alone in front of a block is the bare
+                // condition's refusal, which writes the letter itself.
+                if !guarded {
+                    return;
+                }
                 (
-                    DiagnosticCode::K65_SIGNED_FLAG_TEST,
-                    "a K816 source writes a flag test without its sign",
-                    if set {
-                        format!("{letter}?")
-                    } else {
-                        format!("!{letter}?")
-                    },
+                    DiagnosticCode::FLAG_TEST_MARK,
+                    "a K816 source writes a flag test as its letter",
+                    "after `if` or `while` the position says a name is a test, so the `?` that \
+                     marked one says nothing; `c` and `c?` are the same branch",
                 )
             }
-            BranchConditionKind::Comparison(ComparisonKind::OverflowSet) => (
+            _ => (
                 DiagnosticCode::K65_OVERFLOW_RELATION,
                 "a K816 source tests the overflow flag by its name",
-                "v?".to_owned(),
+                "`<<=` and `>>=` read as relations and are the overflow flag, and `<<=` is one \
+                 character from the comparison `<=`",
             ),
-            BranchConditionKind::Comparison(ComparisonKind::OverflowClear) => (
-                DiagnosticCode::K65_OVERFLOW_RELATION,
-                "a K816 source tests the overflow flag by its name",
-                "!v?".to_owned(),
-            ),
-            _ => return,
         };
-        let note = if code == DiagnosticCode::K65_OVERFLOW_RELATION {
-            "`<<=` and `>>=` read as relations and are the overflow flag, and `<<=` is one \
-             character from the comparison `<=`"
-        } else {
-            "`c?` is `c+?` and `!c?` is `c-?`: the same branch"
-        };
-        self.diagnostics.push(
-            Diagnostic::error(
-                code,
-                title,
-                Label::new(condition.span, format!("K816 writes this test `{written}`")),
-            )
-            .with_note(note)
-            .with_help(format!(
-                "write `{written}`, or name the file `.k65` to keep K65's spelling"
-            ))
-            .with_fix(Fix {
+        let mut diagnostic = Diagnostic::error(
+            code,
+            title,
+            Label::new(condition.span, format!("K816 writes this test `{written}`")),
+        )
+        .with_note(note)
+        .with_help(format!(
+            "write `{}{written}`, or name the file `.k65` to keep K65's spelling",
+            if guarded { "" } else { "if " }
+        ))
+        .with_docs("doc/syntax-reference.md#branch-and-flow-control");
+        if guarded {
+            diagnostic = diagnostic.with_fix(Fix {
                 title: format!("write `{written}`"),
                 applicability: Applicability::MachineApplicable,
                 edits: vec![TextEdit::replace(condition.span, written.clone())],
-            })
-            .with_docs("doc/syntax-reference.md#branch-and-flow-control"),
-        );
+            });
+        }
+        self.diagnostics.push(diagnostic);
     }
 
     /// `a!!` / `a??`: the push and pull K816 writes `push a` / `pull a`.

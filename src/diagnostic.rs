@@ -528,6 +528,9 @@ impl DiagnosticCode {
     /// `if done { }`, `if d { }`. The four are `c`, `z`, `n` and `v`
     /// (`plans/17-flag-tests.md` decision 3).
     pub const FLAG_TEST_LETTER: Self = Self("K816-E0181");
+    /// `if c?` / `while !z?` in a K816 source, which writes the letter:
+    /// `if c`, `while !z` (`plans/17-flag-tests.md` decision 2).
+    pub const FLAG_TEST_MARK: Self = Self("K816-E0182");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -874,6 +877,7 @@ mod tests {
         DiagnosticCode::CONDITION_COMPARE,
         DiagnosticCode::K816_SPELLING_IN_K65,
         DiagnosticCode::FLAG_TEST_LETTER,
+        DiagnosticCode::FLAG_TEST_MARK,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

@@ -35,7 +35,7 @@ func drain @a8 @i8 {
 func bump @a8 @i8 {
     a = mode
     if == goto .done
-    if a&?key !z? {
+    if a&?key !z {
         count++
     }
 .done:

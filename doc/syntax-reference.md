@@ -524,8 +524,8 @@ var SCREEN=0x400
 
 func main {
   x=0 loop {
-    a=hello,x if !z?{ SCREEN,x=a x++ }
-  } while !z?
+    a=hello,x if !z{ SCREEN,x=a x++ }
+  } while !z
 
   return
 }
@@ -571,7 +571,7 @@ func draw_level {
     a|0x20
     x=a .LD: screen_2=x x++ .RD: screen_2+1=x
 
-    c+ a=.LT+1 a-2 .LT+1=.LD+1=a if !c?{ .LT+2-- .RT+2-- .LD+2-- .RD+2-- } x=a x++ .RT+1=.RD+1=x
+    c+ a=.LT+1 a-2 .LT+1=.LD+1=a if !c{ .LT+2-- .RT+2-- .LD+2-- .RD+2-- } x=a x++ .RT+1=.RD+1=x
 
     y--
   } while !=
@@ -828,7 +828,7 @@ func check @a8 @i8 (a) -> a, c {   // the carry is a result
 
 func caller @a8 @i8 {
   check a -> a, c
-  if !c? { ... }                   // reading an answer
+  if !c { ... }                   // reading an answer
 }
 ```
 
@@ -2124,9 +2124,9 @@ ASL  Shift Left One Bit (Memory or Accumulator)
 - `if >= { ... }`
 - `if < goto label`
 - `loop { ... } while <`
-- `if c? { ... }`
-- `if !c? goto label`
-- `loop { ... } while !c?`
+- `if c { ... }`
+- `if !c goto label`
+- `loop { ... } while !c`
 
 ```none
 BCC  Branch on Carry Clear
@@ -2146,9 +2146,9 @@ BCC  Branch on Carry Clear
 - `if < { ... }`
 - `if >= goto label`
 - `loop { ... } while >=`
-- `if !c? { ... }`
-- `if c? goto label`
-- `loop { ... } while c?`
+- `if !c { ... }`
+- `if c goto label`
+- `loop { ... } while c`
 
 ```none
 BCS  Branch on Carry Set
@@ -2168,9 +2168,9 @@ BCS  Branch on Carry Set
 - `if != { ... }`
 - `if == goto label`
 - `loop { ... } while ==`
-- `if !z? { ... }`
-- `if z? goto label`
-- `loop { ... } while z?`
+- `if !z { ... }`
+- `if z goto label`
+- `loop { ... } while z`
 
 ```none
 BEQ  Branch on Result Zero
@@ -2213,9 +2213,9 @@ BIT  Test Bits in Memory with Accumulator
 - `if >=0 { ... }`
 - `if <0 goto label`
 - `loop { ... } while <0`
-- `if !n? { ... }`
-- `if n? goto label`
-- `loop { ... } while n?`
+- `if !n { ... }`
+- `if n goto label`
+- `loop { ... } while n`
 
 ```none
 BMI  Branch on Result Minus
@@ -2235,9 +2235,9 @@ BMI  Branch on Result Minus
 - `if == { ... }`
 - `if != goto label`
 - `loop { ... } while !=`
-- `if z? { ... }`
-- `if !z? goto label`
-- `loop { ... } while !z?`
+- `if z { ... }`
+- `if !z goto label`
+- `loop { ... } while !z`
 
 ```none
 BNE  Branch on Result not Zero
@@ -2257,9 +2257,9 @@ BNE  Branch on Result not Zero
 - `if <0 { ... }`
 - `if >=0 goto label`
 - `loop { ... } while >=0`
-- `if n? { ... }`
-- `if !n? goto label`
-- `loop { ... } while !n?`
+- `if n { ... }`
+- `if !n goto label`
+- `loop { ... } while !n`
 
 ```none
 BPL  Branch on Result Plus
@@ -2299,9 +2299,9 @@ BRK  Force Break
 
 ### `BVC` branch on overflow clear
 
-- `if v? { ... }`
-- `if !v? goto label`
-- `loop { ... } while !v?`
+- `if v { ... }`
+- `if !v goto label`
+- `loop { ... } while !v`
 
 ```none
 BVC  Branch on Overflow Clear
@@ -2318,9 +2318,9 @@ BVC  Branch on Overflow Clear
 
 ### `BVS` branch on overflow set
 
-- `if !v? { ... }`
-- `if v? goto label`
-- `loop { ... } while v?`
+- `if !v { ... }`
+- `if v goto label`
+- `loop { ... } while v`
 
 ```none
 BVS  Branch on Overflow Set
@@ -4036,7 +4036,7 @@ var mem = $10
 func work @a8 @i8 {
   a?10
   if >= { x++ }         // x++ only when A >= 10 (BCC skips it)
-  if !c? { mem++ }      // mem++ only when the carry is clear (BCS skips it)
+  if !c { mem++ }      // mem++ only when the carry is clear (BCS skips it)
 }
 ```
 
@@ -4046,7 +4046,7 @@ func work @a8 @i8 {
 func work @a8 @i8 {
   a?10
   if < goto done        // to `done` when A < 10 (BCC)
-  if !c? goto done      // to `done` when the carry is clear (BCC)
+  if !c goto done      // to `done` when the carry is clear (BCC)
   x++
 done:
 }
@@ -4178,7 +4178,7 @@ var status = $D000
 var ready = $10
 
 func work @a8 @i8 {
-  loop { a&?status } while !n?   // BIT-based: loops while bit 7 of `status` is clear
+  loop { a&?status } while !n   // BIT-based: loops while bit 7 of `status` is clear
   loop { a = ready } while >=0   // LDA-based: loops while `ready` is positive
 }
 ```

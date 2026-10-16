@@ -132,8 +132,8 @@ fn respelled_pairs() -> Vec<(String, String)> {
             "loop { loop { x++ } while != \n y++ } while !=".into(),
             "{ { x++ } != \n y++ } !=".into(),
         ),
-        ("if v? { x++ }".into(), "<<={ x++ }".into()),
-        ("if !v? goto .out".into(), ">>= goto .out".into()),
+        ("if v { x++ }".into(), "<<={ x++ }".into()),
+        ("if !v goto .out".into(), ">>= goto .out".into()),
         ("push a, x, y".into(), "a!! x!! y!!".into()),
         ("pull y, x, a".into(), "y?? x?? a??".into()),
         ("push p, dbr, dpr".into(), "p!! dbr!! dpr!!".into()),
@@ -145,8 +145,8 @@ fn respelled_pairs() -> Vec<(String, String)> {
     ];
     for flag in ['c', 'z', 'n', 'v'] {
         for (bare, signed) in [
-            (format!("{flag}?"), format!("{flag}+?")),
-            (format!("!{flag}?"), format!("{flag}-?")),
+            (format!("{flag}"), format!("{flag}+?")),
+            (format!("!{flag}"), format!("{flag}-?")),
         ] {
             pairs.push((format!("if {bare} {{ x++ }}"), format!("{signed}{{ x++ }}")));
             pairs.push((
@@ -566,7 +566,7 @@ fn if_pairs() -> Vec<(&'static str, &'static str)> {
     vec![
         // A conditional block, with and without `else`.
         ("if >= { x++ }", ">= { x++ }"),
-        ("if !c? { x++ }", "c-?{ x++ }"),
+        ("if !c { x++ }", "c-?{ x++ }"),
         ("if == { x++ } else { y++ }", "== { x++ } else { y++ }"),
         // `else if` is the `if` nested in the `else`, to any depth.
         (
@@ -574,7 +574,7 @@ fn if_pairs() -> Vec<(&'static str, &'static str)> {
             "== { x++ } else { < { y++ } else { x-- } }",
         ),
         (
-            "if == { x++ } else if < { y++ } else if v? { x-- }",
+            "if == { x++ } else if < { y++ } else if v { x-- }",
             "== { x++ } else { < { y++ } else { <<={ x-- } } }",
         ),
         // The compare in the `if`, on one line or two in K65.
@@ -582,7 +582,7 @@ fn if_pairs() -> Vec<(&'static str, &'static str)> {
         ("if a?#10 < { x++ }", "a?#10 < { x++ }"),
         ("if a?flags+1 >= { x++ }", "a?flags+1\n >= { x++ }"),
         ("if x?#5 != { y++ }", "x?#5\n != { y++ }"),
-        ("if a&?flags !z? { y++ }", "a&?flags\n z-?{ y++ }"),
+        ("if a&?flags !z { y++ }", "a&?flags\n z-?{ y++ }"),
         ("if a?#10 <= { x++ }", "a?#10\n <= { x++ }"),
         // … and in an `else if`, where it runs only on that path.
         (
@@ -591,7 +591,7 @@ fn if_pairs() -> Vec<(&'static str, &'static str)> {
         ),
         // A conditional jump of each kind.
         ("if < goto .out", "< goto .out"),
-        ("if c? goto .out", "c+? goto .out"),
+        ("if c goto .out", "c+? goto .out"),
         ("if a?flags == goto .out", "a?flags\n == goto .out"),
         (
             "loop { x++\n if == break } always",
@@ -713,7 +713,7 @@ fn a_compare_slot_takes_only_a_compare() {
     }
     for body in [
         "if a?#1 == { x++ }",
-        "if a&?flags !z? goto .out",
+        "if a&?flags !z goto .out",
         "loop { x++ } while y?#2 <",
     ] {
         let (codes, _) = fixed("unit.kk", &unit(body));
@@ -794,6 +794,63 @@ fn every_letter_flag_test_compiles_to_the_bytes_of_its_k65_spelling() {
             code("unit.kk", &unit(&letter)),
             code("unit.k65", &unit(&k65)),
             "`{letter}` and `{k65}`"
+        );
+    }
+}
+
+/// Sub-plan R: `c?` after `if` or `while` is refused in K816 with a fix that
+/// drops the `?`, and the fix compiles to the bytes of the letter form —
+/// every pair of `letter_pairs`, written with the `?`
+/// (`plans/17-flag-tests.md` decision 2).
+#[test]
+fn a_marked_flag_test_is_refused_and_its_fix_drops_the_mark() {
+    for (letter, _) in letter_pairs() {
+        let marked = ["c", "z", "n", "v"]
+            .iter()
+            .fold(letter.clone(), |text, flag| {
+                text.replace(&format!(" {flag} "), &format!(" {flag}? "))
+                    .replace(&format!("!{flag} "), &format!("!{flag}? "))
+                    .replace(&format!(" {flag}\n"), &format!(" {flag}?\n"))
+                    .replace(&format!("!{flag}\n"), &format!("!{flag}?\n"))
+            });
+        let marked = if marked.ends_with(|c: char| "cznv".contains(c)) {
+            format!("{marked}?")
+        } else {
+            marked
+        };
+        assert_ne!(marked, letter, "the `?` was not written into `{letter}`");
+        let (codes, repaired) = fixed("unit.kk", &unit(&marked));
+        assert!(codes.contains(&"K816-E0182"), "`{marked}`: {codes:?}");
+        assert_eq!(
+            code("unit.kk", &repaired),
+            code("unit.kk", &unit(&letter)),
+            "`{marked}` fixed to\n{repaired}"
+        );
+    }
+}
+
+/// Where a K65 flag test stands with no `if` — `c+?{ x++ }` — the condition's
+/// `K816-K65-0011` writes `if` and the letter in one edit, and the flag
+/// test's own refusal offers no fix: two fixes over one span would collide,
+/// and either alone would leave source that does not parse.
+#[test]
+fn a_bare_k65_flag_test_is_fixed_once() {
+    for body in ["c+?{ x++ }", "z-? goto .out", "<<={ x++ }"] {
+        let mut map = SourceMap::new();
+        let file = map.add_file("unit.kk", unit(body));
+        let result = compile_to_ca65(&map, file, &Options::default());
+        let fixes: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| !d.fixes.is_empty())
+            .map(|d| d.code.as_str())
+            .collect();
+        assert_eq!(fixes, ["K816-K65-0011"], "`{body}`");
+        let (_, repaired) = fixed("unit.kk", &unit(body));
+        assert_eq!(
+            code("unit.kk", &repaired).0,
+            Vec::<&str>::new(),
+            "`{body}` → {repaired}"
         );
     }
 }

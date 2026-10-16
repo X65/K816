@@ -104,6 +104,8 @@ fn spell_condition(condition: crate::ast::BranchConditionKind) -> String {
                 (FlagTestSpelling::Bare, false) => format!("!{letter}?"),
                 (FlagTestSpelling::Signed, true) => format!("{letter}+?"),
                 (FlagTestSpelling::Signed, false) => format!("{letter}-?"),
+                (FlagTestSpelling::Letter, true) => letter.to_owned(),
+                (FlagTestSpelling::Letter, false) => format!("!{letter}"),
             }
         }
     }

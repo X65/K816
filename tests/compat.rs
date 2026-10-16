@@ -1354,6 +1354,7 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     ("LoopSpelling", "Keyword", "k816-loop-keyword"),
     ("FlagTestSpelling", "Signed", "branchop"),
     ("FlagTestSpelling", "Bare", "k816-bare-flag-test"),
+    ("FlagTestSpelling", "Letter", "k816-bare-flag-test"),
     // ---- CallArgument --------------------------------------------------
     ("CallArgument", "Register", "k816-call-contracts"),
     ("CallArgument", "Immediate", "k816-call-contracts"),

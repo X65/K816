@@ -740,3 +740,60 @@ fn a_k65_source_refuses_k816s_respellings_and_their_fixes_change_no_byte() {
         );
     }
 }
+
+/// Sub-plan R: a flag test by its letter after `if` or `while`, against the
+/// K65 statements it stands for — every flag, both senses, every position a
+/// condition takes, and after a compare in the slot
+/// (`plans/17-flag-tests.md` decision 5).
+fn letter_pairs() -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for flag in ['c', 'z', 'n', 'v'] {
+        for (letter, signed) in [
+            (format!("{flag}"), format!("{flag}+?")),
+            (format!("!{flag}"), format!("{flag}-?")),
+        ] {
+            pairs.push((
+                format!("if {letter} {{ x++ }}"),
+                format!("{signed}{{ x++ }}"),
+            ));
+            pairs.push((
+                format!("if {letter} goto .out"),
+                format!("{signed} goto .out"),
+            ));
+            pairs.push((
+                format!("loop {{ x++\n if {letter} break }} always"),
+                format!("{{ x++\n {signed} break }} always"),
+            ));
+            pairs.push((
+                format!("loop {{ x++\n if {letter} repeat\n y++ }} always"),
+                format!("{{ x++\n {signed} repeat\n y++ }} always"),
+            ));
+            pairs.push((
+                format!("loop {{ x++ }} while {letter}"),
+                format!("{{ x++ }} {signed}"),
+            ));
+            pairs.push((
+                format!("if a&?flags {letter} {{ y++ }}"),
+                format!("a&?flags\n {signed}{{ y++ }}"),
+            ));
+            pairs.push((
+                format!("loop {{ x++ }} while a?flags {letter}"),
+                format!("{{ x++\n a?flags }} {signed}"),
+            ));
+        }
+    }
+    pairs
+}
+
+#[test]
+fn every_letter_flag_test_compiles_to_the_bytes_of_its_k65_spelling() {
+    let pairs = letter_pairs();
+    assert_eq!(pairs.len(), 4 * 2 * 7);
+    for (letter, k65) in pairs {
+        assert_eq!(
+            code("unit.kk", &unit(&letter)),
+            code("unit.k65", &unit(&k65)),
+            "`{letter}` and `{k65}`"
+        );
+    }
+}

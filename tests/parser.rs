@@ -488,6 +488,8 @@ fn dump_condition(kind: BranchConditionKind) -> String {
                 (FlagTestSpelling::Signed, false) => format!("{letter}-?"),
                 (FlagTestSpelling::Bare, true) => format!("{letter}?"),
                 (FlagTestSpelling::Bare, false) => format!("!{letter}?"),
+                (FlagTestSpelling::Letter, true) => letter.to_owned(),
+                (FlagTestSpelling::Letter, false) => format!("!{letter}"),
             }
         }
     }
@@ -3313,4 +3315,59 @@ fn a_malformed_if_is_phrased_for_the_if() {
         titles,
         ["expected a condition, then a `{ ... }` block or a jump"]
     );
+}
+
+/// Sub-plan R: after `if` or `while` a name is a flag test. The four flags
+/// build the same test their `?` spelling does, with the spelling recorded;
+/// `o` is `o?`'s refusal, and any other name is `K816-E0181`
+/// (`plans/17-flag-tests.md` decision 3).
+#[test]
+fn a_flag_test_by_its_letter_names_one_of_the_four() {
+    use k816::ast::{BranchConditionKind, FlagTestSpelling, TestableFlag};
+    let source = "func f @a8 @i8 {\n    if z { x++ }\n    if !C goto .out\n.out:\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("letter.kk", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(function) = &result.file.items[0].kind else {
+        panic!("expected a function");
+    };
+    let conditions: Vec<_> = function
+        .body
+        .statements
+        .iter()
+        .filter_map(|statement| match &statement.kind {
+            StatementKind::Conditional(conditional) => Some(conditional.condition.kind),
+            StatementKind::ConditionalJump(jump) => Some(jump.condition.kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        conditions,
+        [
+            BranchConditionKind::Flag {
+                flag: TestableFlag::Zero,
+                set: true,
+                spelling: FlagTestSpelling::Letter,
+            },
+            BranchConditionKind::Flag {
+                flag: TestableFlag::Carry,
+                set: false,
+                spelling: FlagTestSpelling::Letter,
+            },
+        ]
+    );
+
+    for (body, code) in [
+        ("if done { x++ }", DiagnosticCode::FLAG_TEST_LETTER),
+        ("if d { x++ }", DiagnosticCode::FLAG_TEST_LETTER),
+        ("loop { x++ } while !i", DiagnosticCode::FLAG_TEST_LETTER),
+        ("if o { x++ }", DiagnosticCode::K65_OVERFLOW_FLAG_SPELLING),
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("letter.kk", format!("func f @a8 @i8 {{\n    {body}\n}}\n"));
+        let result = parse_source(map.file(id), None);
+        let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, vec![code], "`{body}`");
+    }
 }

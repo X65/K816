@@ -524,6 +524,10 @@ impl DiagnosticCode {
     /// an `if` or a `while` (`plans/16-if-statement.md` decision 10). A
     /// `.k65` source takes what K816 adds and nothing it respells.
     pub const K816_SPELLING_IN_K65: Self = Self("K816-E0180");
+    /// A name after `if` or `while` that is not a flag a branch can test:
+    /// `if done { }`, `if d { }`. The four are `c`, `z`, `n` and `v`
+    /// (`plans/17-flag-tests.md` decision 3).
+    pub const FLAG_TEST_LETTER: Self = Self("K816-E0181");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -869,6 +873,7 @@ mod tests {
         DiagnosticCode::CONST_SIZE_RANGE,
         DiagnosticCode::CONDITION_COMPARE,
         DiagnosticCode::K816_SPELLING_IN_K65,
+        DiagnosticCode::FLAG_TEST_LETTER,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

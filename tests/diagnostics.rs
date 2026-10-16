@@ -630,6 +630,12 @@ const FAMILY: &[Case] = &[
 /// and two of E's come from lowering — or it cannot be reached from source at
 /// all, in which case the entry says why and that claim is the coverage.
 const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
+    // The builder decides a flag letter as it builds the condition, so the
+    // refusal is a parse diagnostic and `diagnostic_for` never sees one.
+    (
+        "K816-E0181",
+        "tests/parser.rs: a_flag_test_by_its_letter_names_one_of_the_four",
+    ),
     // A spelling only K816 has is refused in a `.k65` source, and
     // `diagnostic_for` compiles every case as `.k816`.
     (

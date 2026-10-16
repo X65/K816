@@ -390,14 +390,17 @@ pub enum BranchConditionKind {
     },
 }
 
-/// How a flag test was written. Both mean the same branch; a K816 source may
-/// use only the second (`plans/14-readable-hla.md` decisions 4 and 11).
+/// How a flag test was written. All three mean the same branch; a K816
+/// source may use only the last (`plans/14-readable-hla.md` decisions 4 and
+/// 11, `plans/17-flag-tests.md` decision 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlagTestSpelling {
     /// K65's `c+?` / `c-?`.
     Signed,
-    /// K816's `c?` / `!c?`.
+    /// Sub-plan O's `c?` / `!c?`.
     Bare,
+    /// `c` / `!c` after `if` or `while`, which say it is a test.
+    Letter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

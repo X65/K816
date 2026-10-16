@@ -1218,7 +1218,7 @@ impl StrictWalk<'_> {
                 self.mark("k816-postfix-le", condition.span);
             }
             BranchConditionKind::Flag {
-                spelling: FlagTestSpelling::Bare,
+                spelling: FlagTestSpelling::Bare | FlagTestSpelling::Letter,
                 ..
             } => self.mark("k816-bare-flag-test", condition.span),
             _ => {}

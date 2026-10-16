@@ -1489,6 +1489,9 @@ impl AstBuilder<'_> {
             self.unexpected(parent, "a branch condition");
             return fallback;
         };
+        if node.kind() == "flag_condition" {
+            return self.flag_condition(node).unwrap_or(fallback);
+        }
         let text = self.text(node).to_ascii_lowercase();
         let kind = match text.as_str() {
             "<" => BranchConditionKind::Comparison(ComparisonKind::Less),
@@ -1549,6 +1552,55 @@ impl AstBuilder<'_> {
             kind,
             span: self.span(node),
         }
+    }
+
+    /// `z`, `!c` after `if` or `while`: a flag test by its letter
+    /// (`plans/17-flag-tests.md`). The grammar takes any identifier there, so
+    /// that a name which is not a testable flag is refused with a sentence
+    /// rather than a parse error.
+    fn flag_condition(&mut self, node: Node<'_>) -> Option<BranchCondition> {
+        let name = node.child_by_field_name("flag")?;
+        let letter = self.text(name).to_owned();
+        let flag = match letter.to_ascii_lowercase().as_str() {
+            "c" => TestableFlag::Carry,
+            "z" => TestableFlag::Zero,
+            "n" => TestableFlag::Negative,
+            "v" => TestableFlag::Overflow,
+            // The same refusal `o?` gets, from the same place.
+            "o" => {
+                self.diagnostics
+                    .push(crate::compat::k65_overflow_flag_spelling(self.span(name)));
+                return None;
+            }
+            _ => {
+                let span = self.span(name);
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::FLAG_TEST_LETTER,
+                        format!("`{letter}` is not a flag a branch can test"),
+                        Label::new(span, "after `if` or `while`, a name is a flag test"),
+                    )
+                    .with_note(
+                        "a branch tests the carry `c`, zero `z`, negative `n` or overflow `v`; \
+                         `d` and `i` are flags no branch reads",
+                    )
+                    .with_help(
+                        "write one of `c`, `z`, `n` or `v` (`!` before it for a clear flag), or a \
+                         relation such as `==` after a compare",
+                    )
+                    .with_docs("doc/syntax-reference.md#conditions"),
+                );
+                return None;
+            }
+        };
+        Some(BranchCondition {
+            kind: BranchConditionKind::Flag {
+                flag,
+                set: node.child_by_field_name("negated").is_none(),
+                spelling: FlagTestSpelling::Letter,
+            },
+            span: self.span(node),
+        })
     }
 
     fn conditional_block(&mut self, node: Node<'_>) -> Statement {

@@ -107,8 +107,8 @@ spelling of them, with a fix that writes its own:
 | K65 spelling | K816 spelling | Refused in K816 as |
 |---|---|---|
 | `{ x-- } !=`, `{ } always`, `{ } never` | `loop { x-- } while !=`, `loop { } always`, `loop { } never` | `K816-K65-0007` |
-| `c+?`, `c-?` (and `z`, `n`, `v`) | `c?`, `!c?` | `K816-K65-0008` |
-| `<<=`, `>>=` | `v?`, `!v?` | `K816-K65-0009` |
+| `c+?`, `c-?` (and `z`, `n`, `v`) | `c`, `!c` after `if` or `while` (sub-plan O's `c?` is `K816-E0182` since sub-plan R) | `K816-K65-0008` |
+| `<<=`, `>>=` | `v`, `!v` after `if` or `while` | `K816-K65-0009` |
 | `a!!`, `a??` | `push a`, `pull a` | `K816-K65-0010` |
 | `>= { }`, `< goto done`, `== break`, `else { == { } }` | `if >= { }`, `if < goto done`, `if == break`, `else if == { }` | `K816-K65-0011` |
 | `a?10` before `< { }`; `x?10` as a loop body's last statement | `if a?10 < { }`; `loop { } while x?10 <` | — (the first spelling is valid K816 too) |

@@ -382,7 +382,8 @@ pub struct BranchCondition {
 pub enum BranchConditionKind {
     /// `<`, `>=`, `==`, `!=`, `<0`, `>=0`, `<=`, `>`, `<<=`, `>>=`
     Comparison(ComparisonKind),
-    /// `c+?`, `n-?`, `z+?`, `v-?` — or K816's `c?`, `!n?`, `z?`, `!v?`
+    /// `c+?`, `n-?`, `z+?`, `v-?` — or sub-plan O's `c?`, `!n?`, or K816's
+    /// letter after `if` / `while`, `c`, `!n`
     Flag {
         flag: TestableFlag,
         set: bool,

@@ -163,7 +163,8 @@ pub fn k65_overflow_flag_spelling(span: Span) -> Diagnostic {
          which is one flag under two letters; K816 uses `v` for both",
     )
     .with_help(
-        "`v-` is `CLV`, and `!v?` / `v?` are the branch tests (`v-?` / `v+?` in a `.k65` source)",
+        "`v-` is `CLV`, and `if !v` / `if v` are the branch tests (`v-?` / `v+?` in a `.k65` \
+         source)",
     )
     .with_docs("doc/k65-compat.md")
 }

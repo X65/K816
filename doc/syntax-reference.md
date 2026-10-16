@@ -1990,9 +1990,9 @@ C ....  Carry
 E ....  Emulation mode (65816, hidden, can be exchanged with Carry flag via XCE instruction)
 ```
 
-Flag shorthand operations: `c+` (SEC), `c-` (CLC), `d+` (SED), `d-` (CLD), `i+` (SEI), `i-` (CLI), `v-` (CLV). A flag something has set is tested with its letter and a `?` — `c?` when it is set, `!c?` when it is clear — for `c`, `z`, `n` and `v` ([Branch and Flow Control](#branch-and-flow-control)).
+Flag shorthand operations: `c+` (SEC), `c-` (CLC), `d+` (SED), `d-` (CLD), `i+` (SEI), `i-` (CLI), `v-` (CLV). A flag something has set is tested by its letter after `if` or `while` — `if c` when it is set, `if !c` when it is clear — for `c`, `z`, `n` and `v` ([Branch and Flow Control](#branch-and-flow-control)).
 
-The overflow flag is `v` in every construct. The K65 grammar is not consistent about it — the set/clear shorthand is `o-` and the branch tests are `v-?` / `v+?`, one flag under two letters — so `o` in the flag slot is refused with `K816-K65-0006` and `v` named. K816 tests it with `v?` / `!v?`. `o` remains an ordinary identifier: `var o` is a declaration. There is no `SEV` on the 65816, so `v+` has no form at all.
+The overflow flag is `v` in every construct. The K65 grammar is not consistent about it — the set/clear shorthand is `o-` and the branch tests are `v-?` / `v+?`, one flag under two letters — so `o` in the flag slot is refused with `K816-K65-0006` and `v` named. K816 tests it with `if v` / `if !v`. `o` remains an ordinary identifier: `var o` is a declaration. There is no `SEV` on the 65816, so `v+` has no form at all.
 
 ### Processor Stack
 
@@ -4003,20 +4003,20 @@ MVP  Block Move Positive (source > dest, copy descending)
 
 A condition tests flags something has already set. It is never a comparison of its own: a compare is a statement — `a?10`, `x?mem`, `a&?mem` — and the condition after it reads the flags the compare left. That is why a condition has no operand, and why `if (a < x)` has no spelling: the 65816 cannot compare two registers, and nothing here pretends it can. The compare may be *written* in the `if` — `if a?10 < { … }` — and it is still that statement, run before the condition reads the flags it set ([The Compare in an `if` or a `while`](#the-compare-in-an-if-or-a-while)).
 
-After a compare the condition is a relation — `<`, `>=`, `==`, `!=`, `<0`, `>=0` — which says what the compare found, and the carry convention behind it is the compiler's to remember. For flags something else set — a load, a shift, an addition, a call answering in the carry — the condition names the flag: `c?` when it is set and `!c?` when it is clear, for `c`, `z`, `n` and `v`.
+After a compare the condition is a relation — `<`, `>=`, `==`, `!=`, `<0`, `>=0` — which says what the compare found, and the carry convention behind it is the compiler's to remember. For flags something else set — a load, a shift, an addition, a call answering in the carry — the condition is the flag's letter: `c` when it is set and `!c` when it is clear, for `c`, `z`, `n` and `v`. After `if` or `while` the position says a name is a test, so a flag test needs no mark; `if c?` is sub-plan O's spelling, refused with a fix that drops the `?` (`K816-E0182`), and a name that is not one of the four is `K816-E0181`.
 
 ### Conditions
 
 Condition|Flag test|Taken by|A block skips with
 :---|:---|:---|:---
-`<`|`!c?`|BCC|BCS
-`>=`|`c?`|BCS|BCC
-`==`|`z?`|BEQ|BNE
-`!=`|`!z?`|BNE|BEQ
-`<0`|`n?`|BMI|BPL
-`>=0`|`!n?`|BPL|BMI
-—|`v?`|BVS|BVC
-—|`!v?`|BVC|BVS
+`<`|`!c`|BCC|BCS
+`>=`|`c`|BCS|BCC
+`==`|`z`|BEQ|BNE
+`!=`|`!z`|BNE|BEQ
+`<0`|`n`|BMI|BPL
+`>=0`|`!n`|BPL|BMI
+—|`v`|BVS|BVC
+—|`!v`|BVC|BVS
 
 A condition goes in three places, and in each the thing happens when the condition holds:
 
@@ -4192,8 +4192,8 @@ K65|K816|Refused in K816 as
 `{ x-- } !=`|`loop { x-- } while !=`|`K816-K65-0007`
 `{ ... } always`, `{ ... } never`|`loop { ... } always`, `loop { ... } never`|`K816-K65-0007`
 `nocross { ... } !=`|`nocross loop { ... } while !=`|`K816-K65-0007`
-`c+?`, `c-?`|`c?`, `!c?`|`K816-K65-0008`
-`<<=`, `>>=`|`v?`, `!v?`|`K816-K65-0009`
+`c+?`, `c-?`|`c`, `!c` after `if` or `while`|`K816-K65-0008`
+`<<=`, `>>=`|`v`, `!v` after `if` or `while`|`K816-K65-0009`
 `a!!`, `a??`|`push a`, `pull a`|`K816-K65-0010`
 `>= { ... }`, `< goto done`, `== break`|`if >= { ... }`, `if < goto done`, `if == break`|`K816-K65-0011`
 `else { == { ... } }`|`else if == { ... }`|`K816-K65-0011`, inside the `else`

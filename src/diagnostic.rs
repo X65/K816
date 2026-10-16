@@ -589,9 +589,11 @@ impl DiagnosticCode {
     /// `.k65` source keeps accepting them (`plans/14-readable-hla.md`
     /// decision 11), and each refusal's fix writes the K816 form.
     pub const K65_POSTFIX_LOOP: Self = Self("K816-K65-0007");
-    /// `c+?` / `c-?` in a K816 source, which writes `c?` / `!c?`.
+    /// `c+?` / `c-?` in a K816 source, which writes `c` / `!c` after `if` or
+    /// `while`.
     pub const K65_SIGNED_FLAG_TEST: Self = Self("K816-K65-0008");
-    /// `<<=` / `>>=` in a K816 source, which writes `v?` / `!v?`.
+    /// `<<=` / `>>=` in a K816 source, which writes `v` / `!v` after `if` or
+    /// `while`.
     pub const K65_OVERFLOW_RELATION: Self = Self("K816-K65-0009");
     /// `a!!` / `a??` in a K816 source, which writes `push a` / `pull a`.
     pub const K65_STACK_SHORTHAND: Self = Self("K816-K65-0010");

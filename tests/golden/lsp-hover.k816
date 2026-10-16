@@ -88,6 +88,8 @@ func work @a8 @i8 {
     // A field step and a subscript, which resolve through the layout.
     a = PAIR[1].hi
     a = HANDLER:sizeof
+    ldy #HANDLER.close:offsetof
+    ldx #PAIR:sizeof
 
     // An `inline` expansion, which binds both alias kinds at the use site.
     stash a, #LIMIT, #COUNTER -> a

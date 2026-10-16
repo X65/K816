@@ -113,6 +113,9 @@ pub struct SemanticModel {
     /// A field is not a symbol — it has no `SymbolId` and no scope of its own
     /// — so it is named by its layout and its position in it.
     pub field_references: BTreeMap<Span, FieldRef>,
+    /// What each `:sizeof` and `:offsetof` folded to, keyed by the span of
+    /// the query keyword.
+    pub metadata: BTreeMap<Span, crate::resolve::MetadataAnswer>,
     /// The declared register flow of each contract-bearing function.
     ///
     /// Separate from [`FunctionInfo`] because most functions have none: a
@@ -3031,6 +3034,7 @@ impl Analysis {
         self.model
             .field_references
             .extend(resolved.field_references);
+        self.model.metadata.extend(resolved.metadata);
         self.pending_references.extend(resolved.pending_references);
         self.diagnostics.extend(resolved.diagnostics);
     }

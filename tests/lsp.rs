@@ -1752,6 +1752,7 @@ fn hover_answers_for_one_symbol_of_every_kind() {
                 "No storage",
                 "- `.open` at `+0`",
                 "- `.close` at `+2`",
+                "Size: 4 bytes.",
             ],
         ),
         // A data label.
@@ -1817,6 +1818,38 @@ fn hover_answers_for_one_symbol_of_every_kind() {
             );
         }
     }
+}
+
+/// A `:sizeof` or `:offsetof` answers with the number it folded to, on its
+/// `:` as well as on its keyword — not with the statement's width state,
+/// which is what the hover fell through to before the resolver recorded the
+/// answer.
+#[test]
+fn hover_on_a_metadata_query_shows_the_number_it_folded_to() {
+    let table: &[(&str, u32, &str)] = &[
+        // An `abstract var`'s layout, on the colon and on the keyword.
+        ("HANDLER:sizeof", 7, "`:sizeof` — 4 bytes"),
+        ("HANDLER:sizeof", 8, "`:sizeof` — 4 bytes"),
+        // One element of a `* 4` variable, as an `ldx` immediate.
+        ("PAIR:sizeof", 4, "`:sizeof` — 2 bytes"),
+        ("PAIR:sizeof", 10, "`:sizeof` — 2 bytes"),
+        // A field's offset.
+        ("close:offsetof", 5, "`:offsetof` — `+2`"),
+        ("close:offsetof", 8, "`:offsetof` — `+2`"),
+    ];
+    for (needle, into, headline) in table {
+        let markdown = hover_at(&Options::default(), needle, 0, *into)
+            .unwrap_or_else(|| panic!("no hover at `{needle}` + {into}"));
+        assert!(
+            markdown.starts_with(headline),
+            "hover at `{needle}` + {into} does not open with `{headline}`:\n{markdown}"
+        );
+    }
+    // The base is still its own question: the name, and the field.
+    let base = hover_at(&Options::default(), "PAIR:sizeof", 0, 0).expect("a hover");
+    assert!(base.contains("a variable"), "{base}");
+    let field = hover_at(&Options::default(), "close:offsetof", 0, 0).expect("a hover");
+    assert!(field.contains("`.close` — a field"), "{field}");
 }
 
 /// One instruction of every operand class, sized against the widths the model

@@ -28,15 +28,16 @@
 //! one — an editor that shows a plausible wrong width is worse than one that
 //! shows nothing (`plans/07-lsp-tooling.md` decision 7).
 //!
-//! Four kinds of position answer, in this order: a name the symbol table
-//! knows, a `.field` step, a native mnemonic, and a statement inside a
-//! function body. A hover on `main` says which machine the *build* stated it
-//! is entered on, because that is the fact an annotation there is checked
-//! against and it is not in the source at all.
+//! Five kinds of position answer, in this order: a name the symbol table
+//! knows, a `.field` step, a `:sizeof` or `:offsetof` query, a native
+//! mnemonic, and a statement inside a function body. A hover on `main` says
+//! which machine the *build* stated it is entered on, because that is the
+//! fact an annotation there is checked against and it is not in the source at
+//! all.
 
 use std::fmt::Write as _;
 
-use crate::ast::{ItemKind, StatementKind, StmtId};
+use crate::ast::{ItemKind, MetadataQueryKind, StatementKind, StmtId};
 use crate::isa::RegisterWidth;
 use crate::op::{
     AxisExit, AxisState, EmulationExit, EmulationState, ExitContract, ModeState, Operand,
@@ -69,6 +70,7 @@ pub fn hover(analysis: &Analysis, file: FileId, offset: u32) -> Option<Hover> {
     }
     symbol_hover(analysis, &context)
         .or_else(|| field_hover(&context))
+        .or_else(|| metadata_hover(&context))
         .or_else(|| instruction_hover(&context))
         .or_else(|| statement_hover(&context))
 }
@@ -184,6 +186,11 @@ fn symbol_hover(analysis: &Analysis, context: &Context<'_>) -> Option<Hover> {
         }
         SymbolKind::AbstractVar { layout } => {
             out.push_str("\nNo storage: it answers `:sizeof` and `:offsetof` and nothing else.\n");
+            let _ = writeln!(
+                out,
+                "\nSize: {}.",
+                bytes(unit.model.symbols.layout(layout).size)
+            );
             out.push_str(&layout_fields(unit, layout));
         }
         SymbolKind::Label { size, .. } | SymbolKind::DataLabel { size } => {
@@ -212,6 +219,15 @@ fn symbol_hover(analysis: &Analysis, context: &Context<'_>) -> Option<Hover> {
         markdown: out,
         span,
     })
+}
+
+/// `1 byte`, `4 bytes`.
+fn bytes(count: u32) -> String {
+    if count == 1 {
+        "1 byte".to_owned()
+    } else {
+        format!("{count} bytes")
+    }
 }
 
 /// A sentence fragment as a sentence.
@@ -448,6 +464,50 @@ fn field_hover(context: &Context<'_>) -> Option<Hover> {
     Some(Hover {
         markdown: out,
         span,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Metadata queries
+// ---------------------------------------------------------------------------
+
+/// The number a `:sizeof` or `:offsetof` folded to, on its `:` or its keyword.
+///
+/// Read from what the resolver recorded, so the hover shows the operand the
+/// compiler emitted; a query that did not fold recorded nothing and answers
+/// nothing here.
+fn metadata_hover(context: &Context<'_>) -> Option<Hover> {
+    let [.., query, leaf] = context.path.as_slice() else {
+        return None;
+    };
+    if query.kind != "metadata_query" || !matches!(leaf.kind.as_str(), ":" | "sizeof" | "offsetof")
+    {
+        return None;
+    }
+    // The keyword is the query's last child, so its span ends where the
+    // query does — which is what tells it from a query nested in the base.
+    let answer = context
+        .unit
+        .model
+        .metadata
+        .iter()
+        .find(|(span, _)| span.file == query.span.file && span.end == query.span.end)
+        .map(|(_, answer)| *answer)?;
+    let markdown = match answer.query {
+        MetadataQueryKind::SizeOf => format!(
+            "`:sizeof` — {}\n\nThe size of one element. For a variable declared with \
+             `* N`, the whole array is N times this.\n",
+            bytes(answer.value)
+        ),
+        MetadataQueryKind::OffsetOf => format!(
+            "`:offsetof` — `+{}`\n\nThe field starts {} after the start of its variable.\n",
+            answer.value,
+            bytes(answer.value)
+        ),
+    };
+    Some(Hover {
+        markdown,
+        span: query.span,
     })
 }
 

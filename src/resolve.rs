@@ -776,6 +776,16 @@ fn datum_width_mismatch(
     .with_docs("doc/syntax-reference.md#typed-width-suffixes")
 }
 
+/// What one `:sizeof` or `:offsetof` folded to.
+///
+/// Recorded where the query was written so an editor can show the number the
+/// compiler used rather than work it out again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetadataAnswer {
+    pub query: MetadataQueryKind,
+    pub value: u32,
+}
+
 /// What one resolver run found.
 #[derive(Debug, Default)]
 pub struct Resolved {
@@ -785,6 +795,9 @@ pub struct Resolved {
     pub references: Vec<(Span, SymbolId)>,
     /// Where each `.field` step was written, and which field it selected.
     pub field_references: Vec<(Span, (LayoutId, usize))>,
+    /// What each `:sizeof` and `:offsetof` folded to, keyed by the query
+    /// keyword's span.
+    pub metadata: Vec<(Span, MetadataAnswer)>,
     /// Names the evaluator resolved to something the symbol table will hold
     /// *later* — an evaluator variable, or a section another unit defines.
     /// The caller looks each one up once the unit's declarations are
@@ -820,6 +833,8 @@ pub struct Resolver<'a> {
     references: Vec<(Span, SymbolId)>,
     /// Where each `.field` step was written, and what it selected.
     field_references: Vec<(Span, (LayoutId, usize))>,
+    /// What each metadata query folded to, and where its keyword was written.
+    metadata: Vec<(Span, MetadataAnswer)>,
     /// Names to look up once the unit's declarations are complete.
     pending_references: Vec<(Span, String)>,
     /// What an `inline`'s aliases stand for, while an expansion is lowered.
@@ -844,6 +859,7 @@ impl<'a> Resolver<'a> {
             referenced: Vec::new(),
             references: Vec::new(),
             field_references: Vec::new(),
+            metadata: Vec::new(),
             pending_references: Vec::new(),
             aliases: BTreeMap::new(),
             deferred: (false, false),
@@ -896,6 +912,7 @@ impl<'a> Resolver<'a> {
             referenced: self.referenced,
             references: self.references,
             field_references: self.field_references,
+            metadata: self.metadata,
             pending_references: self.pending_references,
             diagnostics: self.diagnostics,
         }
@@ -1512,25 +1529,33 @@ impl<'a> Resolver<'a> {
     /// — which has no address and exists for exactly this — answers both.
     fn metadata(&mut self, query: &MetadataQuery, span: Span) -> Option<KExpr> {
         let access = self.access(&query.base)?;
-        match query.query {
+        let value = match query.query {
             MetadataQueryKind::SizeOf => match access.place.size {
-                Some(size) => Some(KExpr::number(size)),
+                Some(size) => size,
                 None => {
                     self.report(no_metadata(query, span, "a variable or a field"));
-                    None
+                    return None;
                 }
             },
             // An offset is a field's distance from its variable's base, so a
             // path that selected no field has none — `counter:offsetof` is
             // not zero, it is a question about nothing.
             MetadataQueryKind::OffsetOf => match access.place.field {
-                Some(_) => Some(KExpr::number(access.offset)),
+                Some(_) => access.offset,
                 None => {
                     self.report(no_metadata(query, span, "a field"));
-                    None
+                    return None;
                 }
             },
-        }
+        };
+        self.metadata.push((
+            query.query_span,
+            MetadataAnswer {
+                query: query.query,
+                value,
+            },
+        ));
+        Some(KExpr::number(value))
     }
 
     /// The absolute value of `expr` in a position that requires one.

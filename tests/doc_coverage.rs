@@ -1764,3 +1764,87 @@ fn every_width_fixture_has_a_byte_level_gate() {
         "only {byte_gated} fixtures reach the bytes"
     );
 }
+
+/// Every HLA spelling the syntax reference lists under a branch instruction
+/// emits that instruction.
+///
+/// The lists under `BCC` … `BVS` had no gate, and after sub-plan Q made
+/// `if` the K816 spelling of a condition they went on giving the bare forms
+/// K816 refuses — found by reading the document back. Each bullet is
+/// compiled as a K816 statement, unoptimized so no branch to the next line
+/// is taken out, and has to emit the mnemonic its section is named for.
+#[test]
+fn every_branch_spelling_the_reference_lists_emits_its_branch() {
+    let reference = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("doc/syntax-reference.md"),
+    )
+    .expect("read the syntax reference");
+    let mut section: Option<String> = None;
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for line in reference.lines() {
+        if let Some(heading) = line.strip_prefix("### `") {
+            section = heading
+                .split('`')
+                .next()
+                .filter(|name| {
+                    ["BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BVC", "BVS"].contains(name)
+                })
+                .map(str::to_ascii_lowercase);
+            continue;
+        }
+        let Some(mnemonic) = &section else { continue };
+        if line.starts_with("```") {
+            section = None;
+            continue;
+        }
+        let Some(spelling) = line
+            .strip_prefix("- `")
+            .and_then(|rest| rest.strip_suffix('`'))
+        else {
+            continue;
+        };
+        let statement = spelling
+            .replace("{ ... }", "{ nop }")
+            .replace("goto label", "goto .label");
+        let source =
+            format!("func work @a8 @i8 {{\n    {statement}\n    nop\n.label:\n    nop\n}}\n");
+        let mut map = SourceMap::new();
+        let file = map.add_file("branches.k816", source.as_str());
+        let result = compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize: false,
+                ..Options::default()
+            },
+        );
+        let errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.code.as_str())
+            .collect();
+        let emits = result.assembly.as_deref().is_some_and(|assembly| {
+            assembly
+                .lines()
+                .any(|line| line.split_whitespace().next() == Some(mnemonic.as_str()))
+        });
+        if !errors.is_empty() || !emits {
+            failures.push(format!("  {mnemonic}: `{spelling}` {errors:?}"));
+        }
+        checked += 1;
+    }
+    // Six spellings for each of the six branches with a relation and a flag
+    // test, three for the two overflow branches, which have only the flag.
+    assert_eq!(
+        checked,
+        6 * 6 + 2 * 3,
+        "the branch sections' lists changed shape"
+    );
+    assert!(
+        failures.is_empty(),
+        "a listed spelling does not emit its branch:\n{}",
+        failures.join("\n")
+    );
+}

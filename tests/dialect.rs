@@ -510,12 +510,13 @@ fn a_bare_number_in_hla_is_a_value_in_either_dialect() {
 }
 
 /// The help a K816 source is given names the K816 spelling: before sub-plan
-/// O it said `p??`, `v-?` and `dbr!!`, which a K816 source now refuses.
+/// O it said `p??`, `v-?` and `dbr!!`, which a K816 source now refuses, and
+/// before sub-plan R `!v?`, which it refuses too.
 #[test]
 fn the_help_a_k816_source_gets_names_k816s_spelling() {
     for (body, code, wanted) in [
         ("z??", "K816-K65-0005", "pull p"),
-        ("o-", "K816-K65-0006", "!v?"),
+        ("o-", "K816-K65-0006", "if !v"),
         ("b!!", "K816-E0158", "push dbr"),
     ] {
         let mut map = SourceMap::new();

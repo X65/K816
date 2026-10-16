@@ -741,3 +741,103 @@ func main {
             operand: (address
               value: (identifier)))
           condition: (branch_condition))))))
+
+================================================================================
+A flag test by its letter, after if and while, beside the old spelling
+================================================================================
+
+func main {
+  if z { x++ }
+  if !c goto .out
+  loop { asl } while !c
+  if a&?mask !z { y++ }
+  if C { x++ }
+  if done { x++ }
+  if !c? { x++ }
+  if c? { x++ }
+  if == { x++ } else if !n { y++ }
+  loop { if v break  if !z repeat } always
+.out:
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (if_statement
+        condition: (flag_condition
+          flag: (identifier))
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (flag_condition
+          flag: (identifier))
+        jump: (goto_statement
+          target: (local_identifier)))
+      (loop_statement
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic)))
+        condition: (while_condition
+          condition: (flag_condition
+            flag: (identifier))))
+      (if_statement
+        compare: (hla_arithmetic
+          register: (register)
+          operand: (address
+            value: (identifier)))
+        condition: (flag_condition
+          flag: (identifier))
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (flag_condition
+          flag: (identifier))
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (flag_condition
+          flag: (identifier))
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register)))
+        else: (else_clause
+          chain: (if_statement
+            condition: (flag_condition
+              flag: (identifier))
+            body: (block
+              (hla_step
+                target: (register))))))
+      (loop_statement
+        body: (block
+          (if_statement
+            condition: (flag_condition
+              flag: (identifier))
+            jump: (break_statement))
+          (if_statement
+            condition: (flag_condition
+              flag: (identifier))
+            jump: (repeat_statement)))
+        condition: (loop_condition))
+      (label
+        name: (local_identifier)))))

@@ -961,7 +961,7 @@ export default grammar({
       seq(
         'if',
         optional(field('compare', $.hla_arithmetic)),
-        field('condition', $.branch_condition),
+        field('condition', choice($.branch_condition, $.flag_condition)),
         choice(
           seq(field('body', $.block), optional(field('else', $.else_clause))),
           field('jump', $._jump),
@@ -1018,8 +1018,16 @@ export default grammar({
       seq(
         'while',
         optional(field('compare', $.hla_arithmetic)),
-        field('condition', $.branch_condition),
+        field('condition', choice($.branch_condition, $.flag_condition)),
       ),
+
+    // `if z`, `while !c`: a flag test by its letter, which the position after
+    // `if` or `while` says is one (`plans/17-flag-tests.md`). The letter is
+    // an identifier, never a token — a token for a flag letter wins wherever
+    // an identifier is also valid, which is how `i+ d-` once parsed as
+    // `i + d` — and the analysis checks it names one of `c z n v`.
+    flag_condition: $ =>
+      seq(optional(field('negated', '!')), field('flag', $.identifier)),
 
     // `goto done`, `goto .loop`, `goto (vec)`, `goto far handler`. A local
     // label is as ordinary a target as a global one — the documentation's

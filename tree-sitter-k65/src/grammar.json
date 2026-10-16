@@ -2591,8 +2591,17 @@
           "type": "FIELD",
           "name": "condition",
           "content": {
-            "type": "SYMBOL",
-            "name": "branch_condition"
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "branch_condition"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "flag_condition"
+              }
+            ]
           }
         },
         {
@@ -2819,8 +2828,46 @@
           "type": "FIELD",
           "name": "condition",
           "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "branch_condition"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "flag_condition"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "flag_condition": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "negated",
+              "content": {
+                "type": "STRING",
+                "value": "!"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "FIELD",
+          "name": "flag",
+          "content": {
             "type": "SYMBOL",
-            "name": "branch_condition"
+            "name": "identifier"
           }
         }
       ]

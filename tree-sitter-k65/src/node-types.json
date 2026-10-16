@@ -4194,6 +4194,32 @@
     }
   },
   {
+    "type": "flag_condition",
+    "named": true,
+    "fields": {
+      "flag": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "negated": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "!",
+            "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "flag_name",
     "named": true,
     "fields": {}
@@ -4951,6 +4977,10 @@
         "types": [
           {
             "type": "branch_condition",
+            "named": true
+          },
+          {
+            "type": "flag_condition",
             "named": true
           }
         ]
@@ -6767,6 +6797,10 @@
         "types": [
           {
             "type": "branch_condition",
+            "named": true
+          },
+          {
+            "type": "flag_condition",
             "named": true
           }
         ]

@@ -432,18 +432,46 @@ pub enum TestableFlag {
     Overflow,
 }
 
+/// `>= { … }`, or K816's `if >= { … }`.
+///
+/// **A compare written in the `if` is not here.** `if a?10 < { … }` is built
+/// as the statement `a?10` followed by this conditional, the shape K65's
+/// `a?10` / `< { … }` already has, so everything after the parser — the
+/// width model, lowering, the optimizer — sees one program however it was
+/// spelled (`plans/16-if-statement.md` decision 5). The statement's span
+/// therefore starts at the condition, never at the `if`, so that the
+/// compare's span and this one do not overlap.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionalBlock {
     pub condition: BranchCondition,
     pub body: Block,
     /// The `else` block, if one was written.
     pub otherwise: Option<Block>,
+    /// The `if` this conditional was written with, or `None` for K65's bare
+    /// `COND { … }`. Which one a source may use is its dialect's question
+    /// (`src/spelling.rs`); what it means is the same.
+    pub keyword: Option<Span>,
+    /// The span of a compare written in the `if` — the statement before
+    /// this one, which is where it was built.
+    pub compare: Option<Span>,
+    /// The `else` was written `else if …`: `otherwise` is a block K816
+    /// built around that `if`, and has no braces in the source. A chain is
+    /// the nested `else { if … }` in every other respect.
+    pub chained: bool,
 }
 
+/// `< goto done`, `< break`, `!= repeat`, or K816's `if < goto done`.
+/// A compare written in the `if` is a statement before it, as for
+/// [`ConditionalBlock`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionalJump {
     pub condition: BranchCondition,
     pub jump: Box<Statement>,
+    /// The `if` this jump was written with, or `None` for K65's bare form.
+    pub keyword: Option<Span>,
+    /// The span of a compare written in the `if`, as for
+    /// [`ConditionalBlock::compare`].
+    pub compare: Option<Span>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -453,6 +481,10 @@ pub struct LoopStatement {
     pub nocross: bool,
     pub condition: LoopCondition,
     pub spelling: LoopSpelling,
+    /// `while x?10 <`: the span of the compare written in the test. The
+    /// compare itself is the last statement of `body`, which is where it
+    /// runs and what K65 writes (`plans/16-if-statement.md` decision 9).
+    pub test_compare: Option<Span>,
 }
 
 /// How a loop was written. Both mean the same loop; a K816 source may use

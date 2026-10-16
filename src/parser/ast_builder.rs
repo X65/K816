@@ -735,6 +735,7 @@ impl AstBuilder<'_> {
                     }),
                     self.span(child),
                 )),
+                "if_statement" => statements.extend(self.if_statement(child)),
                 "conditional_block" => statements.push(self.conditional_block(child)),
                 "conditional_jump" => statements.push(self.conditional_jump(child)),
                 "postfix_loop" => statements.push(self.postfix_loop(child)),
@@ -1551,23 +1552,118 @@ impl AstBuilder<'_> {
     }
 
     fn conditional_block(&mut self, node: Node<'_>) -> Statement {
-        let otherwise = node
-            .child_by_field_name("else")
-            .map(|clause| self.body_of(clause));
+        let (otherwise, chained) = self.else_clause(node);
         Statement::new(
             StatementKind::Conditional(ConditionalBlock {
                 condition: self.branch_condition(node.child_by_field_name("condition"), node),
                 body: self.body_of(node),
                 otherwise,
+                keyword: None,
+                compare: None,
+                chained,
             }),
             self.span(node),
         )
     }
 
+    /// The `else` of a conditional, and whether it was written `else if`.
+    ///
+    /// A chain is the `if` inside a block of its own, spanning the `if`:
+    /// `else if == { … }` is `else { if == { … } }`, which is what every
+    /// consumer of the AST already handles (`plans/16-if-statement.md`
+    /// decision 4).
+    fn else_clause(&mut self, node: Node<'_>) -> (Option<Block>, bool) {
+        let Some(clause) = node.child_by_field_name("else") else {
+            return (None, false);
+        };
+        match clause.child_by_field_name("chain") {
+            Some(chain) => (
+                Some(Block {
+                    statements: self.if_statement(chain),
+                    span: self.span(chain),
+                }),
+                true,
+            ),
+            None => (Some(self.body_of(clause)), false),
+        }
+    }
+
+    /// `if COND { … }`, `if a?10 COND { … }`, `if COND goto …`: the
+    /// statements K65 writes for the same thing, a compare (when one was
+    /// written in the `if`) and then the bare conditional or jump.
+    fn if_statement(&mut self, node: Node<'_>) -> Vec<Statement> {
+        let mut statements = Vec::new();
+        let compare = node.child_by_field_name("compare").map(|compare| {
+            statements.push(self.hla_arithmetic(compare));
+            self.span(compare)
+        });
+        let keyword = node
+            .child(0)
+            .filter(|child| child.kind() == "if")
+            .map(|child| self.span(child));
+        let condition_node = node.child_by_field_name("condition");
+        let whole = self.span(node);
+        // From the condition on: the compare before it has a statement of
+        // its own, and two statements must not claim the same text.
+        let span = Span::new(
+            whole.file,
+            condition_node.map_or(whole.start, |condition| self.span(condition).start),
+            whole.end,
+        );
+        let condition = self.branch_condition(condition_node, node);
+        if node.child_by_field_name("jump").is_some() {
+            let jump = self.jump(node, span);
+            statements.push(Statement::new(
+                StatementKind::ConditionalJump(ConditionalJump {
+                    condition,
+                    jump: Box::new(jump),
+                    keyword,
+                    compare,
+                }),
+                span,
+            ));
+        } else {
+            let (otherwise, chained) = self.else_clause(node);
+            statements.push(Statement::new(
+                StatementKind::Conditional(ConditionalBlock {
+                    condition,
+                    body: self.body_of(node),
+                    otherwise,
+                    keyword,
+                    compare,
+                    chained,
+                }),
+                span,
+            ));
+        }
+        statements
+    }
+
     fn conditional_jump(&mut self, node: Node<'_>) -> Statement {
         let span = self.span(node);
         let condition = self.branch_condition(node.child_by_field_name("condition"), node);
-        let jump = match node.child_by_field_name("jump") {
+        let jump = self.jump(node, span);
+        Statement::new(
+            StatementKind::ConditionalJump(ConditionalJump {
+                condition,
+                jump: Box::new(jump),
+                keyword: None,
+                compare: None,
+            }),
+            span,
+        )
+    }
+
+    /// The `goto`, `break` or `repeat` a condition guards.
+    ///
+    /// A jump whose keyword the parser invented is no jump: building it would
+    /// add "`repeat` is not inside a loop" to the syntax error that already
+    /// says what is missing.
+    fn jump(&mut self, node: Node<'_>, span: Span) -> Statement {
+        match node.child_by_field_name("jump") {
+            Some(jump) if jump.child(0).is_some_and(super::diagnostics::invented_jump) => {
+                Statement::new(StatementKind::Error, self.span(jump))
+            }
             Some(jump) => match jump.kind() {
                 "goto_statement" => self.goto_statement(jump),
                 "break_statement" => Statement::new(StatementKind::Break, self.span(jump)),
@@ -1578,14 +1674,7 @@ impl AstBuilder<'_> {
                 }
             },
             None => Statement::new(StatementKind::Error, Span::empty_at(span.file, span.end)),
-        };
-        Statement::new(
-            StatementKind::ConditionalJump(ConditionalJump {
-                condition,
-                jump: Box::new(jump),
-            }),
-            span,
-        )
+        }
     }
 
     fn postfix_loop(&mut self, node: Node<'_>) -> Statement {
@@ -1612,6 +1701,7 @@ impl AstBuilder<'_> {
                 nocross,
                 condition,
                 spelling: LoopSpelling::Postfix,
+                test_compare: None,
             }),
             span,
         )
@@ -1622,8 +1712,19 @@ impl AstBuilder<'_> {
     /// form, with the keyword saying where it begins.
     fn loop_statement(&mut self, node: Node<'_>) -> Statement {
         let span = self.span(node);
-        let body = self.body_of(node);
+        let mut body = self.body_of(node);
         let condition_node = node.child_by_field_name("condition");
+        // `while x?10 <`: the compare runs as the body's last statement,
+        // which is where K65 writes it (`plans/16-if-statement.md` decision
+        // 9) — so a `repeat`, which goes to the top, skips it, and `nocross`
+        // keeps it inside the page it checks.
+        let test_compare = condition_node
+            .filter(|condition| condition.kind() == "while_condition")
+            .and_then(|condition| condition.child_by_field_name("compare"))
+            .map(|compare| {
+                body.statements.push(self.hla_arithmetic(compare));
+                self.span(compare)
+            });
         let condition = match condition_node {
             Some(condition) if condition.kind() == "while_condition" => LoopCondition::Branch(
                 self.branch_condition(condition.child_by_field_name("condition"), condition),
@@ -1638,6 +1739,7 @@ impl AstBuilder<'_> {
                 nocross: node.child_by_field_name("nocross").is_some(),
                 condition,
                 spelling: LoopSpelling::Keyword,
+                test_compare,
             }),
             span,
         )

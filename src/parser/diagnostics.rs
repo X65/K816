@@ -103,6 +103,18 @@ fn error_diagnostic(node: tree_sitter::Node<'_>, source: &SourceFile) -> Diagnos
     .with_docs("doc/syntax-reference.md")
 }
 
+/// A `MISSING` jump keyword that is the whole of an `if`'s jump: the parser's
+/// guess at a statement the source does not have.
+pub(super) fn invented_jump(node: tree_sitter::Node<'_>) -> bool {
+    node.is_missing()
+        && matches!(node.kind(), "repeat" | "break")
+        && node
+            .parent()
+            .filter(|jump| matches!(jump.kind(), "repeat_statement" | "break_statement"))
+            .and_then(|jump| jump.parent())
+            .is_some_and(|parent| parent.kind() == "if_statement")
+}
+
 /// What the grammar was looking for where an `ERROR` node appeared, phrased
 /// for the message "expected …".
 ///
@@ -141,6 +153,7 @@ fn expected_in(parent: Option<&str>) -> &'static str {
         Some("conditional_block") | Some("postfix_loop") | Some("else_clause") => {
             "a `{ ... }` block"
         }
+        Some("if_statement") => "a condition, then a `{ ... }` block or a jump",
         Some("conditional_jump") => "`goto`, `break`, or `repeat`",
         Some("goto_statement") => "a jump target",
         Some("width_block") | Some("nocross_block") | Some("code_subblock") => "a `{ ... }` block",
@@ -166,6 +179,18 @@ fn expected_in(parent: Option<&str>) -> &'static str {
 fn missing_diagnostic(node: tree_sitter::Node<'_>, source: &SourceFile) -> Diagnostic {
     let span = node_span(node, source);
     let token = node.kind();
+    // `if <` with nothing after it is a valid prefix of `if < repeat`, the
+    // shortest jump, so that is the token Tree-sitter invents. Neither it nor
+    // a fix inserting it is what the author meant: what is missing is the
+    // whole of what the condition guards.
+    if invented_jump(node) {
+        return Diagnostic::error(
+            DiagnosticCode::SYNTAX_MISSING,
+            "missing a `{ ... }` block or a jump after the condition",
+            Label::new(span, "a block, `goto`, `break` or `repeat` expected here"),
+        )
+        .with_docs("doc/syntax-reference.md");
+    }
     let mut diagnostic = Diagnostic::error(
         DiagnosticCode::SYNTAX_MISSING,
         format!("missing `{token}`"),

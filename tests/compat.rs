@@ -1565,6 +1565,12 @@ const AST_FIELDS: &[(&str, &str, &str)] = &[
     ("CallContract", "inputs", "k816-call-contracts"),
     ("CallContract", "outputs", "k816-call-contracts"),
     ("ConditionalBlock", "otherwise", "instr-branch-block"),
+    ("ConditionalBlock", "keyword", "k816-if-statement"),
+    ("ConditionalBlock", "chained", "k816-if-statement"),
+    ("ConditionalBlock", "compare", "k816-condition-compare"),
+    ("ConditionalJump", "keyword", "k816-if-statement"),
+    ("ConditionalJump", "compare", "k816-condition-compare"),
+    ("LoopStatement", "test_compare", "k816-condition-compare"),
     (
         "LoopStatement",
         "nocross",
@@ -1952,7 +1958,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
 
     assert_eq!(
         marked.len(),
-        33,
+        35,
         "the manifest marks {} rows for the flag; if that is deliberate, move the \
          number here so the count stays a statement someone made",
         marked.len()

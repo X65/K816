@@ -3162,6 +3162,12 @@ const FIXTURE_EFFECTS: &[Effect] = &[
         "five writes the next line overwrites — not `cli` before `sei` nor `txs` before `tcs`, which the hardware reads between the two (`READ_BY_INTERRUPTS`) — one redundant `sep`, and the implicit return after an unconditional `bra`; the user's `jmp control` stays, though a `bra` would reach",
     ),
     (
+        "if-statement.kk",
+        &[("jmp     :++", 1), ("jmp     :++++", 1)],
+        &[("bra     :++", 1), ("bra     :++++", 1)],
+        "the two jumps the `else` and the `else if` lower to, each reaching its target as the `bra` pass 11 swaps in",
+    ),
+    (
         "readable-hla.kk",
         &[("jmp     :-", 1)],
         &[("bra     :-", 1)],
@@ -4856,6 +4862,34 @@ fn the_readable_spellings_link_to_their_k65_twins_bytes() {
         readable.len()
     );
     assert_eq!(readable, k65);
+}
+
+/// `if-statement.kk` links to the bytes of `if-statement.k65`: an `if`, an
+/// `else if`, and a compare written in an `if` or a `while` are the K65
+/// statements they stand for (`plans/16-if-statement.md` decision 7).
+#[test]
+fn the_if_spellings_link_to_their_k65_twins_bytes() {
+    let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let read = |name: &str| std::fs::read_to_string(golden.join(name)).expect("read golden");
+    let options = Options::default();
+    let (k816, _) = compile_and_link(
+        "if-statement-kk",
+        "if-statement.kk",
+        &read("if-statement.kk"),
+        &options,
+    );
+    let (k65, _) = compile_and_link(
+        "if-statement-k65",
+        "if-statement.k65",
+        &read("if-statement.k65"),
+        &options,
+    );
+    assert!(
+        k816.len() > 40,
+        "the program linked to {} bytes",
+        k816.len()
+    );
+    assert_eq!(k816, k65);
 }
 
 // ---------------------------------------------------------------------------

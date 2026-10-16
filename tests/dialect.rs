@@ -547,3 +547,83 @@ fn an_hla_operand_runs_on_across_a_line_and_a_semicolon_ends_it() {
         ["lda #$0002", "nop", "nop", "nop"]
     );
 }
+
+/// One pair per row of sub-plan Q's inventory, K816's `if` spelling first and
+/// the K65 statements it stands for second (`plans/16-if-statement.md`).
+fn if_pairs() -> Vec<(&'static str, &'static str)> {
+    vec![
+        // A conditional block, with and without `else`.
+        ("if >= { x++ }", ">= { x++ }"),
+        ("if !c? { x++ }", "c-?{ x++ }"),
+        ("if == { x++ } else { y++ }", "== { x++ } else { y++ }"),
+        // `else if` is the `if` nested in the `else`, to any depth.
+        (
+            "if == { x++ } else if < { y++ } else { x-- }",
+            "== { x++ } else { < { y++ } else { x-- } }",
+        ),
+        (
+            "if == { x++ } else if < { y++ } else if v? { x-- }",
+            "== { x++ } else { < { y++ } else { <<={ x-- } } }",
+        ),
+        // The compare in the `if`, on one line or two in K65.
+        ("if a?#10 < { x++ }", "a?#10\n < { x++ }"),
+        ("if a?#10 < { x++ }", "a?#10 < { x++ }"),
+        ("if a?flags+1 >= { x++ }", "a?flags+1\n >= { x++ }"),
+        ("if x?#5 != { y++ }", "x?#5\n != { y++ }"),
+        ("if a&?flags !z? { y++ }", "a&?flags\n z-?{ y++ }"),
+        ("if a?#10 <= { x++ }", "a?#10\n <= { x++ }"),
+        // … and in an `else if`, where it runs only on that path.
+        (
+            "if == { x++ } else if a?#20 >= { y++ }",
+            "== { x++ } else { a?#20\n >= { y++ } }",
+        ),
+        // A conditional jump of each kind.
+        ("if < goto .out", "< goto .out"),
+        ("if c? goto .out", "c+? goto .out"),
+        ("if a?flags == goto .out", "a?flags\n == goto .out"),
+        (
+            "loop { x++\n if == break } always",
+            "{ x++\n == break } always",
+        ),
+        (
+            "loop { x++\n if != repeat\n y++ } always",
+            "{ x++\n != repeat\n y++ } always",
+        ),
+        (
+            "loop { x++\n if x?#5 != repeat\n y++ } always",
+            "{ x++\n x?#5\n != repeat\n y++ } always",
+        ),
+        // The compare in a loop's `while`: the body's last statement.
+        ("loop { x++ } while x?#10 <", "{ x++\n x?#10 } <"),
+        (
+            "nocross loop { y++ } while y?#3 >=",
+            "nocross { y++\n y?#3 } >=",
+        ),
+        (
+            "loop { x++\n if == repeat\n y++ } while y?#3 >=",
+            "{ x++\n == repeat\n y++\n y?#3 } >=",
+        ),
+        (
+            "loop { x++\n if == break\n y++ } while a?flags !=",
+            "{ x++\n == break\n y++\n a?flags } !=",
+        ),
+        (
+            "loop { x++\n @a16 { a = #1 } } while x?#10 <",
+            "{ x++\n @a16 { a = #1 }\n x?#10 } <",
+        ),
+    ]
+}
+
+/// Each `if` form compiles to the bytes of the K65 statements it stands for:
+/// the builder makes the same AST of both, so nothing after the parser can
+/// tell them apart (`plans/16-if-statement.md` decision 7).
+#[test]
+fn every_if_form_compiles_to_the_bytes_of_its_k65_spelling() {
+    for (k816, k65) in if_pairs() {
+        assert_eq!(
+            code("unit.kk", &unit(k816)),
+            code("unit.k65", &unit(k65)),
+            "`{k816}` and `{k65}`"
+        );
+    }
+}

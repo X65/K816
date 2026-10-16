@@ -3194,3 +3194,123 @@ fn code_outside_a_section_is_told_to_open_one() {
     );
     assert!(found.fixes.is_empty());
 }
+
+/// Sub-plan Q: an `if` is built as the K65 statements it stands for — the
+/// compare written in it first, then the bare conditional — and records
+/// only how it was spelled, which is what the dialect reads
+/// (`plans/16-if-statement.md` decisions 5 and 9).
+///
+/// The two statements must not claim the same text: the conditional's span
+/// starts at its condition, after the compare's ends.
+#[test]
+fn an_if_is_built_as_the_statements_it_stands_for() {
+    let source = "func f @a8 @i8 {\n    if a?#10 < { x++ } else if == { y++ }\n    \
+                  if == break\n    loop { x++ } while x?#5 !=\n    >= { x++ }\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("if.kk", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let text = |span: Span| &source[span.start as usize..span.end as usize];
+    let ItemKind::Func(function) = &result.file.items[0].kind else {
+        panic!("expected a function");
+    };
+    let statements = &function.body.statements;
+    assert_eq!(statements.len(), 5, "{statements:#?}");
+
+    let StatementKind::Hla(HlaStatement::Arithmetic(_)) = &statements[0].kind else {
+        panic!(
+            "the compare is a statement of its own: {:?}",
+            statements[0].kind
+        );
+    };
+    assert_eq!(text(statements[0].span), "a?#10");
+
+    let StatementKind::Conditional(conditional) = &statements[1].kind else {
+        panic!("then the conditional: {:?}", statements[1].kind);
+    };
+    assert_eq!(conditional.keyword.map(text), Some("if"));
+    assert!(conditional.chained, "`else if` is a chain");
+    assert!(text(statements[1].span).starts_with("< { x++ }"));
+    assert!(statements[0].span.end <= statements[1].span.start);
+    let chain = conditional.otherwise.as_ref().expect("the else");
+    assert_eq!(text(chain.span), "if == { y++ }");
+    let [inner] = chain.statements.as_slice() else {
+        panic!("a chain is the one `if` in a block: {:?}", chain.statements);
+    };
+    let StatementKind::Conditional(inner) = &inner.kind else {
+        panic!("the chained if is a conditional");
+    };
+    assert_eq!(inner.keyword.map(text), Some("if"));
+    assert!(!inner.chained && inner.otherwise.is_none());
+
+    let StatementKind::ConditionalJump(jump) = &statements[2].kind else {
+        panic!("an `if` before a jump: {:?}", statements[2].kind);
+    };
+    assert_eq!(jump.keyword.map(text), Some("if"));
+
+    let StatementKind::Loop(loop_statement) = &statements[3].kind else {
+        panic!("a loop: {:?}", statements[3].kind);
+    };
+    assert_eq!(loop_statement.test_compare.map(text), Some("x?#5"));
+    let last = loop_statement.body.statements.last().expect("a body");
+    assert!(
+        matches!(last.kind, StatementKind::Hla(HlaStatement::Arithmetic(_))),
+        "the `while` compare is the body's last statement"
+    );
+    assert_eq!(text(last.span), "x?#5");
+
+    let StatementKind::Conditional(bare) = &statements[4].kind else {
+        panic!("K65's bare conditional: {:?}", statements[4].kind);
+    };
+    assert_eq!(bare.keyword, None);
+    assert!(!bare.chained);
+}
+
+/// `if <` with nothing after it is a valid prefix of `if < repeat`, so
+/// Tree-sitter invents the `repeat`. The diagnostic says what is really
+/// missing and offers no fix, and no `repeat` reaches the analysis to be
+/// refused a second time as "not inside a loop" — a regression found while
+/// building sub-plan Q, where the generic path did both.
+#[test]
+fn a_dangling_if_says_what_is_missing_and_invents_no_jump() {
+    for body in ["if <", "if a?#10 <", "if < nop"] {
+        let source = format!("func f @a8 @i8 {{\n    {body}\n}}\n");
+        let mut map = SourceMap::new();
+        let id = map.add_file("dangling.kk", source.as_str());
+        let result = k816::compile_to_ca65(&map, id, &k816::Options::default());
+        let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(
+            codes,
+            vec![DiagnosticCode::SYNTAX_MISSING],
+            "`{body}`: {codes:?}"
+        );
+        let missing = &result.diagnostics[0];
+        assert_eq!(
+            missing.title, "missing a `{ ... }` block or a jump after the condition",
+            "`{body}`"
+        );
+        assert!(
+            missing.fixes.is_empty(),
+            "`{body}` offers a fix: {:?}",
+            missing.fixes
+        );
+    }
+}
+
+/// A malformed `if` body is phrased for the `if`, which is what
+/// `expected_in`'s `if_statement` arm is for.
+#[test]
+fn a_malformed_if_is_phrased_for_the_if() {
+    let mut map = SourceMap::new();
+    let id = map.add_file("bad.kk", "func f @a8 @i8 {\n    if < 5 { x++ }\n}\n");
+    let result = parse_source(map.file(id), None);
+    let titles: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.title.as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        ["expected a condition, then a `{ ... }` block or a jump"]
+    );
+}

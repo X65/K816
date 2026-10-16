@@ -139,6 +139,7 @@ mod tests {
         "call_statement",
         "bare_call",
         "branch_condition",
+        "if_statement",
         "conditional_block",
         "else_clause",
         "conditional_jump",

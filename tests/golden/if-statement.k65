@@ -1,0 +1,49 @@
+// Sub-plan Q fixture: `if-statement.kk` in K65's spellings — each condition
+// alone in front of its block or jump, each compare a statement of its own.
+// The two link to the same bytes (`tests/compile.rs`).
+
+var key   = $80
+var mode  = $81
+var count = $82
+
+// Classifies `key` into `mode`: 1 below '0', 2 for a digit, 3 above.
+func classify @a8 @i8 {
+    a = key
+    a?#'0'
+    < {
+        mode = x = #1
+    } else {
+        a?#':'
+        < {
+            mode = x = #2
+        } else {
+            mode = x = #3
+        }
+    }
+}
+
+// Counts `count` down to one, leaving early once `mode` is zero and
+// skipping the store when the count reaches four.
+func drain @a8 @i8 {
+    x = count
+    {
+        a = mode
+        == break
+        x--
+        x?#4
+        == repeat
+        count = x
+        x?#1
+    } >=
+}
+
+// Bumps `count` when `mode` is non-zero and shares a bit with `key`.
+func bump @a8 @i8 {
+    a = mode
+    == goto .done
+    a&?key
+    z-? {
+        count++
+    }
+.done:
+}

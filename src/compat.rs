@@ -574,6 +574,8 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-import", K816Extension, Rejects),
     row("k816-extern", K816Extension, Rejects),
     row("k816-loop-keyword", K816Extension, Rejects),
+    row("k816-if-statement", K816Extension, Rejects),
+    row("k816-condition-compare", K816Extension, Rejects),
     row("k816-bare-flag-test", K816Extension, Rejects),
     row("k816-stack-words", K816Extension, Rejects),
     row("k816-dialect", K816Extension, Quiet),
@@ -791,6 +793,21 @@ const REPORTED: &[Reported] = &[
         id: "k816-loop-keyword",
         what: "a `loop` statement",
         instead: Some("K65 writes the loop as a block with its condition after it: `{ x-- } !=`"),
+    },
+    Reported {
+        id: "k816-if-statement",
+        what: "an `if`",
+        instead: Some(
+            "K65 writes the condition alone in front of the block or the jump: `>= { x++ }`",
+        ),
+    },
+    Reported {
+        id: "k816-condition-compare",
+        what: "a compare written in an `if` or a `while`",
+        instead: Some(
+            "K65 writes the compare as a statement of its own, before the condition it sets the \
+             flags for",
+        ),
     },
     Reported {
         id: "k816-bare-flag-test",
@@ -1128,6 +1145,7 @@ impl StrictWalk<'_> {
                 }
             }
             StatementKind::Conditional(conditional) => {
+                self.spelled_if(conditional.keyword, conditional.compare);
                 self.condition(&conditional.condition);
                 self.block(&conditional.body);
                 if let Some(otherwise) = &conditional.otherwise {
@@ -1135,12 +1153,16 @@ impl StrictWalk<'_> {
                 }
             }
             StatementKind::ConditionalJump(jump) => {
+                self.spelled_if(jump.keyword, jump.compare);
                 self.condition(&jump.condition);
                 self.statement(&jump.jump);
             }
             StatementKind::Loop(loop_statement) => {
                 if loop_statement.spelling == LoopSpelling::Keyword {
                     self.mark("k816-loop-keyword", statement.span);
+                }
+                if let Some(compare) = loop_statement.test_compare {
+                    self.mark("k816-condition-compare", compare);
                 }
                 if let LoopCondition::Branch(condition) = &loop_statement.condition {
                     self.condition(condition);
@@ -1164,6 +1186,16 @@ impl StrictWalk<'_> {
                     self.eval(condition);
                 }
             }
+        }
+    }
+
+    /// `if`, and a compare written in it (`plans/16-if-statement.md`).
+    fn spelled_if(&mut self, keyword: Option<Span>, compare: Option<Span>) {
+        if let Some(keyword) = keyword {
+            self.mark("k816-if-statement", keyword);
+        }
+        if let Some(compare) = compare {
+            self.mark("k816-condition-compare", compare);
         }
     }
 

@@ -3365,9 +3365,20 @@ fn a_flag_test_by_its_letter_names_one_of_the_four() {
         ("if o { x++ }", DiagnosticCode::K65_OVERFLOW_FLAG_SPELLING),
     ] {
         let mut map = SourceMap::new();
-        let id = map.add_file("letter.kk", format!("func f @a8 @i8 {{\n    {body}\n}}\n"));
+        let text = format!("func f @a8 @i8 {{\n    {body}\n}}\n");
+        let id = map.add_file("letter.kk", text.as_str());
         let result = parse_source(map.file(id), None);
         let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
         assert_eq!(codes, vec![code], "`{body}`");
+        // `o` is the overflow flag's other letter, and its fix writes `v`.
+        if code == DiagnosticCode::K65_OVERFLOW_FLAG_SPELLING {
+            let edit = &result.diagnostics[0].fixes[0].edits[0];
+            let mut fixed = text.clone();
+            fixed.replace_range(
+                edit.span.start as usize..edit.span.end as usize,
+                &edit.replacement,
+            );
+            assert!(fixed.contains("if v { x++ }"), "{fixed}");
+        }
     }
 }

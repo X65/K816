@@ -46,7 +46,7 @@ use crate::ast::{
     TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind,
     WidthBlock,
 };
-use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
+use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::source::{Provenance, SourceFile, Span};
 
 use super::cst::node_span;
@@ -1566,10 +1566,18 @@ impl AstBuilder<'_> {
             "z" => TestableFlag::Zero,
             "n" => TestableFlag::Negative,
             "v" => TestableFlag::Overflow,
-            // The same refusal `o?` gets, from the same place.
+            // The same refusal `o?` gets, from the same place — and here the
+            // fix is the one letter, which `o?` has no single edit for.
             "o" => {
+                let span = self.span(name);
                 self.diagnostics
-                    .push(crate::compat::k65_overflow_flag_spelling(self.span(name)));
+                    .push(
+                        crate::compat::k65_overflow_flag_spelling(span).with_fix(Fix {
+                            title: "write `v`".to_owned(),
+                            applicability: Applicability::MachineApplicable,
+                            edits: vec![TextEdit::replace(span, "v")],
+                        }),
+                    );
                 return None;
             }
             _ => {

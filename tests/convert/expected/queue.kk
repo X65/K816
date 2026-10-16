@@ -37,8 +37,7 @@ func queue_init @a16 @i16 {
         clc
         adc #SLOT:sizeof
         tax
-        cpx #SLOTS_NO * SLOT:sizeof
-    } while !=
+    } while x?#SLOTS_NO * SLOT:sizeof !=
 }
 
 // Finds the first idle slot; carry set when there is none.
@@ -52,8 +51,7 @@ func queue_find @a16 @i16 {
         clc
         adc #SLOT:sizeof
         tax
-        cpx #SLOTS_NO * SLOT:sizeof
-    } while !=
+    } while x?#SLOTS_NO * SLOT:sizeof !=
     sec
     rts
 .found:

@@ -42,6 +42,13 @@
 //! compare left is the relation (`<`, `>=`), and any other carry the flag
 //! (`c?`, `!c?`); zero and sign are the relations K65 has always used for
 //! them (`==`, `!=`, `<0`, `>=0`), and overflow has only its flag.
+//!
+//! Every condition is written after `if`, and the compare that set its flags
+//! goes in the `if` — or in a loop's `while` — when it is the statement
+//! right before the branch and carries no comment of its own: `cmp #10` and
+//! `bcs .x` are `if a?#10 < {`. An `else` whose whole body is one `if` is
+//! `} else if` (`plans/16-if-statement.md` decision 8). Each is a rewrite
+//! like the others, kept only where it changes no byte.
 
 use std::collections::HashSet;
 
@@ -361,14 +368,65 @@ fn taken(mnemonic: &str, after_compare: bool) -> &'static str {
     }
 }
 
-/// What a jump becomes inside a loop: `COND break` or `COND repeat` for a
-/// conditional branch, the bare word for an unconditional one.
-fn exit_word(jump: &Jump<'_>, previous: Option<&Statement>, word: &str) -> String {
-    if jump.conditional {
-        format!("{} {word}", taken(&jump.mnemonic, compares(previous)))
-    } else {
-        word.to_owned()
+/// What a jump becomes inside a loop: `if COND break` or `if COND repeat`
+/// for a conditional branch — with the compare before it in the `if`, where
+/// [`fold`] allows — and the bare word for an unconditional one. The edit
+/// starts at the compare it folds, or at the branch.
+fn exit_word(
+    branch: &Statement,
+    jump: &Jump<'_>,
+    previous: Option<&Statement>,
+    word: &str,
+    text: &str,
+) -> (u32, u32, String) {
+    if !jump.conditional {
+        return (branch.span.start, branch.span.end, word.to_owned());
     }
+    let condition = taken(&jump.mnemonic, compares(previous));
+    let (from, compare) = fold(previous, text).unwrap_or((branch.span.start, String::new()));
+    (
+        from,
+        branch.span.end,
+        format!("if {compare}{condition} {word}"),
+    )
+}
+
+/// The compare before the branch at `index`, spelled for the `if` or the
+/// `while` it can be written in, and where it starts.
+///
+/// Decision 8's three conditions: it is the statement right before the
+/// branch (so no label stands between them), it carries no comment of its
+/// own — which would have nowhere to go but the line the branch's already
+/// has — and its operand is one the HLA compare reads the same way: an
+/// immediate or a name. A number is a value in K816's HLA and an address to
+/// `cmp`, so `cmp $10` stays a statement.
+fn folded(statements: &[Statement], index: usize, text: &str) -> Option<(u32, String)> {
+    fold(statements.get(index.checked_sub(1)?), text)
+}
+
+/// [`folded`], given the statement before the branch.
+fn fold(compare: Option<&Statement>, text: &str) -> Option<(u32, String)> {
+    let compare = compare?;
+    let StatementKind::Native(native) = &compare.kind else {
+        return None;
+    };
+    let register = match native.mnemonic.text.to_ascii_lowercase().as_str() {
+        "cmp" => "a?",
+        "cpx" => "x?",
+        "cpy" => "y?",
+        "bit" => "a&?",
+        _ => return None,
+    };
+    let written = &text[compare.span.start as usize..compare.span.end as usize];
+    let operand = written.get(native.mnemonic.text.len()..)?.trim();
+    if !operand.starts_with(|c: char| c == '#' || c == '_' || c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let (comment, _) = trailing_comment(text, compare.span);
+    if comment.is_some() {
+        return None;
+    }
+    Some((compare.span.start, format!("{register}{operand} ")))
 }
 
 /// The branch taken exactly when `mnemonic` is not.
@@ -457,8 +515,12 @@ fn in_block(
     for (index, statement) in statements.iter().enumerate() {
         if let StatementKind::Label(label) = &statement.kind
             && label.scope == LabelScope::Local
-            && let Some(candidate) = a_loop(function, statements, index, &label.name.text, labels)
+            && let Some(candidate) =
+                a_loop(function, statements, index, &label.name.text, labels, text)
         {
+            found.push(candidate);
+        }
+        if let Some(candidate) = a_chain(function, statement, text) {
             found.push(candidate);
         }
         if let Some(jump) = jump(statement)
@@ -549,6 +611,7 @@ fn a_loop(
     index: usize,
     label: &str,
     labels: &Labels,
+    text: &str,
 ) -> Option<Candidate> {
     let uses = labels.uses(label);
     let close = statements
@@ -568,6 +631,14 @@ fn a_loop(
     if !closed(body, region, labels) {
         return None;
     }
+    // The compare the closing branch reads goes in the `while`, when it is
+    // inside the loop to begin with.
+    let fold = if closing.conditional && close > index + 1 {
+        folded(statements, close, text)
+    } else {
+        None
+    };
+    let (closed_from, compare) = fold.unwrap_or((statements[close].span.start, String::new()));
     let mut edits = vec![
         (
             statements[index].span.start,
@@ -575,11 +646,11 @@ fn a_loop(
             "loop {".to_owned(),
         ),
         (
-            statements[close].span.start,
+            closed_from,
             statements[close].span.end,
             if closing.conditional {
                 format!(
-                    "}} while {}",
+                    "}} while {compare}{}",
                     taken(
                         &closing.mnemonic,
                         compares(close.checked_sub(1).map(|at| &statements[at]))
@@ -602,11 +673,7 @@ fn a_loop(
         if nested_loop {
             return None;
         }
-        edits.push((
-            branch.span.start,
-            branch.span.end,
-            exit_word(&repeat, previous, "repeat"),
-        ));
+        edits.push(exit_word(branch, &repeat, previous, "repeat", text));
     }
     let mut removed = 1;
     if let Some(after) = statements.get(close + 1)
@@ -625,11 +692,7 @@ fn a_loop(
             if nested_loop {
                 continue;
             }
-            edits.push((
-                branch.span.start,
-                branch.span.end,
-                exit_word(&jump, previous, "break"),
-            ));
+            edits.push(exit_word(branch, &jump, previous, "break", text));
             converted += 1;
         }
         if converted > 0 && converted == exits.len() {
@@ -699,12 +762,13 @@ fn a_block(
     } else {
         format!("}} // {}", said.join("; "))
     };
+    let (from, compare) = folded(statements, index, text).unwrap_or((opener.start, String::new()));
     Some(Candidate {
         key: format!("{function} block {}", branch.target),
         labels: 1,
         order: (2, region.1 - region.0),
         edits: vec![
-            (opener.start, opened, format!("{condition} {{")),
+            (from, opened, format!("if {compare}{condition} {{")),
             (label.start, closed_at, closing),
         ],
     })
@@ -756,6 +820,50 @@ fn trailing_comment(text: &str, statement: Span) -> (Option<&str>, u32) {
         Some(comment) => (Some(comment.trim()), line_end as u32),
         None => (None, statement.end),
     }
+}
+
+/// An `else` block whose whole body is one `if`: `} else if COND {`.
+///
+/// Only the braces go, and only where nothing but blank space sits between
+/// them and the `if` — a comment there would be lost — so the chain is the
+/// nested block written without its braces, which the parser builds back
+/// into the same block.
+fn a_chain(function: &str, statement: &Statement, text: &str) -> Option<Candidate> {
+    let StatementKind::Conditional(conditional) = &statement.kind else {
+        return None;
+    };
+    if conditional.chained {
+        return None;
+    }
+    let otherwise = conditional.otherwise.as_ref()?;
+    let (last, before) = otherwise.statements.split_last()?;
+    let StatementKind::Conditional(inner) = &last.kind else {
+        return None;
+    };
+    let keyword = inner.keyword?;
+    // A compare written in the inner `if` is the one statement before it.
+    match (before, inner.compare) {
+        ([], None) => {}
+        ([compare], Some(written)) if compare.span == written => {}
+        _ => return None,
+    }
+    let open = (otherwise.span.start, keyword.start);
+    let close = (last.span.end, otherwise.span.end);
+    let between = |(start, end): (u32, u32)| text.get(start as usize..end as usize);
+    if between(open)?.trim() != "{" || between(close)?.trim() != "}" {
+        return None;
+    }
+    // Through the keyword and back: [`apply`] trims an edit's trailing space,
+    // so an edit ending at the `if` would keep the line break before it.
+    Some(Candidate {
+        key: format!("{function} chain {}", keyword.start),
+        labels: 0,
+        order: (3, otherwise.span.end - otherwise.span.start),
+        edits: vec![
+            (open.0, keyword.end, "if".to_owned()),
+            (close.0, close.1, String::new()),
+        ],
+    })
 }
 
 /// A conditional branch at `index` over a run that ends in a jump over a
@@ -811,16 +919,14 @@ fn a_choice(
     } else {
         format!("}} else {{ // {}", said.join("; "))
     };
+    let (from, compare) =
+        folded(statements, index, text).unwrap_or((statements[index].span.start, String::new()));
     Some(Candidate {
         key: format!("{function} choice {}", branch.target),
         labels: 2,
         order: (1, region.1 - region.0),
         edits: vec![
-            (
-                statements[index].span.start,
-                opened,
-                format!("{condition} {{"),
-            ),
+            (from, opened, format!("if {compare}{condition} {{")),
             (statements[over].span.start, jumped, middle),
             (statements[otherwise].span.start, labelled, String::new()),
             (

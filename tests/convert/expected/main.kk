@@ -35,7 +35,7 @@ naked reset {
     ldx #0
     loop {
         lda banner,x
-        == break
+        if == break
         sta IO.data
         inx
     } always

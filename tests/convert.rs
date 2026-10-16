@@ -1070,7 +1070,7 @@ fn an_unconditional_jump_inside_a_loop_is_a_bare_break_or_repeat() {
     );
     let bare = |word: &str| text.lines().any(|line| line.trim() == word);
     assert!(bare("repeat") && bare("break"), "{text}");
-    has(&text, "} while !=");
+    has(&text, "} while x?#2 !=");
     assert!(!text.contains(".top") && !text.contains(".out"), "{text}");
 }
 
@@ -1149,7 +1149,7 @@ fn a_loop_is_raised_before_a_skip_that_crosses_it() {
         ".zeropage\nslots:  .res 8\n.code\n.a8\n.i8\nfirst:  ldx #0\n@loop:  lda slots,x\n        beq @found\n        inx\n        cpx #8\n        bne @loop\n        sec\n        rts\n@found: clc\n        rts\n",
     );
     has(&text, "loop {");
-    has(&text, "} while !=");
+    has(&text, "} while x?#8 !=");
     has(&text, "beq .found");
     assert!(!text.contains(".loop"), "{text}");
 }
@@ -1184,4 +1184,85 @@ fn a_loop_the_source_closed_with_jmp_keeps_its_label() {
     has(&text, ".top:");
     has(&text, "jmp .top");
     assert!(!text.contains("} always"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// Sub-plan Q: the converter writes `if`, and folds a compare into it
+// (`plans/16-if-statement.md` decision 8). Every case is linked by
+// `faithful`, so each rewrite is also byte-identical to ca65's image.
+
+/// A raised block is `if COND {`, and the compare right before its branch
+/// is written in the `if`.
+#[test]
+fn a_raised_block_writes_if_and_folds_its_compare() {
+    let (text, _) = faithful(
+        "if-block-fold",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        cmp #10\n        bcs @big\n        inc total\n@big:   rts\n",
+    );
+    has(&text, "if a?#10 < {");
+    assert!(!text.contains("cmp #10"), "{text}");
+}
+
+/// The same for a choice, `cpx` and `bit` included: each compare names its
+/// register, and the bit test is `a&?`.
+#[test]
+fn a_raised_choice_folds_cpx_and_bit() {
+    let (text, _) = faithful(
+        "if-choice-fold",
+        ".zeropage\ntotal:  .res 1\nflags:  .res 1\n.code\n.a8\n.i8\nfirst:  cpx #4\n        bne @other\n        inc total\n        bra @next\n@other: dec total\n@next:  lda #1\n        bit flags\n        beq @done\n        inc total\n@done:  rts\n",
+    );
+    has(&text, "if x?#4 == {");
+    has(&text, "} else {");
+    has(&text, "if a&?flags != {");
+}
+
+/// A compare with a comment of its own stays a statement: the comment would
+/// have nowhere to go but the line the branch's already has.
+#[test]
+fn a_compare_with_its_own_comment_is_not_folded() {
+    let (text, _) = faithful(
+        "if-fold-comment",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        cmp #10         ; the limit\n        bcs @big\n        inc total\n@big:   rts\n",
+    );
+    has(&text, "cmp #10         // the limit");
+    has(&text, "if < {");
+}
+
+/// A compare of a number stays a statement: `cmp $10` reads an address, and
+/// `a?$10` in K816's HLA would compare with the value.
+#[test]
+fn a_compare_of_a_number_is_not_folded() {
+    let (text, _) = faithful(
+        "if-fold-number",
+        ".code\n.a8\n.i8\nfirst:  lda #3\n        cmp $10\n        bcs @big\n        inx\n@big:   rts\n",
+    );
+    has(&text, "cmp $10");
+    has(&text, "if < {");
+}
+
+/// Inside a loop, a conditional `break` or `repeat` folds the compare before
+/// it, and the closing branch's compare goes in the `while`.
+#[test]
+fn a_loops_exits_and_test_fold_their_compares() {
+    let (text, _) = faithful(
+        "if-loop-fold",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #0\n@top:   inx\n        cpx #3\n        beq @top\n        lda total\n        cmp #9\n        bcs @out\n        inc total\n        cpx #8\n        bne @top\n@out:   rts\n",
+    );
+    has(&text, "if x?#3 == repeat");
+    has(&text, "if a?#9 >= break");
+    has(&text, "} while x?#8 !=");
+}
+
+/// An `else` whose whole body is one `if` is `} else if`. Each level of
+/// the nested choice has its own exit label, as assembly written for it
+/// does.
+#[test]
+fn an_else_holding_only_an_if_is_an_else_if() {
+    let (text, _) = faithful(
+        "if-chain",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        cmp #1\n        bne @two\n        ldx #10\n        bra @done\n@two:   cmp #2\n        bne @three\n        ldx #20\n        bra @inner\n@three: ldx #30\n@inner:\n@done:  stx total\n        rts\n",
+    );
+    has(&text, "if a?#1 == {");
+    has(&text, "} else if a?#2 == {");
+    has(&text, "} else {");
 }

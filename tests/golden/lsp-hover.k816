@@ -70,6 +70,7 @@ func work @a8 @i8 {
     lda CURSOR
     lda SCREEN
     sta COUNTER
+    stz COUNTER
 
     lda FARDATA
 

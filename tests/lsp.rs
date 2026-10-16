@@ -1865,19 +1865,19 @@ fn hover_sizes_an_instruction_against_the_tracked_width() {
         // `M`-dependent, at a point the model knows is `@a8`.
         (
             "lda #LIMIT",
-            "`lda` — addressing mode `#`",
+            "`lda` — immediate addressing",
             &["Encodes to 2 byte", "as the `M` flag selects"],
         ),
         // …and the same mnemonic inside `@a16 { }`, one byte longer.
         (
             "lda #$1234",
-            "`lda` — addressing mode `#`",
+            "`lda` — immediate addressing",
             &["Encodes to 3 byte", "Sized against `@a16 @i8`"],
         ),
         // `X`-dependent, and a fixed-width immediate.
         (
             "ldx #0",
-            "`ldx` — addressing mode `#`",
+            "`ldx` — immediate addressing",
             &["Encodes to 2 byte", "as the `X` flag selects"],
         ),
         // `SEP`/`REP` derive their effects *from the mask*, and the
@@ -1886,44 +1886,53 @@ fn hover_sizes_an_instruction_against_the_tracked_width() {
         // reports writing nothing definite when what it writes is `M`.
         (
             "sep #$20",
-            "`sep` — addressing mode `#`",
-            &["Encodes to 2 byte", "always one byte", "writes `M`"],
+            "`sep` — immediate addressing",
+            &["Encodes to 2 bytes", "always one byte", "writes flags: M."],
         ),
         // The three address encodings.
         (
             "lda CURSOR",
-            "`lda` — addressing mode `d`",
+            "`lda` — direct page addressing",
             &["Encodes to 2 byte"],
         ),
         (
             "sta COUNTER",
-            "`sta` — addressing mode `a`",
-            &["Encodes to 3 byte"],
+            "`sta` — absolute addressing",
+            &[
+                "Encodes to 3 bytes",
+                "Reads A, DBR, flags: M; writes nothing.",
+            ],
+        ),
+        // A store of zero reads no register, only where and how wide.
+        (
+            "stz COUNTER",
+            "`stz` — absolute addressing",
+            &["Reads DBR, flags: M; writes nothing."],
         ),
         (
             "lda FARDATA",
-            "`lda` — addressing mode `al`",
+            "`lda` — long addressing",
             &["Encodes to 4 byte"],
         ),
         // No operand, the accumulator, a bank pair, and a displacement.
         (
             "nop\n",
-            "`nop` — addressing mode `i`",
+            "`nop` — implied addressing",
             &["Encodes to 1 byte"],
         ),
         (
             "asl a",
-            "`asl` — addressing mode `A`",
-            &["Encodes to 1 byte", "writes `A, N Z C`"],
+            "`asl` — accumulator addressing",
+            &["Encodes to 1 byte.", "writes A, flags: N, Z, C."],
         ),
         (
             "mvn $01",
-            "`mvn` — addressing mode `xyc`",
-            &["Encodes to 3 byte", "reads `A X Y DBR`"],
+            "`mvn` — block move addressing",
+            &["Encodes to 3 bytes", "reads A, X, Y, DBR;"],
         ),
         (
             "bra .onwards",
-            "`bra` — addressing mode `r`",
+            "`bra` — relative addressing",
             &["Encodes to 2 byte"],
         ),
     ];

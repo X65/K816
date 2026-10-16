@@ -535,9 +535,9 @@ fn instruction_hover(context: &Context<'_>) -> Option<Hover> {
     let spec = classified.spec;
 
     let mut out = format!(
-        "`{}` — addressing mode `{}`\n",
+        "`{}` — {} addressing\n",
         native.mnemonic.text,
-        spec.mode.symbol()
+        spec.mode.name()
     );
     // At the widths the model tracked here, not the upper bound: `lda #1` is
     // two bytes under `@a8` and three under `@a16`, and the whole point of
@@ -550,8 +550,8 @@ fn instruction_hover(context: &Context<'_>) -> Option<Hover> {
     let length = spec.encoded_length_at(width(known.a), width(known.i));
     let _ = writeln!(
         out,
-        "\nEncodes to {} byte(s){}.",
-        length * classified.repeat,
+        "\nEncodes to {}{}.",
+        bytes(length * classified.repeat),
         if classified.repeat > 1 {
             format!(" ({length} × {})", classified.repeat)
         } else {
@@ -574,8 +574,9 @@ fn instruction_hover(context: &Context<'_>) -> Option<Hover> {
     let effects = crate::effects::instruction_effects(spec.mnemonic, spec.mode, immediate);
     let _ = writeln!(
         out,
-        "\nReads `{}`; writes `{}`.",
-        effects.reads, effects.writes
+        "\nReads {}; writes {}.",
+        describe_cpu_state(effects.reads),
+        describe_cpu_state(effects.writes)
     );
 
     if let Some(state) = state {
@@ -585,6 +586,49 @@ fn instruction_hover(context: &Context<'_>) -> Option<Hover> {
         markdown: out,
         span: native.mnemonic.span,
     })
+}
+
+/// `DBR, flags: M` — the registers, then the flags, in the datasheet's names.
+fn describe_cpu_state(state: crate::effects::CpuState) -> String {
+    use crate::effects::{FlagSet, RegisterSet};
+    let registers = [
+        (RegisterSet::A, "A"),
+        (RegisterSet::X, "X"),
+        (RegisterSet::Y, "Y"),
+        (RegisterSet::S, "S"),
+        (RegisterSet::D, "D"),
+        (RegisterSet::DBR, "DBR"),
+        (RegisterSet::PBR, "PBR"),
+    ];
+    let flags = [
+        (FlagSet::N, "N"),
+        (FlagSet::V, "V"),
+        (FlagSet::M, "M"),
+        (FlagSet::X, "X"),
+        (FlagSet::D, "D"),
+        (FlagSet::I, "I"),
+        (FlagSet::Z, "Z"),
+        (FlagSet::C, "C"),
+        (FlagSet::E, "E"),
+    ];
+    let registers: Vec<&str> = registers
+        .iter()
+        .filter(|(bit, _)| state.registers.contains(*bit))
+        .map(|(_, name)| *name)
+        .collect();
+    let flags: Vec<&str> = flags
+        .iter()
+        .filter(|(bit, _)| state.flags.contains(*bit))
+        .map(|(_, name)| *name)
+        .collect();
+    let mut parts = registers;
+    let flags = (!flags.is_empty()).then(|| format!("flags: {}", flags.join(", ")));
+    parts.extend(flags.as_deref());
+    if parts.is_empty() {
+        "nothing".to_owned()
+    } else {
+        parts.join(", ")
+    }
 }
 
 fn immediate_class(class: crate::isa::ImmediateWidthClass) -> &'static str {

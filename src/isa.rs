@@ -200,6 +200,37 @@ impl AddressingMode {
         Self::StackRelativeIndirectIndexed,
     ];
 
+    /// The mode's name in words, for a reader who does not have Table 5-6 in
+    /// their head: `"absolute"` where [`Self::symbol`] says `"a"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Absolute => "absolute",
+            Self::AbsoluteIndexedIndirect => "absolute indexed indirect",
+            Self::AbsoluteIndexedX => "absolute indexed by X",
+            Self::AbsoluteIndexedY => "absolute indexed by Y",
+            Self::AbsoluteIndirect => "absolute indirect",
+            Self::AbsoluteLongIndexedX => "long indexed by X",
+            Self::AbsoluteLong => "long",
+            Self::Accumulator => "accumulator",
+            Self::BlockMove => "block move",
+            Self::DirectIndexedIndirect => "direct page indexed indirect",
+            Self::DirectIndexedX => "direct page indexed by X",
+            Self::DirectIndexedY => "direct page indexed by Y",
+            Self::DirectIndirectIndexed => "direct page indirect indexed by Y",
+            Self::DirectIndirectLongIndexed => "direct page indirect long indexed by Y",
+            Self::DirectIndirectLong => "direct page indirect long",
+            Self::DirectIndirect => "direct page indirect",
+            Self::Direct => "direct page",
+            Self::Immediate => "immediate",
+            Self::Implied => "implied",
+            Self::RelativeLong => "relative long",
+            Self::Relative => "relative",
+            Self::Stack => "stack",
+            Self::StackRelative => "stack relative",
+            Self::StackRelativeIndirectIndexed => "stack relative indirect indexed by Y",
+        }
+    }
+
     /// The Table 5-6 symbol for this mode, e.g. `"(d,s),y"`.
     pub fn symbol(self) -> &'static str {
         match self {
@@ -1144,6 +1175,15 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for mode in AddressingMode::ALL {
             assert!(seen.insert(mode.symbol()), "duplicate symbol {mode:?}");
+        }
+        assert_eq!(seen.len(), 24);
+    }
+
+    #[test]
+    fn mode_names_are_unique_across_the_twenty_four_modes() {
+        let mut seen = std::collections::HashSet::new();
+        for mode in AddressingMode::ALL {
+            assert!(seen.insert(mode.name()), "duplicate name {mode:?}");
         }
         assert_eq!(seen.len(), 24);
     }

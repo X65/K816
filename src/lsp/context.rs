@@ -230,7 +230,7 @@ pub fn at(analysis: &crate::Analysis, file: FileId, offset: u32) -> Option<Conte
     let mut statement = None;
     let mut function = None;
     for (index, item) in unit.program().items.iter().enumerate() {
-        if !item.span.contains(offset) {
+        if item.span.file != file || !item.span.contains(offset) {
             continue;
         }
         match &item.kind {
@@ -241,12 +241,12 @@ pub fn at(analysis: &crate::Analysis, file: FileId, offset: u32) -> Option<Conte
                     .iter()
                     .find(|info| info.item_index == index)
                     .map(|info| info.symbol);
-                statement = innermost(offset, |visit| {
+                statement = innermost(file, offset, |visit| {
                     crate::ast::visit_statements(&declaration.body, visit);
                 });
             }
             ItemKind::Data(data) => {
-                statement = innermost(offset, |visit| {
+                statement = innermost(file, offset, |visit| {
                     crate::ast::visit_data_statements(data, visit);
                 });
             }
@@ -277,7 +277,7 @@ pub fn at(analysis: &crate::Analysis, file: FileId, offset: u32) -> Option<Conte
         // A field's *declaring* `.name` is not a reference and not a symbol —
         // a field has no `SymbolId` — so it is found the way a symbol's
         // declaration is: by walking what declares it.
-        .or_else(|| declared_field(unit, offset));
+        .or_else(|| declared_field(unit, file, offset));
 
     Some(Context {
         unit,
@@ -291,12 +291,16 @@ pub fn at(analysis: &crate::Analysis, file: FileId, offset: u32) -> Option<Conte
     })
 }
 
-/// The field whose declaring `.name` covers `offset`.
+/// The field whose declaring `.name` covers `offset` of `file`.
+///
+/// The file is part of the question: a layout an imported unit declares is in
+/// this unit's table with *that* unit's spans, and an offset compared on its
+/// own matches whatever field happens to sit at the same byte over there.
 ///
 /// The layouts are walked rather than the AST: a layout is the thing a
 /// reference names, and the AST's field list would have to be matched back to
 /// one anyway.
-fn declared_field(unit: &AnalyzedUnit, offset: u32) -> Option<(LayoutId, usize)> {
+fn declared_field(unit: &AnalyzedUnit, file: FileId, offset: u32) -> Option<(LayoutId, usize)> {
     for (id, _) in unit.model.symbols.iter() {
         let layout = match unit.model.symbols.kind(id) {
             crate::symbol::SymbolKind::Var {
@@ -312,7 +316,7 @@ fn declared_field(unit: &AnalyzedUnit, offset: u32) -> Option<(LayoutId, usize)>
             .layout(layout)
             .fields
             .iter()
-            .position(|field| field.name_span.contains(offset));
+            .position(|field| field.name_span.file == file && field.name_span.contains(offset));
         if let Some(index) = found {
             return Some((layout, index));
         }
@@ -326,12 +330,16 @@ fn declared_field(unit: &AnalyzedUnit, offset: u32) -> Option<(LayoutId, usize)>
 /// child of a statement can cover a given offset — so the last statement the
 /// walk reports as covering it is the innermost one.
 fn innermost(
+    file: FileId,
     offset: u32,
     walk: impl FnOnce(&mut &mut dyn FnMut(&crate::ast::Statement)),
 ) -> Option<StmtId> {
     let mut found = None;
     let mut visit = |statement: &crate::ast::Statement| {
-        if statement.span.contains(offset) && statement.id.is_assigned() {
+        if statement.span.file == file
+            && statement.span.contains(offset)
+            && statement.id.is_assigned()
+        {
             found = Some(statement.id);
         }
     };

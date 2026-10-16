@@ -3119,6 +3119,49 @@ fn imported_workspace(test: &str) -> (std::path::PathBuf, Workspace) {
     (dir, workspace)
 }
 
+/// A position is only ever about the file it is in.
+///
+/// A layout an imported unit declares sits in this unit's table with that
+/// unit's spans, and the lookup of a field's *declaring* name compared byte
+/// offsets without the file. A width block's `@a8` that sat at the byte where
+/// an imported file declares `.stack` made go-to-definition on `@a8` jump to
+/// that field, and Zed's fallback listed every use of it.
+#[test]
+fn a_field_declared_in_another_file_does_not_answer_for_this_one() {
+    use k816::lsp::navigation::{definition, references};
+
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("lsp-field-file");
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    let main_text = "import \"hw.k816\"\n\nfunc work @a16 @i16 {\n    @a8 {\n        \
+                     lda #1\n        sta RIA.stack\n    }\n    return\n}\n";
+    let block = main_text.find("@a8 {").expect("the block") + 1;
+    // Padded so `.stack`'s name covers the byte `@a8` is at in `main.k816`.
+    let hw_head = "var RIA[\n";
+    let padding = block - hw_head.len() - "    .".len();
+    let hw_text = format!("{hw_head}{}    .stack :byte\n]\n", " ".repeat(padding));
+    let field = hw_text.find(".stack").expect("the field");
+    assert!(
+        (field..field + ".stack".len()).contains(&block),
+        "the fixture aligns"
+    );
+    std::fs::write(dir.join("hw.k816"), &hw_text).expect("write hw");
+    let main = dir.join("main.k816");
+    std::fs::write(&main, main_text).expect("write main");
+
+    let mut workspace = Workspace::new();
+    let uri = format!("file://{}", main.display());
+    workspace.update(uri.clone(), main_text.to_owned());
+    let analysis = workspace.analyze();
+    let file = workspace.file(&uri).expect("open");
+    assert_eq!(analysis.diagnostics.len(), 0, "{:?}", analysis.diagnostics);
+    assert_eq!(definition(&analysis, file, block as u32), None);
+    assert!(references(&analysis, file, block as u32, true).is_empty());
+    // And the use of the field still lands on it.
+    let use_site = main_text.find("stack").expect("the use") as u32;
+    let target = definition(&analysis, file, use_site).expect("the field");
+    assert_ne!(target.file, file);
+}
+
 /// One open document, and the editor sees the whole program.
 ///
 /// The difference K makes to the editor: a name a document imports resolves

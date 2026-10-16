@@ -33,7 +33,7 @@ use k816::isa::Mnemonic;
 use k816::linkage::Linkage;
 use k816::lower::lower;
 use k816::op::{KFunction, KOpKind, KProgram, Operand, Origin, Reason};
-use k816::optimize::{Context, OptimizationLog, Pass, optimize};
+use k816::optimize::{Change, Context, OptimizationLog, Pass, optimize};
 use k816::parser::parse_source;
 use k816::semantic::{SemanticModel, analyze_file};
 use k816::source::{FileId, SourceMap};
@@ -846,6 +846,76 @@ fn a_zero_chain_becomes_stz_per_store_and_drops_its_load_separately() {
         "nothing reads the accumulator or the N and Z it wrote, now that every store it fed \
          is an `STZ`"
     );
+}
+
+const ZERO_STORE_INDEX: &str = include_str!("golden/opt-zero-store-index.k816");
+
+/// `STX` and `STY` of a known zero become `STZ` where the accumulator is as
+/// wide as the index registers, and their `LDX #0`/`LDY #0` goes where it is
+/// dead.
+///
+/// The width condition is the one an `STA` never needs: `STZ` stores at the
+/// accumulator's width, so at `@a16 @i8` an `stx` of a known zero is one byte
+/// and the `stz` it would become is two.
+#[test]
+fn an_index_zero_store_becomes_stz_where_the_widths_agree() {
+    let (_, file, model, mut program) = lowered_as("opt-zero-store-index.k816", ZERO_STORE_INDEX);
+    let log = run(&mut program, &model, file);
+    use Mnemonic::{Ldx, Ldy, Rep, Rts, Stx, Sty, Stz};
+
+    // The `ldx #0` stays because `stz zp,x` still indexes by X.
+    assert_eq!(
+        mnemonics(&program, &model, "both8"),
+        vec![Ldx, Stz, Stz, Stz, Stz, Ldx, Ldy, Stx, Sty, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "both16"),
+        vec![Stz, Ldx, Stx, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "a16_i8"),
+        vec![Ldx, Stx, Ldx, Stx, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "a8_i16"),
+        vec![Ldy, Sty, Ldy, Sty, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "indexed_y"),
+        vec![Ldx, Stx, Ldx, Stx, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "chains"),
+        vec![Stz, Stz, Ldx, Ldy, Stx, Sty, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "at_the_end"),
+        vec![Ldx, Stz, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "removed_switch"),
+        vec![Ldx, Stx, Rep, Rts]
+    );
+
+    let zero_stores: Vec<_> = log.by_pass(Pass::ZeroStores).collect();
+    // Eight rewrites — four in `both8`, one in `both16`, two in `chains`, one
+    // at the end — and four removals: `both8`'s `ldy`, `both16`'s `ldx`, and
+    // the two loads of `chains`.
+    let (rewrites, removals): (Vec<&Change>, Vec<&Change>) = zero_stores
+        .iter()
+        .copied()
+        .partition(|change| !change.after.is_empty());
+    assert_eq!((rewrites.len(), removals.len()), (8, 4));
+    assert!(rewrites.iter().any(|change| change.justification
+        == "X is known zero in every lane this store writes, the accumulator is as wide as X, \
+            and `STZ` has this mode: same length, same stored bytes, and it stops reading X"));
+    assert!(rewrites.iter().any(|change| change.justification
+        == "Y is known zero in every lane this store writes, the accumulator is as wide as Y, \
+            and `STZ` has this mode: same length, same stored bytes, and it stops reading Y"));
+    assert!(removals.iter().any(|change| change.justification
+        == "nothing reads X or the N and Z it wrote, now that every store it fed is an `STZ`"));
+    assert!(removals.iter().any(|change| change.justification
+        == "nothing reads Y or the N and Z it wrote, now that every store it fed is an `STZ`"));
 }
 
 // ---------------------------------------------------------------------------

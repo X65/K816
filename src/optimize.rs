@@ -79,7 +79,8 @@ pub enum Pass {
     /// 5 — delete a flag operation whose flag provably already holds that
     /// value.
     CollapseFlags,
-    /// 6 — `sta m` → `stz m` where A is known zero.
+    /// 6 — `sta m` → `stz m` where A is known zero, and `stx`/`sty` where
+    /// X or Y is and the accumulator is as wide as the index registers.
     ZeroStores,
     /// 8 — delete compiler-generated operations no edge reaches.
     ///
@@ -2402,14 +2403,20 @@ fn collapse_redundant_flags(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Optim
 // Pass 6 — rewrite safe zero stores
 // ---------------------------------------------------------------------------
 
-/// Rewrites `sta m` to `stz m` where A is known zero, and then drops the
-/// `lda #0` the rewrite orphaned.
+/// Rewrites `sta m` to `stz m` where A is known zero, `stx m` and `sty m`
+/// where X or Y is, and then drops the `lda #0`, `ldx #0` or `ldy #0` the
+/// rewrite orphaned.
 ///
-/// `doc/syntax-reference.md` "Zero-Store Shortcut" specifies it exactly: "the
-/// compiler's peephole rewrites each supported `STA` to `STZ` and drops the
-/// leading `LDA #0` when `A` is dead afterwards". So the rewrite is *per
-/// store* — `STZ` exists in four modes and `STA` in fourteen, and a chain may
-/// mix them — and the load dies separately, if it dies at all.
+/// `doc/syntax-reference.md` "Zero-Store Shortcut" specifies it: the
+/// compiler's peephole rewrites each supported store of a known zero to `STZ`
+/// and drops the leading load when its register is dead afterwards. So the
+/// rewrite is *per store* — `STZ` exists in four modes and `STA` in fourteen,
+/// and a chain may mix them — and the load dies separately, if it dies at all.
+///
+/// An index store has one more condition. `STZ` writes as many bytes as the
+/// accumulator is wide and `STX`/`STY` as many as the index registers are, so
+/// the two have to be known and equal: `stx` at `@i8` beside `@a16` stores one
+/// byte where `stz` would store two.
 ///
 /// The load's liveness is checked here rather than left to the dead-write
 /// pass, because that pass runs earlier in the fixed order and will not see
@@ -2425,6 +2432,20 @@ fn rewrite_zero_stores(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Optimizati
         let before = ops[*index].clone();
         let after = zero_store(ops, &flow, &values, *index).expect("just checked");
         ops[*index] = after.clone();
+        let justification = match stored_register(&before) {
+            Some(Mnemonic::Sta) | None => String::from(
+                "the accumulator is known zero in every lane this store writes, and `STZ` \
+                 has this mode: same length, same stored bytes, and it stops reading A",
+            ),
+            Some(store) => {
+                let register = if store == Mnemonic::Stx { "X" } else { "Y" };
+                format!(
+                    "{register} is known zero in every lane this store writes, the \
+                     accumulator is as wide as {register}, and `STZ` has this mode: same \
+                     length, same stored bytes, and it stops reading {register}"
+                )
+            }
+        };
         log.changes.push(Change {
             pass: Pass::ZeroStores,
             site: Site {
@@ -2434,10 +2455,7 @@ fn rewrite_zero_stores(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Optimizati
             before: vec![before],
             after: vec![after],
             witness: None,
-            justification: String::from(
-                "the accumulator is known zero in every lane this store writes, and `STZ` \
-                 has this mode: same length, same stored bytes, and it stops reading A",
-            ),
+            justification,
         });
     }
     if rewritten.is_empty() {
@@ -2452,6 +2470,11 @@ fn rewrite_zero_stores(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Optimizati
         .collect();
     for index in &orphaned {
         let removed = ops[*index].clone();
+        let register = match &removed.kind {
+            KOpKind::Instruction(instruction) if instruction.mnemonic == Mnemonic::Ldx => "X",
+            KOpKind::Instruction(instruction) if instruction.mnemonic == Mnemonic::Ldy => "Y",
+            _ => "the accumulator",
+        };
         log.changes.push(Change {
             pass: Pass::ZeroStores,
             site: Site {
@@ -2461,9 +2484,9 @@ fn rewrite_zero_stores(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Optimizati
             before: vec![removed],
             after: Vec::new(),
             witness: None,
-            justification: String::from(
-                "nothing reads the accumulator or the N and Z it wrote, now that every \
-                 store it fed is an `STZ`",
+            justification: format!(
+                "nothing reads {register} or the N and Z it wrote, now that every \
+                 store it fed is an `STZ`"
             ),
         });
     }
@@ -2480,20 +2503,28 @@ fn zero_store(ops: &[KOp], flow: &Flow, values: &[Tracked], index: usize) -> Opt
     let KOpKind::Instruction(instruction) = &ops[index].kind else {
         return None;
     };
-    if instruction.mnemonic != Mnemonic::Sta {
-        return None;
-    }
+    let (register, axis) = match instruction.mnemonic {
+        Mnemonic::Sta => (RegisterSet::A, Axis::Accumulator),
+        Mnemonic::Stx => (RegisterSet::X, Axis::Index),
+        Mnemonic::Sty => (RegisterSet::Y, Axis::Index),
+        _ => return None,
+    };
     // The ISA table decides which modes exist, rather than a list repeated
     // here: `STZ` has direct, direct indexed by X, absolute, and absolute
     // indexed by X, and nothing else — no long, no indexed-Y, no indirect, no
-    // stack-relative.
+    // stack-relative. `stx dp,y` therefore stays, and `sty dp,x` addresses
+    // the same byte as the `stz dp,x` it becomes.
     crate::isa::spec(Mnemonic::Stz, instruction.mode)?;
 
-    // Known zero in every lane the store writes. The store's width is the
-    // accumulator's, and F reads that off the claim in effect or not at all.
+    // Known zero in every lane the store writes. The store's width is its
+    // register's, and F reads that off the claim in effect or not at all;
+    // `STZ`'s is the accumulator's, so for an index store the two must agree.
     let state = &values[index];
-    let width = state.width(Axis::Accumulator)?;
-    let known = state.a?;
+    let width = state.width(axis)?;
+    if state.width(Axis::Accumulator)? != width {
+        return None;
+    }
+    let known = state.register(register)?;
     if known.value != 0 || !known.lanes.covers(Lanes::of(width)) {
         return None;
     }
@@ -2507,17 +2538,32 @@ fn zero_store(ops: &[KOp], flow: &Flow, values: &[Tracked], index: usize) -> Opt
     Some(rewritten)
 }
 
-/// True when this operation is a `lda #0`.
+/// The store mnemonic of an `sta`, `stx` or `sty`, which is what the
+/// justification of its rewrite names.
+fn stored_register(op: &KOp) -> Option<Mnemonic> {
+    let KOpKind::Instruction(instruction) = &op.kind else {
+        return None;
+    };
+    matches!(
+        instruction.mnemonic,
+        Mnemonic::Sta | Mnemonic::Stx | Mnemonic::Sty
+    )
+    .then_some(instruction.mnemonic)
+}
+
+/// True when this operation is a `lda #0`, `ldx #0` or `ldy #0`.
 fn loads_zero(op: &KOp) -> bool {
     let KOpKind::Instruction(instruction) = &op.kind else {
         return false;
     };
-    instruction.mnemonic == Mnemonic::Lda
-        && instruction
-            .operand
-            .as_ref()
-            .and_then(Operand::immediate_value)
-            .is_some_and(|value| value.get() == 0)
+    matches!(
+        instruction.mnemonic,
+        Mnemonic::Lda | Mnemonic::Ldx | Mnemonic::Ldy
+    ) && instruction
+        .operand
+        .as_ref()
+        .and_then(Operand::immediate_value)
+        .is_some_and(|value| value.get() == 0)
 }
 
 // ---------------------------------------------------------------------------

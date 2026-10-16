@@ -2889,6 +2889,58 @@ fn the_zero_store_fixture_rewrites_per_store_and_drops_one_load() {
     assert_eq!(bytes, 5 * 2);
 }
 
+/// The index zero-store fixture, at the bytes.
+///
+/// `STZ` is the same length as `STX` and `STY` in every mode the rewrite
+/// takes, so the eight rewrites cost nothing; the bytes are the four loads
+/// they orphaned — `chains`' `ldx #$00` and `ldy #$00`, `both8`'s
+/// `ldy #$00`, and `both16`'s three-byte `ldx #$0000` — and the `sep` the
+/// dead-mode pass removed before this one ran.
+#[test]
+fn the_index_zero_store_fixture_rewrites_only_where_the_widths_agree() {
+    let (removed, added, bytes) = optimizer_effect_with(
+        "opt-zero-store-index",
+        "opt-zero-store-index.k816",
+        include_str!("golden/opt-zero-store-index.k816"),
+        "vars",
+    );
+    assert_eq!(
+        removed,
+        vec![
+            "ldx     #$00",
+            "ldx     #$0000",
+            "ldy     #$00",
+            "ldy     #$00",
+            // `removed_switch`'s `@a8`, which the dead-mode pass takes.
+            "sep     #$20",
+            "stx     a:abs1",
+            "stx     a:abs1",
+            "stx     z:zp",
+            "stx     z:zp",
+            "stx     z:zp",
+            "sty     a:abs1",
+            "sty     z:zp",
+            "sty     z:zp,x",
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(
+        added,
+        vec![
+            "stz     a:abs1",
+            "stz     a:abs1",
+            "stz     a:abs1",
+            "stz     z:zp",
+            "stz     z:zp",
+            "stz     z:zp",
+            "stz     z:zp",
+            "stz     z:zp,x",
+        ],
+        "{added:?}"
+    );
+    assert_eq!(bytes, 3 * 2 + 3 + 2);
+}
+
 /// The branch fixture, through ca65.
 ///
 /// This is the gate that matters for shrinking: a wrong bound is a `Range
@@ -3148,6 +3200,26 @@ const FIXTURE_EFFECTS: &[Effect] = &[
         ],
         &[("stz     a:CELL,x", 3)],
         "a repeated load, two more that a memory read and an N/Z-writing mask left dead behind them, a redundant `clc`, an `ldx` sixteen known bits made redundant, and three stores of a known-zero accumulator — the fourth follows an `xba` over a half nothing wrote, and a tracker with lanes leaves it alone",
+    ),
+    (
+        "opt-zero-store-index.k816",
+        &[
+            ("ldx     #$00", 1),
+            ("ldx     #$0000", 1),
+            ("ldy     #$00", 2),
+            ("sep     #$20", 1),
+            ("stx     a:abs1", 2),
+            ("stx     z:zp", 3),
+            ("sty     a:abs1", 1),
+            ("sty     z:zp", 1),
+            ("sty     z:zp,x", 1),
+        ],
+        &[
+            ("stz     a:abs1", 3),
+            ("stz     z:zp", 4),
+            ("stz     z:zp,x", 1),
+        ],
+        "eight index stores of a known zero where the accumulator is as wide as the index registers, the loads that fed them where nothing else reads the register, and the `sep` of an `@a8` no instruction observes",
     ),
     (
         "opt-zero-store.k816",

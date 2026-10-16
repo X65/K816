@@ -1,0 +1,86 @@
+// The zero-store peephole over the index registers.
+//
+// `stx m` and `sty m` of a known zero become `stz m` exactly as `sta m` does,
+// with one more condition: `STZ` stores as many bytes as the accumulator is
+// wide, and `STX`/`STY` as many as the index registers are, so the rewrite
+// needs both widths known and equal. The leading `ldx #0` or `ldy #0` goes
+// where its register and the N and Z it wrote are dead.
+
+var zp    = $10
+var abs1  = $0200
+var after = $0202
+
+// Both axes 8-bit. Every store is rewritten. The `ldy #0` goes; the `ldx #0`
+// stays, because `stz zp,x` — what `sty zp,x` became — still indexes by X.
+func both8 @a8 @i8 {
+    ldx #0
+    stx zp
+    stx abs1
+    ldy #0
+    sty zp
+    sty zp,x
+    ldx #1
+    ldy #1
+    stx after
+    sty after
+}
+
+// Both axes 16-bit: the store and the load go the same way, two bytes each.
+func both16 @a16 @i16 {
+    ldx #0
+    stx abs1
+    ldx #1
+    stx after
+}
+
+// The widths differ, so nothing moves: `stz` here would store two bytes where
+// `stx` stores one, and one where `sty` stores two.
+func a16_i8 @a16 @i8 {
+    ldx #0
+    stx abs1
+    ldx #1
+    stx after
+}
+
+func a8_i16 @a8 @i16 {
+    ldy #0
+    sty abs1
+    ldy #1
+    sty after
+}
+
+// There is no `stz dp,y`, so `stx zp,y` stays, and its load with it.
+func indexed_y @a8 @i8 {
+    ldx #0
+    stx zp,y
+    ldx #1
+    stx after
+}
+
+// The HLA spelling is the same instructions and gets the same rewrite.
+func chains @a8 @i8 {
+    zp = x = 0
+    abs1 = y = 0
+    x = 1
+    y = 1
+    after = x
+    after = y
+}
+
+// At a function's end the store is rewritten and the load stays: everything is
+// live at an exit.
+func at_the_end @a8 @i8 {
+    ldx #0
+    stx zp
+}
+
+// The `@a8` changes no instruction, so the dead-mode pass removes its `sep`
+// before this one runs — and the store is then at `@a16` beside `@i8` and
+// stays an `stx`. The width the rewrite reads is the stream's, not the
+// source's.
+func removed_switch @a16 @i8 {
+    @a8
+    ldx #0
+    stx zp
+    @a16
+}

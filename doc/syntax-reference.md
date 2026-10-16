@@ -1835,6 +1835,8 @@ The LHS must name a declared place: a variable identifier, optionally indexed (`
 
 For chains that genuinely do want the accumulator loaded too (e.g. storing the same zero to several cells and leaving `A = 0` for a subsequent operation), keep the traditional `mem1 = mem2 = a = 0` form — the compiler's peephole rewrites each supported `STA` to `STZ` and drops the leading `LDA #0` when `A` is dead afterwards.
 
+The same holds for the index registers, written either way: `ldx #0` then `stx mem`, or `mem = x = 0`, becomes `STZ` where X is known zero, and likewise for Y. An index store has one more condition, because `STZ` stores as many bytes as the accumulator is wide and `STX`/`STY` as many as the index registers are: the two widths have to be known and equal. Under `@a16 @i8` an `stx` stays an `stx`. `STX` has no `STZ` counterpart for `mem,y`, and `sty mem,x` becomes `stz mem,x`, which still reads X — so a zero `X` that indexes a store is not dead, and its load stays.
+
 Both halves are decided per *operation*. `STZ` has four addressing modes and `STA` has fourteen, so a chain that mixes them gets `STZ` where one exists and keeps `STA` where it does not — and the load stays whenever any store still reads the accumulator. The load also **stays at the end of a function**: everything is live where a function returns, the accumulator and the `N`/`Z` it wrote included, and nothing in a call contract could have said otherwise. So the rewrite completes less often at the end of a body than the sentence above suggests, and `mem = 0` on its own — which needs no accumulator at all — is the form to reach for there.
 
 ## Standard 6502 Instructions
@@ -3505,7 +3507,7 @@ Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
 |||`mem=0`|`mem,x=0`|||||
 
-Raw mnemonic: `stz zp` / `stz zp,x` / `stz abs` / `stz abs,x`. See the [Zero-Store Shortcut](#zero-store-shortcut) section: `mem = 0` lowers directly to `STZ`, and `mem = a = 0` chains get `STZ` via peephole rewrite.
+Raw mnemonic: `stz zp` / `stz zp,x` / `stz abs` / `stz abs,x`. See the [Zero-Store Shortcut](#zero-store-shortcut) section: `mem = 0` lowers directly to `STZ`, and `mem = a = 0` chains — and `x`/`y` ones where the widths agree — get `STZ` via peephole rewrite.
 
 ```none
 STZ  Store Zero in Memory

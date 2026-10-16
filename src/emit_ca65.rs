@@ -704,7 +704,7 @@ pub fn emitted_bytes(program: &KProgram) -> u32 {
                 widths.apply(
                     instruction.effects().width,
                     instruction.mnemonic == Mnemonic::Xce,
-                    is_authored_bridge(op),
+                    op.is_authored_bridge(),
                     &mut discarded,
                 );
             }
@@ -712,16 +712,6 @@ pub fn emitted_bytes(program: &KProgram) -> u32 {
         }
     }
     total
-}
-
-/// Whether `op` is a `REP`/`SEP` the width model authored to establish a
-/// width, rather than one the source wrote.
-///
-/// Both halves are needed: `Origin` says who wrote it and [`Reason`] says
-/// what for, and the instruction is identical either way.
-fn is_authored_bridge(op: &KOp) -> bool {
-    op.origin == Origin::CompilerGenerated
-        && op.reason.is_some_and(crate::op::Reason::is_width_bridge)
 }
 
 /// One instruction's assembled length, at the widths tracked so far.
@@ -848,11 +838,11 @@ impl WidthState {
 
     /// Applies the width transition of an executed instruction.
     ///
-    /// Driven by the effect table's [`WidthEffect`], not by a match over
-    /// mnemonics: a `FlagSet` only says that M or X was written, and a
-    /// mnemonic match would need one arm per instruction. An unknown
-    /// transition drops the tracked widths so nothing downstream emits a
-    /// width claim K816 cannot justify.
+    /// The transition is [`crate::width::mode_after`]'s, which the solver
+    /// and the optimizer read too, so ca65 is told the width the rest of the
+    /// compiler believes. What is left here is saying it: a directive for an
+    /// axis that became known, a comment for one that did not, because ca65
+    /// has no directive to un-assume a width.
     fn apply(
         &mut self,
         width: WidthEffect,
@@ -860,86 +850,44 @@ impl WidthState {
         authored: bool,
         out: &mut String,
     ) {
-        let why = if authored {
+        // `RTI` and `PLP` restore a status byte, which cannot widen a
+        // register in emulation mode, so the widths are still the eight the
+        // machine forces; that is worth a reason of its own.
+        let why = if width == WidthEffect::Unknown
+            && self.e == EmulationState::Emulation
+            && !exchanges_emulation
+        {
+            "emulation mode forces both widths to 8"
+        } else if authored {
             "the width the bridge above establishes"
         } else {
             "the width the instruction above established"
         };
+        let before = ModeState {
+            a: self.a.map_or(AxisState::Unknown, AxisState::Known),
+            i: self.i.map_or(AxisState::Unknown, AxisState::Known),
+            e: self.e,
+        };
+        let after = crate::width::mode_after(before, width, exchanges_emulation, authored);
         // An `XCE` leaves the flag unknown (`doc/w65c816s.md`, sub-plan D's
         // decision 4), and the tracked state has to say so *here*: a
         // `ModeAssumption` is the only other writer of `self.e`, and
         // `lower::reconcile` emits none when the widths agree — which they do
         // across an `xce`, both being unknown. Without this the emitter went
         // on believing the machine was native and told ca65 `.a16` for a
-        // following `REP` that may have changed nothing. No byte was wrong,
-        // because `K816-E0104` refuses every width-dependent immediate while
-        // the axis is unknown; the directive was still a claim the model does
-        // not make (`postmortem.md` §H.13.2).
-        if exchanges_emulation {
-            self.e = EmulationState::Unknown;
+        // following `REP` that may have changed nothing (`postmortem.md`
+        // §H.13.2).
+        self.e = after.e;
+        if width == WidthEffect::Unchanged {
+            return;
         }
-        match width {
-            WidthEffect::Unchanged => {}
-            WidthEffect::Known { a, i } => {
-                // Read through the emulation state, not off the encoding: a
-                // `rep #$20` in emulation mode requests sixteen bits and
-                // establishes eight, and telling ca65 `.a16` there sizes the
-                // next immediate at two bytes for a register the CPU is
-                // running at one.
-                //
-                // Unless K816 *authored* it. A bridge exists because the
-                // model concluded the width holds, and a widening one is
-                // refused outright where emulation is known to defeat it
-                // (`K816-E0163`) — so the only bridge `believe` would
-                // disagree with is one an `@a16` annotation asserted under an
-                // unknown flag, which is the documented `xce`-then-widen
-                // escape hatch. That assertion is what the immediates below
-                // were sized against; withdrawing it here left ca65 sizing
-                // them for the narrower register (`postmortem.md` §H.13).
-                let read = |width: RegisterWidth, emulation| {
-                    if authored {
-                        AxisState::Known(width)
-                    } else {
-                        crate::width::believe(width, emulation)
-                    }
-                };
-                if let Some(a) = a {
-                    match read(a, self.e) {
-                        AxisState::Known(width) => self.set_a(width, why, out),
-                        _ => self.forget(Axis::A, self.e, out),
-                    }
-                }
-                if let Some(i) = i {
-                    match read(i, self.e) {
-                        AxisState::Known(width) => self.set_i(width, why, out),
-                        _ => self.forget(Axis::I, self.e, out),
-                    }
-                }
-            }
-            // `RTI` and `PLP` restore a status byte, which cannot widen a
-            // register in emulation mode — so there is nothing to forget and
-            // the widths are still the eight the machine forces. `XCE` is
-            // excluded because it is what makes the mode unknown in the first
-            // place.
-            WidthEffect::Unknown if self.e == EmulationState::Emulation && !exchanges_emulation => {
-                self.set_a(
-                    RegisterWidth::W8,
-                    "emulation mode forces both widths to 8",
-                    out,
-                );
-                self.set_i(
-                    RegisterWidth::W8,
-                    "emulation mode forces both widths to 8",
-                    out,
-                );
-            }
-            // The instruction destroyed both tracked widths. ca65 has no
-            // directive to un-assume one, so the drop is stated in a comment
-            // and the next claim is what brings a width back.
-            WidthEffect::Unknown => {
-                self.forget(Axis::A, self.e, out);
-                self.forget(Axis::I, self.e, out);
-            }
+        match after.a {
+            AxisState::Known(width) => self.set_a(width, why, out),
+            _ => self.forget(Axis::A, self.e, out),
+        }
+        match after.i {
+            AxisState::Known(width) => self.set_i(width, why, out),
+            _ => self.forget(Axis::I, self.e, out),
         }
     }
 }
@@ -1031,7 +979,7 @@ fn emit_instruction(
     widths.apply(
         instruction.effects().width,
         instruction.mnemonic == Mnemonic::Xce,
-        is_authored_bridge(op),
+        op.is_authored_bridge(),
         out,
     );
 }

@@ -74,6 +74,17 @@ pub struct KOp {
 }
 
 impl KOp {
+    /// Whether this is a `REP`/`SEP` the width model authored to establish a
+    /// width, rather than one the source wrote.
+    ///
+    /// Both halves are needed: `Origin` says who wrote it and [`Reason`]
+    /// says what for, and the instruction is identical either way. The
+    /// emitter and the optimizer both read a bridge's width through
+    /// [`crate::width::mode_after`] with this as its `authored` argument.
+    pub fn is_authored_bridge(&self) -> bool {
+        self.origin == Origin::CompilerGenerated && self.reason.is_some_and(Reason::is_width_bridge)
+    }
+
     pub fn new(kind: KOpKind, span: Span, origin: Origin) -> Self {
         Self {
             kind,

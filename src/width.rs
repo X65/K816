@@ -1693,52 +1693,82 @@ fn apply(
 /// emulation mode.
 fn apply_effect(incoming: Fact, effect: WidthEffect, exchanges_emulation: bool) -> Fact {
     let mut fact = incoming;
+    fact.mode = mode_after(incoming.mode, effect, exchanges_emulation, false);
     match effect {
         WidthEffect::Unchanged => {}
         WidthEffect::Known { a, i } => {
-            if let Some(width) = a {
-                fact.mode.a = believe(width, fact.mode.e);
-                fact.touched.a = true;
-            }
-            if let Some(width) = i {
-                fact.mode.i = believe(width, fact.mode.e);
-                fact.touched.i = true;
-            }
-        }
-        // `RTI` and `PLP` restore a status byte the model cannot read, and
-        // `XCE` decides the emulation flag from the carry. In *emulation*
-        // mode the first two cannot widen anything: M and X are forced to
-        // one, so whatever byte comes back off the stack, both registers are
-        // still eight bits wide. `XCE` is the one that really is unknown
-        // afterwards, and it says so through `exchanges_emulation` below —
-        // which is read *before* this, so the exchange does not get to
-        // benefit from the state it is leaving.
-        WidthEffect::Unknown
-            if fact.mode.e == EmulationState::Emulation && !exchanges_emulation =>
-        {
-            fact.mode.a = AxisState::Known(RegisterWidth::W8);
-            fact.mode.i = AxisState::Known(RegisterWidth::W8);
-            fact.touched = Touched {
-                a: true,
-                i: true,
-                e: fact.touched.e,
-            };
+            fact.touched.a |= a.is_some();
+            fact.touched.i |= i.is_some();
         }
         WidthEffect::Unknown => {
-            fact.mode.a = AxisState::Unknown;
-            fact.mode.i = AxisState::Unknown;
-            fact.touched = Touched {
-                a: true,
-                i: true,
-                e: fact.touched.e,
-            };
+            fact.touched.a = true;
+            fact.touched.i = true;
+        }
+    }
+    fact.touched.e |= exchanges_emulation;
+    fact
+}
+
+/// The widths after one executed instruction, from the widths before it.
+///
+/// **The one answer to "how wide is it after this instruction".** The solver
+/// runs it over statements, the emitter over the operation stream to tell
+/// ca65, and the optimizer's value tracker over the same stream to size what
+/// it rewrites. Three walks are fine; three transition rules were not — the
+/// emitter and the solver disagreed for as long as `Emulation` was private to
+/// one of them (see [`believe`]), and the optimizer had none at all and so
+/// knew no width after any `REP` or `SEP`, a bridge's included.
+///
+/// `authored` is true for a `REP`/`SEP` the width model emitted as a bridge.
+/// It is believed as written: a bridge exists because the model concluded
+/// the width holds, and a widening one is refused outright where emulation is
+/// known to defeat it (`K816-E0163`), so the only bridge [`believe`] would
+/// disagree with is one an `@a16` annotation asserted under an unknown flag —
+/// the documented `xce`-then-widen escape hatch, which is what the
+/// immediates after it were sized against (`postmortem.md` §H.13). The
+/// solver never sees a bridge, since it computes them, and passes `false`.
+///
+/// Under `Native` the effect table's answer applies as written. Under an
+/// unknown emulation flag a narrowing transition still yields 8-bit and a
+/// widening one yields `Unknown`. Under `Emulation` every answer is known:
+/// `RTI` and `PLP` restore a status byte the model cannot read, and in
+/// emulation mode no status byte can widen a register, so both are still
+/// eight bits wide afterwards. `XCE` is the one that really is unknown, and
+/// the emulation flag it leaves is read *after* the widths, so the exchange
+/// does not get to benefit from the state it is leaving.
+pub(crate) fn mode_after(
+    before: ModeState,
+    effect: WidthEffect,
+    exchanges_emulation: bool,
+    authored: bool,
+) -> ModeState {
+    let read = |width: RegisterWidth| {
+        if authored {
+            AxisState::Known(width)
+        } else {
+            believe(width, before.e)
+        }
+    };
+    let mut after = before;
+    match effect {
+        WidthEffect::Unchanged => {}
+        WidthEffect::Known { a, i } => {
+            after.a = a.map_or(before.a, read);
+            after.i = i.map_or(before.i, read);
+        }
+        WidthEffect::Unknown if before.e == EmulationState::Emulation && !exchanges_emulation => {
+            after.a = AxisState::Known(RegisterWidth::W8);
+            after.i = AxisState::Known(RegisterWidth::W8);
+        }
+        WidthEffect::Unknown => {
+            after.a = AxisState::Unknown;
+            after.i = AxisState::Unknown;
         }
     }
     if exchanges_emulation {
-        fact.mode.e = EmulationState::Unknown;
-        fact.touched.e = true;
+        after.e = EmulationState::Unknown;
     }
-    fact
+    after
 }
 
 /// What an instruction's *stated* width effect establishes, read through the

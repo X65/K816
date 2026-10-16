@@ -40,7 +40,7 @@
 //!
 //! A condition is spelled the way the flags it tests were set: a carry a
 //! compare left is the relation (`<`, `>=`), and any other carry the flag
-//! (`c?`, `!c?`); zero and sign are the relations K65 has always used for
+//! (`c`, `!c`); zero and sign are the relations K65 has always used for
 //! them (`==`, `!=`, `<0`, `>=0`), and overflow has only its flag.
 //!
 //! Every condition is written after `if`, and the compare that set its flags
@@ -353,18 +353,21 @@ fn jump(statement: &Statement) -> Option<Jump<'_>> {
 }
 
 /// The condition a branch is taken under, spelled for the flags it reads.
+///
+/// Every condition the converter writes stands after `if` or `while`, so a
+/// flag test is the flag's letter (`plans/17-flag-tests.md`).
 fn taken(mnemonic: &str, after_compare: bool) -> &'static str {
     match (mnemonic, after_compare) {
         ("bcc", true) => "<",
-        ("bcc", false) => "!c?",
+        ("bcc", false) => "!c",
         ("bcs", true) => ">=",
-        ("bcs", false) => "c?",
+        ("bcs", false) => "c",
         ("beq", _) => "==",
         ("bne", _) => "!=",
         ("bmi", _) => "<0",
         ("bpl", _) => ">=0",
-        ("bvs", _) => "v?",
-        _ => "!v?",
+        ("bvs", _) => "v",
+        _ => "!v",
     }
 }
 

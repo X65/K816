@@ -1008,7 +1008,7 @@ fn a_carry_after_a_compare_is_a_relation_and_any_other_is_the_flag() {
         ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        cmp #10\n        bcc @small\n        inc total\n@small: lsr\n        bcs @odd\n        inc total\n@odd:   rts\n",
     );
     has(&text, ">= {");
-    has(&text, "!c? {");
+    has(&text, "if !c {");
 }
 
 /// Inside a loop, a conditional branch to the label right after it is a
@@ -1020,7 +1020,7 @@ fn a_branch_out_of_a_loop_is_a_break_and_one_back_to_its_top_a_repeat() {
         "raise-break",
         ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n@top:   lda total\n        beq @out\n        lsr total\n        bcs @top\n        dex\n        bne @top\n@out:   rts\n",
     );
-    for line in ["loop {", "== break", "c? repeat", "} while !="] {
+    for line in ["loop {", "if == break", "if c repeat", "} while !="] {
         has(&text, line);
     }
     assert!(!text.contains(".top") && !text.contains(".out"), "{text}");

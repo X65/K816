@@ -705,3 +705,39 @@ if:
         mnemonic: (mnemonic))
       (goto_statement
         target: (identifier)))))
+
+================================================================================
+An if inside a width block, and a bit test in a while
+================================================================================
+
+func main {
+  @a8 {
+    if == { x++ }
+  }
+  loop { y++ } while a&?mem !=
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (width_block
+        width: (width_annotation)
+        body: (block
+          (if_statement
+            condition: (branch_condition)
+            body: (block
+              (hla_step
+                target: (register))))))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          compare: (hla_arithmetic
+            register: (register)
+            operand: (address
+              value: (identifier)))
+          condition: (branch_condition))))))

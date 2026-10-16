@@ -1848,3 +1848,78 @@ fn every_branch_spelling_the_reference_lists_emits_its_branch() {
         failures.join("\n")
     );
 }
+
+/// No example in the syntax reference spells a form K816 refuses.
+///
+/// The reference's examples are K816 (its first paragraph says so), and a
+/// fence is compiled as a `.k816` by every gate that reads one — but those
+/// gates read copies (`MATRIX`), so a fence could keep a spelling the
+/// dialect refuses and nothing would say: sub-plan Q's read-back put a bare
+/// `== {` in the If-Else example and the suite stayed green. Each `k65`
+/// fence that parses as a program is compiled here, and may draw none of
+/// the codes for a K65 spelling K816 writes its own way (`K816-K65-0007` to
+/// `0011`). The removed constructs' codes (`0001` to `0006`) are not among
+/// them: the `image` examples show a refusal on purpose. Fragments — a
+/// statement shown outside a function — do not parse, and are counted
+/// rather than skipped silently; the read-back found the one bare form among
+/// them (`if =={` in the `else` section) by hand.
+#[test]
+fn no_reference_example_spells_a_form_k816_refuses() {
+    let reference = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("doc/syntax-reference.md"),
+    )
+    .expect("read the syntax reference");
+    let mut fences: Vec<(usize, String)> = Vec::new();
+    let mut body: Option<(usize, String)> = None;
+    for (number, line) in reference.lines().enumerate() {
+        match &mut body {
+            None if line.trim_end() == "```k65" => body = Some((number + 1, String::new())),
+            Some((start, text)) if line.trim_end() == "```" => {
+                fences.push((*start, std::mem::take(text)));
+                body = None;
+            }
+            Some((_, text)) => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            None => {}
+        }
+    }
+    let (mut compiled, mut fragments) = (0, 0);
+    let mut refused = Vec::new();
+    for (line, fence) in &fences {
+        let mut map = SourceMap::new();
+        let file = map.add_file("example.k816", fence.as_str());
+        if !k816::parser::parse_source(map.file(file), None)
+            .diagnostics
+            .is_empty()
+        {
+            fragments += 1;
+            continue;
+        }
+        compiled += 1;
+        let result = compile_to_ca65(&map, file, &Options::default());
+        let codes: Vec<_> = result
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .filter(|code| {
+                code.strip_prefix("K816-K65-")
+                    .and_then(|number| number.parse::<u32>().ok())
+                    .is_some_and(|number| (7..=11).contains(&number))
+            })
+            .collect();
+        if !codes.is_empty() {
+            refused.push(format!("  line {line}: {codes:?}"));
+        }
+    }
+    assert!(
+        compiled >= 100,
+        "only {compiled} fences parsed as programs ({fragments} fragments)"
+    );
+    assert!(
+        refused.is_empty(),
+        "reference examples K816 refuses:\n{}",
+        refused.join("\n")
+    );
+}

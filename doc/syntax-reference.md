@@ -951,7 +951,7 @@ inline check_if_key_or_doors {
 If-else form:
 
 ```k65
-=={
+if =={
   a=1
 } else {
   a=2
@@ -4089,7 +4089,7 @@ func work @a8 @i8 {
 }
 ```
 
-`repeat` goes to the top of the loop, never to its `while` test: the test reads flags the body sets, and the body has not run yet. A conditional repeat has a test of its own.
+`repeat` goes to the top of the loop, never to its `while` test: the test reads flags the body sets, and the body has not run yet. A conditional repeat has a test of its own. A compare written in the `while` is the body's last statement, so a `repeat` skips it too ([The Compare in an `if` or a `while`](#the-compare-in-an-if-or-a-while)).
 
 ### If-Else
 

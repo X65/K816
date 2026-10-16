@@ -1266,3 +1266,16 @@ fn an_else_holding_only_an_if_is_an_else_if() {
     has(&text, "} else if a?#2 == {");
     has(&text, "} else {");
 }
+
+/// A compare with a label between it and its branch stays a statement:
+/// something else arrives at the branch, so the flags it tests are not only
+/// this compare's (`plans/16-if-statement.md` decision 8).
+#[test]
+fn a_compare_a_label_separates_from_its_branch_is_not_folded() {
+    let (text, _) = faithful(
+        "if-fold-label",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        beq @test\n        cmp #10\n@test:  bcs @big\n        inc total\n@big:   rts\n",
+    );
+    has(&text, "cmp #10");
+    assert!(!text.contains("a?#10"), "{text}");
+}

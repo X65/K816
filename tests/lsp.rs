@@ -1973,6 +1973,65 @@ fn hover_on_a_statement_reports_the_width_state() {
     assert!(around.contains("Declares `@a8 @i8`"), "{around}");
 }
 
+/// A width block says what it sets, the widths on either side of it, and the
+/// `REP`/`SEP` it costs on the way in and out.
+///
+/// It used to answer like any statement — the widths *outside* it — and
+/// described its restore on exit as an instruction "at the label of" the
+/// block, which is what every non-`Before` bridge was rendered as.
+#[test]
+fn hover_on_a_width_block_says_what_it_sets_and_what_it_costs() {
+    let block = hover_at(&Options::default(), "@a16 {", 0, 1).expect("a hover");
+    for fact in [
+        "`@a16` block",
+        "Inside: `@a16 @i8`",
+        "Before and after: `@a8 @i8`",
+        "Entering it emits `REP #$20`.",
+        "Leaving it emits `SEP #$20`.",
+    ] {
+        assert!(block.contains(fact), "missing `{fact}`:\n{block}");
+    }
+    assert!(!block.contains("label"), "{block}");
+}
+
+/// A bridge is placed where the model put it — before the statement, or on
+/// the edge a jump out of a width block takes — and says why it is there.
+#[test]
+fn hover_places_each_bridge_where_the_model_put_it() {
+    const SOURCE: &str = "func narrow @a8 @i8 {\n    return\n}\n\n\
+                          func work @a16 @i16 {\n    @a8 {\n        == goto .out\n        \
+                          nop\n    }\n.out:\n    call narrow\n    return\n}\n";
+    let uri = "file:///hover-bridges.k816";
+    let mut workspace = Workspace::new();
+    workspace.update(uri, SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+    let hover = |needle: &str| {
+        let offset = SOURCE.find(needle).expect("in the source") as u32 + 1;
+        k816::lsp::hover::hover(&analysis, file, offset)
+            .expect("a hover")
+            .markdown
+    };
+
+    let call = hover("call narrow");
+    assert!(
+        call.contains("Emits `SEP #$20` before this statement: bridge for `narrow`."),
+        "{call}"
+    );
+    assert!(
+        call.contains("Emits `SEP #$10` before this statement: bridge for `narrow`."),
+        "{call}"
+    );
+    // On the jump, and on the condition around it: one line, one answer.
+    for needle in ["goto .out", "== goto .out"] {
+        let jump = hover(needle);
+        assert!(
+            jump.contains("Emits `REP #$20` where this jump lands"),
+            "`{needle}`: {jump}"
+        );
+    }
+}
+
 /// A hover on `main` says which machine the *build* states — the one fact
 /// about the entry point that is nowhere in the source.
 #[test]

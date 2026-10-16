@@ -37,7 +37,7 @@
 
 use std::fmt::Write as _;
 
-use crate::ast::{ItemKind, MetadataQueryKind, StatementKind, StmtId};
+use crate::ast::{ItemKind, MetadataQueryKind, StatementKind, StmtId, WidthAnnotationKind};
 use crate::isa::RegisterWidth;
 use crate::op::{
     AxisExit, AxisState, EmulationExit, EmulationState, ExitContract, ModeState, Operand,
@@ -617,30 +617,110 @@ fn statement_hover(context: &Context<'_>) -> Option<Hover> {
     let statement = context.statement?;
     let (before, after) = width_state(context, statement)?;
     let span = statement_span(context, statement)?;
+    let node = context.statement_node(statement)?;
+    // `== goto .out` is a condition around a jump, and the model keys the
+    // jump's bridges on the jump; the whole line is one statement to a reader.
+    let bridges = match &node.kind {
+        StatementKind::ConditionalJump(conditional) => bridges(context, conditional.jump.id),
+        _ => bridges(context, statement),
+    };
+
+    if let StatementKind::WidthBlock(block) = &node.kind {
+        return Some(Hover {
+            markdown: width_block(context, block, before, after, bridges),
+            span,
+        });
+    }
 
     let mut out = format!("Widths here: `{}`\n", describe_state(before));
     if after != before {
         let _ = writeln!(out, "\nAfter this statement: `{}`", describe_state(after));
     }
-    for bridge in bridges(context, statement) {
+    let name = |id: SymbolId| format!("`{}`", context.unit.model.symbols.name(id));
+    for bridge in bridges {
+        let place = match bridge.anchor {
+            BridgeAnchor::Before => "before this statement",
+            BridgeAnchor::After => "after this statement",
+            BridgeAnchor::TakenEdge => "where this jump lands",
+        };
         let _ = writeln!(
             out,
-            "\nThe model inserts a `{}` {} this statement.",
-            if bridge.width == RegisterWidth::W8 {
-                "SEP"
-            } else {
-                "REP"
-            },
-            match bridge.anchor {
-                BridgeAnchor::Before => "before",
-                _ => "at the label of",
-            }
+            "\nEmits `{}` {place}: {}.",
+            bridge_instruction(bridge),
+            bridge.reason.describe(name)
         );
     }
     Some(Hover {
         markdown: out,
         span,
     })
+}
+
+/// A width block's facts: what it sets, the widths on either side of it, and
+/// whether entering it costs an instruction.
+///
+/// The inside is read from the block's first statement rather than worked out
+/// from the annotation, so it is what the model tracked; an empty block has no
+/// statement to read it from and says only what it was written as.
+fn width_block(
+    context: &Context<'_>,
+    block: &crate::ast::WidthBlock,
+    before: ModeState,
+    after: ModeState,
+    bridges: &[Bridge],
+) -> String {
+    let written = block
+        .width
+        .iter()
+        .map(|annotation| match annotation.kind {
+            WidthAnnotationKind::A8 => "@a8",
+            WidthAnnotationKind::A16 => "@a16",
+            WidthAnnotationKind::I8 => "@i8",
+            WidthAnnotationKind::I16 => "@i16",
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out = format!("`{written}` block\n");
+    let inside = block
+        .body
+        .statements
+        .first()
+        .and_then(|first| width_state(context, first.id))
+        .map(|(inside, _)| inside);
+    if let Some(inside) = inside {
+        let _ = writeln!(out, "\nInside: `{}`", describe_state(inside));
+    }
+    if after == before {
+        let _ = writeln!(out, "\nBefore and after: `{}`", describe_state(before));
+    } else {
+        let _ = writeln!(out, "\nBefore: `{}`", describe_state(before));
+        let _ = writeln!(out, "\nAfter: `{}`", describe_state(after));
+    }
+    for bridge in bridges {
+        let _ = writeln!(
+            out,
+            "\n{} it emits `{}`.",
+            match bridge.anchor {
+                BridgeAnchor::Before => "Entering",
+                _ => "Leaving",
+            },
+            bridge_instruction(bridge)
+        );
+    }
+    if bridges.is_empty() {
+        out.push_str("\nThe widths are already set, so it emits no `REP` or `SEP`.\n");
+    }
+    out
+}
+
+/// `SEP #$20`, `REP #$10`.
+fn bridge_instruction(bridge: &Bridge) -> String {
+    let mnemonic = if bridge.width == RegisterWidth::W8 {
+        "SEP"
+    } else {
+        "REP"
+    };
+    format!("{mnemonic} #${:02X}", bridge.mask)
 }
 
 fn width_state(context: &Context<'_>, statement: StmtId) -> Option<(ModeState, ModeState)> {

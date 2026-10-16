@@ -2542,12 +2542,100 @@
           "value": "else"
         },
         {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "body",
+              "content": {
+                "type": "SYMBOL",
+                "name": "block"
+              }
+            },
+            {
+              "type": "FIELD",
+              "name": "chain",
+              "content": {
+                "type": "SYMBOL",
+                "name": "if_statement"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "if_statement": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "if"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "compare",
+              "content": {
+                "type": "SYMBOL",
+                "name": "hla_arithmetic"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
           "type": "FIELD",
-          "name": "body",
+          "name": "condition",
           "content": {
             "type": "SYMBOL",
-            "name": "block"
+            "name": "branch_condition"
           }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "body",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "block"
+                  }
+                },
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "FIELD",
+                      "name": "else",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "else_clause"
+                      }
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "FIELD",
+              "name": "jump",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_jump"
+              }
+            }
+          ]
         }
       ]
     },
@@ -2710,6 +2798,22 @@
         {
           "type": "STRING",
           "value": "while"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "compare",
+              "content": {
+                "type": "SYMBOL",
+                "name": "hla_arithmetic"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         },
         {
           "type": "FIELD",
@@ -3133,6 +3237,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "if_statement"
+        },
+        {
+          "type": "SYMBOL",
           "name": "conditional_block"
         },
         {
@@ -3197,6 +3305,15 @@
               {
                 "type": "SYMBOL",
                 "name": "register"
+              },
+              {
+                "type": "ALIAS",
+                "content": {
+                  "type": "STRING",
+                  "value": "if"
+                },
+                "named": true,
+                "value": "identifier"
               }
             ]
           }

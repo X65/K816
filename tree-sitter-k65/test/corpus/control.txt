@@ -445,3 +445,263 @@ func main {
               value: (identifier))))
         condition: (while_condition
           condition: (branch_condition))))))
+
+================================================================================
+An if before a block
+================================================================================
+
+func main {
+  a?10
+  if >= { x++ }
+  if c? { mem++ }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (number)))
+      (if_statement
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (address
+              value: (identifier))))))))
+
+================================================================================
+An if with else, else if, and a compare in a chain
+================================================================================
+
+func main {
+  if == {
+    a = #1
+  } else if < {
+    a = #2
+  } else if a?#20 >= {
+    a = #3
+  } else {
+    a = #4
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (if_statement
+        condition: (branch_condition)
+        body: (block
+          (hla_assignment
+            operand: (register)
+            operand: (immediate
+              value: (number))))
+        else: (else_clause
+          chain: (if_statement
+            condition: (branch_condition)
+            body: (block
+              (hla_assignment
+                operand: (register)
+                operand: (immediate
+                  value: (number))))
+            else: (else_clause
+              chain: (if_statement
+                compare: (hla_arithmetic
+                  register: (register)
+                  operand: (immediate
+                    value: (number)))
+                condition: (branch_condition)
+                body: (block
+                  (hla_assignment
+                    operand: (register)
+                    operand: (immediate
+                      value: (number))))
+                else: (else_clause
+                  body: (block
+                    (hla_assignment
+                      operand: (register)
+                      operand: (immediate
+                        value: (number)))))))))))))
+
+================================================================================
+The compare written in the if
+================================================================================
+
+func main {
+  if a?mem+1 >= { x++ }
+  if a&?mem !z? { y++ }
+  if x?tbl,y <0 { y++ }
+  if y?#K*2 != goto done
+done:
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (if_statement
+        compare: (hla_arithmetic
+          register: (register)
+          operand: (address
+            value: (binary_expression
+              left: (identifier)
+              right: (number))))
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        compare: (hla_arithmetic
+          register: (register)
+          operand: (address
+            value: (identifier)))
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        compare: (hla_arithmetic
+          register: (register)
+          operand: (address
+            value: (identifier)
+            index: (index_register)))
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        compare: (hla_arithmetic
+          register: (register)
+          operand: (immediate
+            value: (binary_expression
+              left: (identifier)
+              right: (number))))
+        condition: (branch_condition)
+        jump: (goto_statement
+          target: (identifier)))
+      (label
+        name: (identifier)))))
+
+================================================================================
+An if before a jump
+================================================================================
+
+func main {
+  if < goto done
+  if c? goto far handler
+  loop {
+    if == break
+    if x?#5 != repeat
+  } always
+done:
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (if_statement
+        condition: (branch_condition)
+        jump: (goto_statement
+          target: (identifier)))
+      (if_statement
+        condition: (branch_condition)
+        jump: (goto_statement
+          far: (far_marker)
+          target: (identifier)))
+      (loop_statement
+        body: (block
+          (if_statement
+            condition: (branch_condition)
+            jump: (break_statement))
+          (if_statement
+            compare: (hla_arithmetic
+              register: (register)
+              operand: (immediate
+                value: (number)))
+            condition: (branch_condition)
+            jump: (repeat_statement)))
+        condition: (loop_condition))
+      (label
+        name: (identifier)))))
+
+================================================================================
+The compare written in a loop's while
+================================================================================
+
+func main {
+  loop { x++ } while x?#10 <
+  nocross loop { y++ } while y?#3 >=
+  loop { x-- } while !=
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          compare: (hla_arithmetic
+            register: (register)
+            operand: (immediate
+              value: (number)))
+          condition: (branch_condition)))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          compare: (hla_arithmetic
+            register: (register)
+            operand: (immediate
+              value: (number)))
+          condition: (branch_condition)))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (branch_condition))))))
+
+================================================================================
+if as a label and a goto target, for the analysis to refuse
+================================================================================
+
+func main {
+if:
+  nop
+  goto if
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (label
+        name: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (goto_statement
+        target: (identifier)))))

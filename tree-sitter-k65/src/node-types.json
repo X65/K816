@@ -864,6 +864,10 @@
           "named": true
         },
         {
+          "type": "if_statement",
+          "named": true
+        },
+        {
           "type": "label",
           "named": true
         },
@@ -1727,10 +1731,20 @@
     "fields": {
       "body": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "chain": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "if_statement",
             "named": true
           }
         ]
@@ -4908,6 +4922,70 @@
     }
   },
   {
+    "type": "if_statement",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "compare": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "hla_arithmetic",
+            "named": true
+          }
+        ]
+      },
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "branch_condition",
+            "named": true
+          }
+        ]
+      },
+      "else": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "else_clause",
+            "named": true
+          }
+        ]
+      },
+      "jump": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "break_statement",
+            "named": true
+          },
+          {
+            "type": "goto_statement",
+            "named": true
+          },
+          {
+            "type": "repeat_statement",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "immediate",
     "named": true,
     "fields": {
@@ -6673,6 +6751,16 @@
     "type": "while_condition",
     "named": true,
     "fields": {
+      "compare": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "hla_arithmetic",
+            "named": true
+          }
+        ]
+      },
       "condition": {
         "multiple": false,
         "required": true,

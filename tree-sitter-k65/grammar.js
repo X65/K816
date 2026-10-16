@@ -941,7 +941,32 @@ export default grammar({
         optional(field('else', $.else_clause)),
       ),
 
-    else_clause: $ => seq('else', field('body', $.block)),
+    // `else { … }`, or `else if COND { … }` — a chain, which is the `if`
+    // nested in the `else` block (`plans/16-if-statement.md` decision 4).
+    else_clause: $ =>
+      seq('else', choice(field('body', $.block), field('chain', $.if_statement))),
+
+    // `if >= { … }`, `if a?10 < { … } else if == { … } else { … }`,
+    // `if < goto done`, `if == break`, `if != repeat`: K816's conditional
+    // (`plans/16-if-statement.md`). The compare a K65 source writes as the
+    // statement before the condition may be written here instead; the slot
+    // takes any `hla_arithmetic` so that a non-compare there is the analysis's
+    // refusal with a sentence (`K816-E0179`) rather than a parse error.
+    //
+    // No operand of a compare runs on into the condition after it: `<`,
+    // `>=` and the flag tests are tokens no operand expression continues
+    // with, so `if a?mem+1 >= {` is the compare `a?mem+1` and the relation
+    // `>=` (measured in Q0 over seven shapes).
+    if_statement: $ =>
+      seq(
+        'if',
+        optional(field('compare', $.hla_arithmetic)),
+        field('condition', $.branch_condition),
+        choice(
+          seq(field('body', $.block), optional(field('else', $.else_clause))),
+          field('jump', $._jump),
+        ),
+      ),
 
     // `< goto label`, `c-? goto done`, `< break`, `!= repeat`.
     conditional_jump: $ =>
@@ -987,7 +1012,14 @@ export default grammar({
         field('condition', choice($.loop_condition, $.while_condition)),
       ),
 
-    while_condition: $ => seq('while', field('condition', $.branch_condition)),
+    // `while !=`, or `while x?10 <` with the compare the body would
+    // otherwise end with (`plans/16-if-statement.md` decision 9).
+    while_condition: $ =>
+      seq(
+        'while',
+        optional(field('compare', $.hla_arithmetic)),
+        field('condition', $.branch_condition),
+      ),
 
     // `goto done`, `goto .loop`, `goto (vec)`, `goto far handler`. A local
     // label is as ordinary a target as a global one — the documentation's
@@ -1087,6 +1119,7 @@ export default grammar({
         $.mode_set,
         $.call_statement,
         $.bare_call,
+        $.if_statement,
         $.conditional_block,
         $.conditional_jump,
         $.postfix_loop,
@@ -1113,7 +1146,20 @@ export default grammar({
     // costs no conflict.
     label: $ =>
       seq(
-        field('name', choice($.identifier, $.local_identifier, $.register)),
+        field(
+          'name',
+          choice(
+            $.identifier,
+            $.local_identifier,
+            $.register,
+            // `if` is a keyword, and the lexer takes it as one wherever a
+            // statement may start — so `if:` would be a parse error. Taken
+            // here for the same reason as a register spelling: the analysis
+            // refuses it as a name with a sentence (`plans/16-if-statement.md`
+            // decision 6).
+            alias('if', $.identifier),
+          ),
+        ),
         ':',
       ),
 

@@ -746,9 +746,10 @@ not a lost optimisation, it is a different program.
 3. **The exit contract is an observer.**  A function's published outbound
    contract is what the rest of the program was compiled against, so the last
    operation establishing it on each path to a return is live *whatever* the
-   backward scan says.  That holds for `Fixed(@aN)` and for `Preserve` alike:
-   a scoped block's restore is what makes `Preserve` true.  The entry point is
-   the exception, and only because nothing can call it.
+   backward scan says, unless the width it sets is already in effect (step
+   5).  That holds for `Fixed(@aN)` and for `Preserve` alike: a scoped
+   block's restore is what makes `Preserve` true.  The entry point is the
+   exception, and only because nothing can call it.
 
    Likewise, a **narrowing** bit carries a second obligation.  `SEP` on the
    index axis zeroes the high bytes of X and Y, which is a register write and
@@ -763,6 +764,20 @@ not a lost optimisation, it is a different program.
    applies to the bridge only.  A published *exit* contract is never dropped on
    this ground, because "nowhere" is a claim about the program and what the
    compiler measured is the workspace it was handed.
+
+5. **Bits that change nothing** -- a `REP`/`SEP` K816 wrote, as a bridge or
+   for a width statement, loses each width bit that sets the width already in
+   effect, and goes when its mask empties.  Step 2 is what creates them:
+   once an `@a8` whose `SEP` nothing observes is gone, the `REP` of the
+   `@a16` after it restores a width that never changed.  Dropping it keeps
+   every contract, the exit one included, because the width at the return is
+   the same either way.  A narrowing index bit is no exception: at eight
+   bits the high bytes of X and Y are already zero.  The width "in effect"
+   is the one the emitter tells ca65 -- the width model's claim, carried
+   across each instruction by the same transition the model and the emitter
+   use -- so the optimizer cannot hold a width of its own.  A `REP`/`SEP`
+   written as a native mnemonic is never removed on this ground: it means
+   what it says, even where it says nothing new.
 
 This pass runs **before** folding, so it operates on single-bit `Rep`/`Sep`
 ops fresh from lowering.

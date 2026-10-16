@@ -2889,13 +2889,52 @@ fn the_zero_store_fixture_rewrites_per_store_and_drops_one_load() {
     assert_eq!(bytes, 5 * 2);
 }
 
+/// The across-bridges fixture, at the bytes.
+///
+/// The two zero stores inside width blocks cost nothing, being the length of
+/// the stores they replace. The bytes are three `sep`/`rep` pairs — two `@a8`
+/// whose `sep` was dead and whose `rep` was then redundant, and one `@a16`
+/// block the same way round — and the `ldx #$00` of the store the last of
+/// those left at eight bits on both axes, which became an `stz`.
+#[test]
+fn the_across_bridges_fixture_rewrites_inside_blocks_and_drops_redundant_modes() {
+    let (removed, added, bytes) = optimizer_effect_with(
+        "opt-across-bridges",
+        "opt-across-bridges.k816",
+        include_str!("golden/opt-across-bridges.k816"),
+        "vars",
+    );
+    assert_eq!(
+        removed,
+        vec![
+            "ldx     #$00",
+            "rep     #$20",
+            "rep     #$20",
+            "rep     #$20",
+            "sep     #$20",
+            "sep     #$20",
+            "sep     #$20",
+            "sta     z:zp",
+            "stx     a:abs1",
+            "sty     z:zp",
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(
+        added,
+        vec!["stz     a:abs1", "stz     z:zp", "stz     z:zp"],
+        "{added:?}"
+    );
+    assert_eq!(bytes, 6 * 2 + 2);
+}
+
 /// The index zero-store fixture, at the bytes.
 ///
 /// `STZ` is the same length as `STX` and `STY` in every mode the rewrite
 /// takes, so the eight rewrites cost nothing; the bytes are the four loads
 /// they orphaned — `chains`' `ldx #$00` and `ldy #$00`, `both8`'s
-/// `ldy #$00`, and `both16`'s three-byte `ldx #$0000` — and the `sep` the
-/// dead-mode pass removed before this one ran.
+/// `ldy #$00`, and `both16`'s three-byte `ldx #$0000` — and the `sep` and
+/// `rep` the dead-mode pass removed before this one ran.
 #[test]
 fn the_index_zero_store_fixture_rewrites_only_where_the_widths_agree() {
     let (removed, added, bytes) = optimizer_effect_with(
@@ -2911,7 +2950,9 @@ fn the_index_zero_store_fixture_rewrites_only_where_the_widths_agree() {
             "ldx     #$0000",
             "ldy     #$00",
             "ldy     #$00",
-            // `removed_switch`'s `@a8`, which the dead-mode pass takes.
+            // `removed_switch`'s `@a8`, which the dead-mode pass takes, and
+            // the `@a16` that then sets the width already in effect.
+            "rep     #$20",
             "sep     #$20",
             "stx     a:abs1",
             "stx     a:abs1",
@@ -2938,7 +2979,7 @@ fn the_index_zero_store_fixture_rewrites_only_where_the_widths_agree() {
         ],
         "{added:?}"
     );
-    assert_eq!(bytes, 3 * 2 + 3 + 2);
+    assert_eq!(bytes, 3 * 2 + 3 + 2 * 2);
 }
 
 /// The branch fixture, through ca65.
@@ -3202,11 +3243,25 @@ const FIXTURE_EFFECTS: &[Effect] = &[
         "a repeated load, two more that a memory read and an N/Z-writing mask left dead behind them, a redundant `clc`, an `ldx` sixteen known bits made redundant, and three stores of a known-zero accumulator — the fourth follows an `xba` over a half nothing wrote, and a tracker with lanes leaves it alone",
     ),
     (
+        "opt-across-bridges.k816",
+        &[
+            ("ldx     #$00", 1),
+            ("rep     #$20", 3),
+            ("sep     #$20", 3),
+            ("sta     z:zp", 1),
+            ("stx     a:abs1", 1),
+            ("sty     z:zp", 1),
+        ],
+        &[("stz     a:abs1", 1), ("stz     z:zp", 2)],
+        "two zero stores inside width blocks, sized at the block's width; three width changes nothing observes, each with the restore that then sets a width already in effect; and the store the last of those left at eight bits on both axes",
+    ),
+    (
         "opt-zero-store-index.k816",
         &[
             ("ldx     #$00", 1),
             ("ldx     #$0000", 1),
             ("ldy     #$00", 2),
+            ("rep     #$20", 1),
             ("sep     #$20", 1),
             ("stx     a:abs1", 2),
             ("stx     z:zp", 3),
@@ -3219,7 +3274,7 @@ const FIXTURE_EFFECTS: &[Effect] = &[
             ("stz     z:zp", 4),
             ("stz     z:zp,x", 1),
         ],
-        "eight index stores of a known zero where the accumulator is as wide as the index registers, the loads that fed them where nothing else reads the register, and the `sep` of an `@a8` no instruction observes",
+        "eight index stores of a known zero where the accumulator is as wide as the index registers, the loads that fed them where nothing else reads the register, and the `sep` of an `@a8` no instruction observes with the `rep` that then restores a width that never changed",
     ),
     (
         "opt-zero-store.k816",
@@ -3271,11 +3326,11 @@ const FIXTURE_EFFECTS: &[Effect] = &[
             ("jmp     @out", 1),
             ("rep     #$10", 2),
             ("rep     #$20", 2),
-            ("sep     #$10", 1),
+            ("sep     #$10", 2),
             ("sep     #$20", 1),
         ],
         &[("rep     #$30", 1), ("sep     #$30", 1)],
-        "two block enters whose bodies observe the axis they establish, the documented block's pair folded on both ends, and the pad's jump to the label immediately below it",
+        "two block enters whose bodies observe the axis they establish, a restore left setting the width already in effect once its own block's enter went, the documented block's pair folded on both ends, and the pad's jump to the label immediately below it",
     ),
     (
         "width-branch.k816",

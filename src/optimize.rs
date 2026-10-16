@@ -67,7 +67,8 @@ use crate::width::{Axis, CalleeContract};
 /// spelling `emit-ir --after-opt --explain` prints and the tests match on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Pass {
-    /// 1 — clear dead M/X bits from a `REP`/`SEP` mask.
+    /// 1 — clear dead M/X bits from a `REP`/`SEP` mask, and the bits of one
+    /// K816 wrote that set the width already in effect.
     EliminateDeadModes,
     /// 2 — merge an adjacent run of `REP`/`SEP` into the fewest instructions
     /// with the same composed status transform.
@@ -1485,6 +1486,12 @@ fn axis_bit(axis: Axis) -> u8 {
 /// Clears the dead M and X bits from every `REP`/`SEP` mask, and removes the
 /// instruction only when the mask empties.
 ///
+/// A bit is dead when nothing observes the axis it sets ([`strip`]), or —
+/// for a `REP`/`SEP` K816 wrote — when it sets the width already in effect
+/// ([`redundant_bits`]). The second is mostly the first's doing: once an
+/// `@a8` whose `sep` nothing observes is gone, the `rep` restoring the exit
+/// width restores one that never changed.
+///
 /// **A mask is not a width operation.** It is a write to an arbitrary set of P
 /// bits, and only two of the eight are widths: `rep #$21` clears M *and* the
 /// carry, so deleting it because M is unobserved breaks the `bcc` below it.
@@ -1494,16 +1501,30 @@ fn axis_bit(axis: Axis) -> u8 {
 fn eliminate_dead_mode_changes(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
     loop {
         let flow = Flow::build(ops, unit);
+        let values = track_values(ops, &flow);
         let observation = Observation::build(ops, &flow, &flow.transfers, unit);
-        let Some((index, kept, dead)) = (0..ops.len())
-            .filter_map(|index| strip(ops, &flow, &observation, unit, index))
-            .next()
-        else {
+        // A bit that sets the width already in effect first, because removing
+        // one changes no state at all — and because the other criterion is
+        // what creates them: once a `sep #$20` nothing observed is gone, the
+        // `rep #$20` that restored the exit width restores a width that never
+        // changed.
+        let redundant = (0..ops.len())
+            .find_map(|index| redundant_bits(ops, &flow, &values, index))
+            .map(|(index, kept, bits)| (index, kept, bits, true));
+        let Some((index, kept, dead, already)) = redundant.or_else(|| {
+            (0..ops.len())
+                .find_map(|index| strip(ops, &flow, &observation, unit, index))
+                .map(|(index, kept, dead)| (index, kept, dead, false))
+        }) else {
             return;
         };
 
         let before = ops[index].clone();
-        let justification = dead_mask_justification(unit, dead, kept);
+        let justification = if already {
+            redundant_mask_justification(&values[index], dead, kept)
+        } else {
+            dead_mask_justification(unit, dead, kept)
+        };
         let after = if kept == 0 {
             ops.remove(index);
             Vec::new()
@@ -1512,9 +1533,10 @@ fn eliminate_dead_mode_changes(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Op
             vec![ops[index].clone()]
         };
         // Every claim the changed operation justified takes, on the affected
-        // axis, the value the preceding claim carried (decision 10).
+        // axis, the value the preceding claim carried (decision 10). A bit
+        // that set the width already in effect justified nothing.
         for axis in [Axis::Accumulator, Axis::Index] {
-            if dead & axis_bit(axis) != 0 {
+            if !already && dead & axis_bit(axis) != 0 {
                 substitute_claims(unit, ops, index, axis);
             }
         }
@@ -1579,6 +1601,83 @@ fn strip(
         dead |= bit;
     }
     (dead != 0).then_some((index, mask & !dead, dead))
+}
+
+/// The bits of the mask at `index` that set the width already in effect, and
+/// the ones that do not.
+///
+/// The width before the instruction is the tracker's — the claim the model
+/// wrote, carried through [`crate::width::mode_after`] — and so is the width
+/// after it, so a bit is redundant exactly when the one transition rule the
+/// compiler has says it changes nothing. That holds for a narrowing index
+/// bit too: at eight bits the high bytes of X and Y are already zero, so
+/// there is nothing left for the `SEP` to truncate.
+///
+/// Only a `REP`/`SEP` K816 wrote — a bridge, or the expansion of a width
+/// statement. One the source wrote as a native mnemonic is the author's
+/// escape hatch and means what it says, even where it says nothing new.
+///
+/// `None` when the operation is not a candidate, the width before it is not
+/// known, or every bit changes something.
+fn redundant_bits(
+    ops: &[KOp],
+    flow: &Flow,
+    values: &[Tracked],
+    index: usize,
+) -> Option<(usize, u8, u8)> {
+    let op = &ops[index];
+    let (_, mask) = mode_mask(op)?;
+    if op.origin == Origin::User || flow.frozen[index] || !flow.reachable[flow.block_of[index]] {
+        return None;
+    }
+    let effects = effects_of(op)?;
+    let before = values[index].claim?;
+    let after = crate::width::mode_after(before, effects.width, false, op.is_authored_bridge());
+
+    let mut redundant = 0u8;
+    for axis in [Axis::Accumulator, Axis::Index] {
+        let bit = axis_bit(axis);
+        if mask & bit == 0 || establishes(effects.width, axis).is_none() {
+            continue;
+        }
+        let (was, is) = match axis {
+            Axis::Accumulator => (before.a, after.a),
+            Axis::Index => (before.i, after.i),
+        };
+        if matches!(was, AxisState::Known(_)) && was == is {
+            redundant |= bit;
+        }
+    }
+    (redundant != 0).then_some((index, mask & !redundant, redundant))
+}
+
+/// Why the bits of a mask that set the width already in effect went.
+fn redundant_mask_justification(before: &Tracked, redundant: u8, kept: u8) -> String {
+    let axes: Vec<String> = [Axis::Accumulator, Axis::Index]
+        .into_iter()
+        .filter(|axis| redundant & axis_bit(*axis) != 0)
+        .map(|axis| {
+            let (name, width) = match axis {
+                Axis::Accumulator => ("the accumulator is", before.width(axis)),
+                Axis::Index => ("the index registers are", before.width(axis)),
+            };
+            let bits = match width {
+                Some(RegisterWidth::W8) => "8",
+                Some(RegisterWidth::W16) => "16",
+                None => unreachable!("a redundant bit sets a known width"),
+            };
+            format!("{name} already {bits}-bit")
+        })
+        .collect();
+    let tail = if kept == 0 {
+        String::from("the mask is empty, so the instruction goes")
+    } else {
+        format!("${kept:02X} is not this pass's to touch, so the instruction stays")
+    };
+    format!(
+        "{} here, so the bit changes nothing; {tail}",
+        axes.join(" and ")
+    )
 }
 
 /// The registers a narrowing index-width transition truncates.
@@ -1964,12 +2063,14 @@ struct Known {
 
 /// What the tracker knows at one point.
 ///
-/// It dies at every width transition, which is what keeps decision 1 intact: F
-/// reads a width from one place only — a `ModeAssumption` the width model
-/// wrote — and never advances it across an instruction, because the first
-/// instruction that would advance it also empties the tracker. F therefore
-/// never *computes* a width; it consumes one and stops trusting it at exactly
-/// the point the model would have written a new claim.
+/// Its values die at every width transition, and its width does not: a
+/// `REP`/`SEP` carries the claim forward through [`crate::width::mode_after`],
+/// the transition the solver and the emitter use, so the width F sizes a
+/// rewrite by is the width ca65 is told. It used to die too, on the reading
+/// of decision 1 that F may only *consume* a `ModeAssumption` — which left F
+/// knowing no width after any bridge, so nothing inside a width block was
+/// ever rewritten, while the emitter beside it derived every one of those
+/// widths itself. Decision 1's point is one answer, and this is that answer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Tracked {
     a: Option<Known>,
@@ -2088,14 +2189,29 @@ fn advance(state: Tracked, op: &KOp) -> Tracked {
         unreachable!("only an instruction has effects");
     };
 
-    // A width transition, a call, a return, an unknown memory effect, an
-    // unfolded mask, `PLP`, `RTI`, and `XCE` all empty the tracker.
-    if effects.width != WidthEffect::Unchanged
-        || effects.control != ControlEffect::FallThrough
+    // A call, a return, and an unknown memory effect empty the tracker.
+    if effects.control != ControlEffect::FallThrough
         || effects.memory == MemoryEffect::Unknown
         || effects.memory == MemoryEffect::Volatile
     {
         return Tracked::default();
+    }
+    // So does a width transition — an unfolded mask, `PLP` and `XCE`
+    // included — except for the width itself, which goes on from the claim
+    // it started from. The values go because a narrowing `SEP` rewrites the
+    // high bytes of X and Y, and the flags because the mask may name them.
+    if effects.width != WidthEffect::Unchanged {
+        return Tracked {
+            claim: state.claim.map(|claim| {
+                crate::width::mode_after(
+                    claim,
+                    effects.width,
+                    instruction.mnemonic == Mnemonic::Xce,
+                    op.is_authored_bridge(),
+                )
+            }),
+            ..Tracked::default()
+        };
     }
 
     let mut state = state;

@@ -861,7 +861,7 @@ const ZERO_STORE_INDEX: &str = include_str!("golden/opt-zero-store-index.k816");
 fn an_index_zero_store_becomes_stz_where_the_widths_agree() {
     let (_, file, model, mut program) = lowered_as("opt-zero-store-index.k816", ZERO_STORE_INDEX);
     let log = run(&mut program, &model, file);
-    use Mnemonic::{Ldx, Ldy, Rep, Rts, Stx, Sty, Stz};
+    use Mnemonic::{Ldx, Ldy, Rts, Stx, Sty, Stz};
 
     // The `ldx #0` stays because `stz zp,x` still indexes by X.
     assert_eq!(
@@ -894,7 +894,7 @@ fn an_index_zero_store_becomes_stz_where_the_widths_agree() {
     );
     assert_eq!(
         mnemonics(&program, &model, "removed_switch"),
-        vec![Ldx, Stx, Rep, Rts]
+        vec![Ldx, Stx, Rts]
     );
 
     let zero_stores: Vec<_> = log.by_pass(Pass::ZeroStores).collect();
@@ -916,6 +916,79 @@ fn an_index_zero_store_becomes_stz_where_the_widths_agree() {
         == "nothing reads X or the N and Z it wrote, now that every store it fed is an `STZ`"));
     assert!(removals.iter().any(|change| change.justification
         == "nothing reads Y or the N and Z it wrote, now that every store it fed is an `STZ`"));
+}
+
+const ACROSS_BRIDGES: &str = include_str!("golden/opt-across-bridges.k816");
+
+/// The tracker knows the width after a `REP`/`SEP`, so a zero store inside a
+/// width block is rewritten at the block's width.
+///
+/// It used to know none: every width transition emptied it, the claim
+/// included, so nothing after a bridge was ever rewritten while the emitter
+/// beside it derived every one of those widths itself.
+#[test]
+fn a_zero_store_inside_a_width_block_is_sized_at_the_blocks_width() {
+    let (_, file, model, mut program) = lowered_as("opt-across-bridges.k816", ACROSS_BRIDGES);
+    run(&mut program, &model, file);
+    use Mnemonic::{Lda, Ldx, Ldy, Rep, Rts, Sep, Sta, Stx, Sty, Stz};
+
+    assert_eq!(
+        mnemonics(&program, &model, "a8_block"),
+        vec![Sep, Lda, Stz, Rep, Lda, Sta, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "i8_block"),
+        vec![Sep, Ldy, Stz, Rep, Ldy, Sty, Rts]
+    );
+    // `@a16` beside `@i8`: the block is live, the widths differ, and the
+    // `stx` stays.
+    assert_eq!(
+        mnemonics(&program, &model, "a16_block_i8"),
+        vec![Rep, Lda, Sta, Ldx, Stx, Sep, Ldx, Stx, Rts]
+    );
+}
+
+/// A `REP`/`SEP` K816 wrote that sets the width already in effect goes, and
+/// one the source wrote stays.
+///
+/// Removing a dead `sep` is what makes the `rep` after it redundant: it
+/// restores a width that never changed. That `rep` had been kept as the
+/// operation establishing the exit width, which it no longer does.
+#[test]
+fn a_mode_bit_that_sets_the_width_in_effect_is_removed() {
+    let (_, file, model, mut program) = lowered_as("opt-across-bridges.k816", ACROSS_BRIDGES);
+    let log = run(&mut program, &model, file);
+    use Mnemonic::{Lda, Ldx, Rep, Rts, Stx, Stz};
+
+    assert_eq!(
+        mnemonics(&program, &model, "dead_then_redundant"),
+        vec![Ldx, Stx, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "dead_block"),
+        vec![Ldx, Stx, Lda, Rts]
+    );
+    // Both bridges go, and the store is then at eight bits on both axes.
+    assert_eq!(
+        mnemonics(&program, &model, "dead_a16_block"),
+        vec![Stz, Ldx, Stx, Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "written_rep"),
+        vec![Rep, Lda, Rts]
+    );
+
+    let redundant: Vec<_> = log
+        .by_pass(Pass::EliminateDeadModes)
+        .filter(|change| change.justification.contains("already"))
+        .collect();
+    assert_eq!(redundant.len(), 3, "{redundant:?}");
+    assert!(redundant.iter().any(|change| change.justification
+        == "the accumulator is already 16-bit here, so the bit changes nothing; the mask is \
+            empty, so the instruction goes"));
+    assert!(redundant.iter().any(|change| change.justification
+        == "the accumulator is already 8-bit here, so the bit changes nothing; the mask is \
+            empty, so the instruction goes"));
 }
 
 // ---------------------------------------------------------------------------

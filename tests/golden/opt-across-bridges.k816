@@ -1,0 +1,84 @@
+// The optimizer knows the width after a `REP`/`SEP`.
+//
+// The value tracker reads a width through `width::mode_after`, the transition
+// the solver and the emitter use, so a width block's `sep` no longer leaves it
+// knowing nothing: what it rewrites inside the block is sized at the block's
+// width. And a `REP`/`SEP` K816 wrote that sets the width already in effect —
+// which removing a dead one leaves behind — goes.
+
+var zp   = $10
+var abs1 = $0200
+
+// Inside an `@a8` block the accumulator is 8-bit, so a zero store is an `stz`
+// of one byte. The `lda #$00` stays: the `rep` leaving the block widens the
+// accumulator, and liveness keeps a register live across a transition that
+// resizes it.
+func a8_block @a16 @i8 {
+    @a8 {
+        lda #0
+        sta zp
+    }
+    lda #1
+    sta abs1
+}
+
+// Inside an `@i8` block beside `@a8`, the widths agree and `sty` is an `stz`.
+func i8_block @a8 @i16 {
+    @i8 {
+        ldy #0
+        sty zp
+    }
+    ldy #1
+    sty abs1
+}
+
+// Inside an `@a16` block beside `@i8` they do not, and `stx` stays.
+func a16_block_i8 @a8 @i8 {
+    @a16 {
+        lda #$1234
+        sta abs1
+        ldx #0
+        stx zp
+    }
+    ldx #1
+    stx abs1
+}
+
+// The same block with nothing in it reading the accumulator: its `rep` is
+// dead, the `sep` restoring `@a8` is then redundant, both go — and the store
+// is at eight bits on both axes after all, so it is an `stz`.
+func dead_a16_block @a8 @i8 {
+    @a16 {
+        ldx #0
+        stx abs1
+    }
+    ldx #1
+    stx abs1
+}
+
+// The `@a8` changes no instruction, so its `sep` goes as dead — and then the
+// `rep` of the `@a16` below restores a width that never changed, and goes as
+// well. Before, it stayed: two bytes setting a width already in effect.
+func dead_then_redundant @a16 @i8 {
+    @a8
+    ldx #0
+    stx zp
+    @a16
+}
+
+// The same for a block: its `sep` is dead, so the `rep` restoring the
+// width on the way out is redundant.
+func dead_block @a16 @i8 {
+    @a8 {
+        ldx #0
+        stx zp
+    }
+    lda #1
+}
+
+// A `rep` the source wrote stays, redundant or not: a native mnemonic means
+// what it says.
+func written_rep @a16 @i16 {
+    rep #$20
+    lda #$1234
+}

@@ -75,7 +75,8 @@ func at_the_end @a8 @i8 {
 }
 
 // The `@a8` changes no instruction, so the dead-mode pass removes its `sep`
-// before this one runs — and the store is then at `@a16` beside `@i8` and
+// before this one runs — and the `rep` of the `@a16`, which then sets the
+// width already in effect, with it. The store is at `@a16` beside `@i8` and
 // stays an `stx`. The width the rewrite reads is the stream's, not the
 // source's.
 func removed_switch @a16 @i8 {

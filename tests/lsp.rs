@@ -1309,13 +1309,13 @@ fn references_of_a_local_label_are_confined_to_its_function() {
     const SOURCE: &str = "func first @a8 @i8 {\n\
         \x20   .spin:\n\
         \x20   x++\n\
-        \x20   != goto .spin\n\
+        \x20   if != goto .spin\n\
         }\n\
         \n\
         func second @a8 @i8 {\n\
         \x20   .spin:\n\
         \x20   y++\n\
-        \x20   != goto .spin\n\
+        \x20   if != goto .spin\n\
         }\n";
 
     let mut workspace = Workspace::new();
@@ -1410,7 +1410,7 @@ fn the_document_outline_is_the_symbol_table() {
         func work @a8 @i8 {\n\
         \x20   .again:\n\
         \x20   x++\n\
-        \x20   != goto .again\n\
+        \x20   if != goto .again\n\
         }\n";
 
     let mut workspace = Workspace::new();
@@ -2008,7 +2008,7 @@ fn hover_on_a_width_block_says_what_it_sets_and_what_it_costs() {
 #[test]
 fn hover_places_each_bridge_where_the_model_put_it() {
     const SOURCE: &str = "func narrow @a8 @i8 {\n    return\n}\n\n\
-                          func work @a16 @i16 {\n    @a8 {\n        == goto .out\n        \
+                          func work @a16 @i16 {\n    @a8 {\n        if == goto .out\n        \
                           nop\n    }\n.out:\n    call narrow\n    return\n}\n";
     let uri = "file:///hover-bridges.k816";
     let mut workspace = Workspace::new();
@@ -2122,14 +2122,14 @@ fn rename_touches_the_occurrences_the_compiler_resolved_and_no_others() {
     assert_eq!(replacement, ".spin", "a local label keeps its leading `.`");
     assert_eq!(spans.len(), 2);
     // Both inside `first`, which ends before `second` begins.
-    let second_label = 825;
+    let second_label = 828;
     assert!(
         spans.iter().all(|span| span.start < second_label),
         "a reference escaped into the second function: {spans:?}"
     );
 
     // From `second`'s: a different symbol, a different pair of spans.
-    let (_, other) = rename_edits(&mut workspace, RENAME_DOC, 826, "spin").expect("a rename");
+    let (_, other) = rename_edits(&mut workspace, RENAME_DOC, 829, "spin").expect("a rename");
     assert_eq!(other.len(), 2);
     assert!(other.iter().all(|span| span.start >= second_label));
     assert!(spans.iter().all(|span| !other.contains(span)));
@@ -2144,7 +2144,7 @@ fn rename_touches_the_occurrences_the_compiler_resolved_and_no_others() {
     assert!(fields.iter().all(|span| text(span) == ".state"));
 
     // The string and the comment are untouched by all three.
-    let string_at = 968;
+    let string_at = 974;
     let comment_at = 83;
     for span in spans.iter().chain(&other).chain(&fields) {
         assert_ne!(span.start, string_at, "the string was renamed");
@@ -2496,13 +2496,13 @@ fn a_statement_position_offers_what_may_stand_there() {
         func other @a8 @i8 {\n\
         \x20   .elsewhere:\n\
         \x20   nop\n\
-        \x20   != goto .elsewhere\n\
+        \x20   if != goto .elsewhere\n\
         }\n\
         \n\
         func work @a8 @i8 {\n\
         \x20   .again:\n\
         \x20   \n\
-        \x20   != goto .again\n\
+        \x20   if != goto .again\n\
         }\n\
         \n\
         data words {\n\
@@ -2583,7 +2583,7 @@ fn a_bare_dot_offers_the_enclosing_functions_local_labels() {
     const SOURCE: &str = "func other @a8 @i8 {\n\
         .elsewhere:\n\
         \x20   nop\n\
-        \x20   != goto .elsewhere\n\
+        \x20   if != goto .elsewhere\n\
         }\n\
         \n\
         func work @a8 @i8 {\n\

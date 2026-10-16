@@ -15,7 +15,7 @@ var TASKS[
 func first @a8 @i8 {
 .state:
     a = TASKS[0].state
-    != goto .state
+    if != goto .state
     return
 }
 
@@ -25,7 +25,7 @@ func first @a8 @i8 {
 func second @a8 @i8 {
 .state:
     a = TASKS[1].state
-    != goto .state
+    if != goto .state
     return
 }
 

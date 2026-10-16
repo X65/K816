@@ -712,7 +712,7 @@ data TOP {
 func nested @a8 @i8 {
     call leaf
     a - #$01
-    >= {
+    if >= {
         call leaf
     } else {
         call leaf

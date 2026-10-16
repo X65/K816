@@ -49,6 +49,10 @@ fn a_sources_dialect_is_its_extension() {
 
 /// A program both dialects accept compiles to the same assembly under every
 /// extension: the dialect decides what is refused, never what anything means.
+///
+/// Its branches are native: since sub-plan Q a condition has no spelling both
+/// dialects take — K816 writes `if >= { … }` and a `.k65` source the bare
+/// `>= { … }` (`plans/16-if-statement.md` decisions 2 and 10).
 #[test]
 fn a_program_both_dialects_accept_compiles_alike_under_every_extension() {
     const PROGRAM: &str = "\
@@ -58,10 +62,12 @@ var flags = $11
 func main @a8 @i8 {
     x = #0
     a?#4
-    >= { counter++ }
+    bcc .small
+    counter++
+.small:
     lda flags
     and #$0F
-    != goto .done
+    bne .done
     flags = a = counter
 .done:
 }
@@ -106,7 +112,10 @@ fn respelled_pairs() -> Vec<(String, String)> {
             "loop { a = flags } always".into(),
             "{ a = flags } always".into(),
         ),
-        ("loop { < break } never".into(), "{ < break } never".into()),
+        (
+            "loop { if < break } never".into(),
+            "{ < break } never".into(),
+        ),
         (
             "nocross loop { y++ } while !=".into(),
             "nocross { y++ } !=".into(),
@@ -116,15 +125,15 @@ fn respelled_pairs() -> Vec<(String, String)> {
             "nocross { y++ } always".into(),
         ),
         (
-            "loop { x++ \n == repeat \n y++ } while !=".into(),
+            "loop { x++ \n if == repeat \n y++ } while !=".into(),
             "{ x++ \n == repeat \n y++ } !=".into(),
         ),
         (
             "loop { loop { x++ } while != \n y++ } while !=".into(),
             "{ { x++ } != \n y++ } !=".into(),
         ),
-        ("v? { x++ }".into(), "<<={ x++ }".into()),
-        ("!v? goto .out".into(), ">>= goto .out".into()),
+        ("if v? { x++ }".into(), "<<={ x++ }".into()),
+        ("if !v? goto .out".into(), ">>= goto .out".into()),
         ("push a, x, y".into(), "a!! x!! y!!".into()),
         ("pull y, x, a".into(), "y?? x?? a??".into()),
         ("push p, dbr, dpr".into(), "p!! dbr!! dpr!!".into()),
@@ -139,10 +148,13 @@ fn respelled_pairs() -> Vec<(String, String)> {
             (format!("{flag}?"), format!("{flag}+?")),
             (format!("!{flag}?"), format!("{flag}-?")),
         ] {
-            pairs.push((format!("{bare} {{ x++ }}"), format!("{signed}{{ x++ }}")));
-            pairs.push((format!("{bare} goto .out"), format!("{signed} goto .out")));
+            pairs.push((format!("if {bare} {{ x++ }}"), format!("{signed}{{ x++ }}")));
             pairs.push((
-                format!("loop {{ x++ \n {bare} break }} always"),
+                format!("if {bare} goto .out"),
+                format!("{signed} goto .out"),
+            ));
+            pairs.push((
+                format!("loop {{ x++ \n if {bare} break }} always"),
                 format!("{{ x++ \n {signed} break }} always"),
             ));
             pairs.push((
@@ -625,5 +637,86 @@ fn every_if_form_compiles_to_the_bytes_of_its_k65_spelling() {
             code("unit.k65", &unit(k65)),
             "`{k816}` and `{k65}`"
         );
+    }
+}
+
+/// A `.k65` source takes none of K816's respellings: each `if` form is
+/// refused with `K816-E0180`, and applying the fixes writes K65 that
+/// compiles to the bytes of the K65 twin (`plans/16-if-statement.md`
+/// decision 10). The bare twin itself is still accepted there.
+#[test]
+fn a_k65_source_refuses_ifs_and_their_fixes_change_no_byte() {
+    for (k816, k65) in if_pairs() {
+        let (codes, repaired) = fixed("unit.k65", &unit(k816));
+        assert!(
+            codes.contains(&"K816-E0180"),
+            "`{k816}` in a .k65: {codes:?}"
+        );
+        assert_eq!(
+            code("unit.k65", &repaired),
+            code("unit.k65", &unit(k65)),
+            "`{k816}` fixed to\n{repaired}"
+        );
+        // The twin is accepted: whatever it is told is not a refusal (`<=`
+        // still costs its two branches, `K816-W0157`).
+        let told = code("unit.k65", &unit(k65)).0;
+        assert!(
+            told.iter().all(|code| code.starts_with("K816-W")),
+            "`{k65}` in a .k65: {told:?}"
+        );
+    }
+}
+
+/// And a K816 source refuses each bare twin, with `if` as the fix
+/// (`K816-K65-0011`).
+#[test]
+fn a_k816_source_refuses_bare_conditions_and_their_fix_changes_no_byte() {
+    for (k816, k65) in if_pairs() {
+        // A compare on a line of its own, or in a loop's body, stays where
+        // it is under the fix: a different text with the same bytes, which
+        // is what is compared.
+        let (codes, repaired) = fixed("unit.kk", &unit(k65));
+        // A `while` compare's twin is K65's postfix loop, refused as that
+        // (`K816-K65-0007`); every other twin has a bare condition.
+        let refused = if k816.contains("while") {
+            "K816-K65-0007"
+        } else {
+            "K816-K65-0011"
+        };
+        assert!(codes.contains(&refused), "`{k65}`: {codes:?}");
+        assert_eq!(
+            code("unit.kk", &repaired),
+            code("unit.kk", &unit(k816)),
+            "`{k65}` fixed to\n{repaired}"
+        );
+    }
+}
+
+/// The compare slot holds a compare — `a?`, `x?`, `y?` or `a&?` — in an
+/// `if`, an `else if`, before a jump and in a `while`, in either dialect
+/// (`K816-E0179`, decision 5).
+#[test]
+fn a_compare_slot_takes_only_a_compare() {
+    for body in [
+        "if a+#1 == { x++ }",
+        "if == { x++ } else if a-#1 < { y++ }",
+        "if a|#1 != goto .out",
+        "loop { x++ } while a^#1 !=",
+    ] {
+        for name in ["unit.kk", "unit.k65"] {
+            let (codes, _) = fixed(name, &unit(body));
+            assert!(
+                codes.contains(&"K816-E0179"),
+                "`{body}` in {name}: {codes:?}"
+            );
+        }
+    }
+    for body in [
+        "if a?#1 == { x++ }",
+        "if a&?flags !z? goto .out",
+        "loop { x++ } while y?#2 <",
+    ] {
+        let (codes, _) = fixed("unit.kk", &unit(body));
+        assert!(!codes.contains(&"K816-E0179"), "`{body}`: {codes:?}");
     }
 }

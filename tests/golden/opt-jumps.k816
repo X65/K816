@@ -13,9 +13,9 @@ func structured @a8 @i8 {
     ldx #8
     loop {
         dex
-        == break
+        if == break
         x?#4
-        >= {
+        if >= {
             count++
         } else {
             count--

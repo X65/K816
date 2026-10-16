@@ -13,7 +13,7 @@ func count_bits @a8 @i8 {
     a = flags
     nocross loop {
         a >>
-        c? { counter++ }
+        if c? { counter++ }
         x--
     } while !=
     pull x, a
@@ -23,12 +23,12 @@ func count_bits @a8 @i8 {
 func wait_ready @a8 @i8 {
     loop {
         a&?flags
-        !n? break
-        c? break
+        if !n? break
+        if c? break
     } always
     loop {
         a = flags
-        == break
+        if == break
         counter++
     } never
 }

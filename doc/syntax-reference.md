@@ -524,7 +524,7 @@ var SCREEN=0x400
 
 func main {
   x=0 loop {
-    a=hello,x !z?{ SCREEN,x=a x++ }
+    a=hello,x if !z?{ SCREEN,x=a x++ }
   } while !z?
 
   return
@@ -545,13 +545,13 @@ Local labels are prefixed with `.` and are scoped to their enclosing function. T
 func one {
   .loop:
   x++
-  != goto .loop
+  if != goto .loop
 }
 
 func two {
   .loop:           // same name, different scope
   y++
-  != goto .loop
+  if != goto .loop
 }
 ```
 
@@ -571,7 +571,7 @@ func draw_level {
     a|0x20
     x=a .LD: screen_2=x x++ .RD: screen_2+1=x
 
-    c+ a=.LT+1 a-2 .LT+1=.LD+1=a !c?{ .LT+2-- .RT+2-- .LD+2-- .RD+2-- } x=a x++ .RT+1=.RD+1=x
+    c+ a=.LT+1 a-2 .LT+1=.LD+1=a if !c?{ .LT+2-- .RT+2-- .LD+2-- .RD+2-- } x=a x++ .RT+1=.RD+1=x
 
     y--
   } while !=
@@ -828,7 +828,7 @@ func check @a8 @i8 (a) -> a, c {   // the carry is a result
 
 func caller @a8 @i8 {
   check a -> a, c
-  !c? { ... }                      // reading an answer
+  if !c? { ... }                   // reading an answer
 }
 ```
 
@@ -938,9 +938,9 @@ Creates a jump to a label outside the `else` bracket in branch code.
 
 ```k65
 inline check_if_key_or_doors {
-  a?60 == {gamestate_keys++}
+  if a?60 == {gamestate_keys++}
   else {
-    a?62 == {
+    if a?62 == {
         ptr_doors=a=x
         temp1=a=1
     }
@@ -4033,8 +4033,8 @@ var mem = $10
 
 func work @a8 @i8 {
   a?10
-  >= { x++ }            // x++ only when A >= 10 (BCC skips it)
-  !c? { mem++ }         // mem++ only when the carry is clear (BCS skips it)
+  if >= { x++ }         // x++ only when A >= 10 (BCC skips it)
+  if !c? { mem++ }      // mem++ only when the carry is clear (BCS skips it)
 }
 ```
 
@@ -4043,8 +4043,8 @@ func work @a8 @i8 {
 ```k65
 func work @a8 @i8 {
   a?10
-  < goto done           // to `done` when A < 10 (BCC)
-  !c? goto done         // to `done` when the carry is clear (BCC)
+  if < goto done        // to `done` when A < 10 (BCC)
+  if !c? goto done      // to `done` when the carry is clear (BCC)
   x++
 done:
 }
@@ -4080,8 +4080,8 @@ func work @a8 @i8 {
 func work @a8 @i8 {
   loop {
     x++
-    < break             // leave the loop on carry clear (BCC past the end)
-    != repeat           // back to the top on not-zero (BNE)
+    if < break          // leave the loop on carry clear (BCC past the end)
+    if != repeat        // back to the top on not-zero (BNE)
     break               // leave unconditionally (JMP past the end, or a BRA)
   } always
 }
@@ -4093,7 +4093,7 @@ func work @a8 @i8 {
 
 ```k65
 func work @a8 @i8 {
-  == {
+  if == {
     a = 1
   } else {
     a = 2
@@ -4168,9 +4168,9 @@ wherever it is written, and K816 warns with `K816-W0157`:
 func work @a8 @i8 {
   loop { x++ } while >   // beq over the branch, then bcs back to the loop
   loop { x++ } while <=  // bcc back to the loop, then beq back to the loop
-  > { x++ }              // bcc past the body, then beq past the body
-  <= { x++ }             // beq over the branch, then bcs past the body
-  > goto done            // beq over the branch, then bcs to `done`
+  if > { x++ }           // bcc past the body, then beq past the body
+  if <= { x++ }          // beq over the branch, then bcs past the body
+  if > goto done         // beq over the branch, then bcs to `done`
 done:
 }
 ```

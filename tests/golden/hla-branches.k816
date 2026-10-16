@@ -11,14 +11,14 @@ var mem = $10
 // The prefix form inverts: the body runs when the written condition holds.
 func prefix @a8 @i8 {
     a?10
-    >= { mem++ }
-    < { mem++ }
-    == { mem++ }
-    != { mem++ }
-    <0 { mem++ }
-    >=0 { mem++ }
-    v? { mem++ }
-    !v? { mem++ }
+    if >= { mem++ }
+    if < { mem++ }
+    if == { mem++ }
+    if != { mem++ }
+    if <0 { mem++ }
+    if >=0 { mem++ }
+    if v? { mem++ }
+    if !v? { mem++ }
     return
 }
 
@@ -53,11 +53,11 @@ func prefix_native @a8 @i8 {
 
 // The flag tests, which invert the same way.
 func flags @a8 @i8 {
-    c? { mem++ }
-    !c? { mem++ }
-    z? { mem++ }
-    !n? { mem++ }
-    v? { mem++ }
+    if c? { mem++ }
+    if !c? { mem++ }
+    if z? { mem++ }
+    if !n? { mem++ }
+    if v? { mem++ }
     return
 }
 
@@ -109,8 +109,8 @@ func postfix_native @a8 @i8 {
 func loop_control @a8 @i8 {
     loop {
         mem++
-        < break
-        != repeat
+        if < break
+        if != repeat
         break
     } always
     return
@@ -130,7 +130,7 @@ func loop_control_native @a8 @i8 {
 // If-else: the skip lands on the alternative, and the consequent jumps past
 // it.
 func alternatives @a8 @i8 {
-    == { mem++ } else { mem-- }
+    if == { mem++ } else { mem-- }
     return
 }
 

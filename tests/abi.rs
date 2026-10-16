@@ -334,7 +334,7 @@ fn an_interrupt_handler_takes_its_widths_from_the_environment() {
         "naked handler {\n    a = #1\n    rti\n}\n",
         // A handler that returns from inside a conditional is still entered
         // by the hardware.
-        "naked handler {\n    a?0\n    == { return_i }\n    return_i\n}\n",
+        "naked handler {\n    a?0\n    if == { return_i }\n    return_i\n}\n",
         // And so is one whose return sits under a width block.
         "naked handler {\n    a = #1\n    @a16 {\n        a = #$0102\n    }\n    return_i\n}\n",
     ] {
@@ -811,7 +811,7 @@ fn a_callee_that_leaves_native_mode_is_not_believed_afterwards() {
 /// inherits no such debt.
 #[test]
 fn an_unclassified_callee_keeps_native_and_drops_emulation() {
-    let recursive = "func loop @a8 @i8 {\n    < goto .done\n    call loop\n.done:\n    return\n}\n\
+    let recursive = "func loop @a8 @i8 {\n    if < goto .done\n    call loop\n.done:\n    return\n}\n\
                      func caller @a8 @i8 {\n    call loop\n    rep #$20\n    a = #$1234\n}\n";
     assert_eq!(
         errors(recursive),
@@ -819,7 +819,7 @@ fn an_unclassified_callee_keeps_native_and_drops_emulation() {
         "under a native entry the caller may still believe its own `rep`"
     );
 
-    let emulating = "func loop {\n    < goto .done\n    call loop\n.done:\n    return\n}\n\
+    let emulating = "func loop {\n    if < goto .done\n    call loop\n.done:\n    return\n}\n\
                      func main {\n    call loop\n    rep #$20\n    a = #$01\n    return\n}\n";
     let codes = errors_in(EntryEnvironment::emulation(), emulating);
     assert!(

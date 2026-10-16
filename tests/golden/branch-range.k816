@@ -10,7 +10,7 @@ var mem = $10
 
 func main @a8 @i8 {
     a?10
-    >= {
+    if >= {
         mem++
         mem++
         mem++

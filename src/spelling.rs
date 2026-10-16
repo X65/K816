@@ -37,6 +37,12 @@
 //!   one, each with a fix that writes the K816 form. The fix is the whole
 //!   point: the two spellings compile to the same bytes, so applying it
 //!   changes nothing but the spelling.
+//! - Sub-plan Q's `if` (`plans/16-if-statement.md`): a K816 source writes a
+//!   condition in front of a block or a jump after `if`, so the bare form is
+//!   refused there with a fix inserting it; a `.k65` source takes none of
+//!   K816's respellings, so an `if` or a compare in a `while` is refused
+//!   there with a fix back to K65's spelling. Either way the compare slot
+//!   holds a compare, which is not a dialect rule.
 //! - Rule 3 (decision 10): in a K816 source's HLA, memory is reached only
 //!   through a named variable, and a free-standing number is always a value
 //!   — which `a = $10` already is, loading `#$10`. A number in any memory
@@ -61,6 +67,7 @@ pub fn check(program: &AstFile, source: &SourceFile) -> Vec<Diagnostic> {
     let mut checker = Checker {
         source,
         diagnostics: Vec::new(),
+        chained: std::collections::BTreeSet::new(),
     };
     for item in &program.items {
         match &item.kind {
@@ -75,11 +82,26 @@ pub fn check(program: &AstFile, source: &SourceFile) -> Vec<Diagnostic> {
 struct Checker<'a> {
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    /// The `if` keywords of `else if` chains a `.k65` source wrote, already
+    /// refused with the chain's own fix by the conditional they hang from.
+    chained: std::collections::BTreeSet<u32>,
 }
 
 impl Checker<'_> {
     fn block(&mut self, block: &Block) {
-        for statement in &block.statements {
+        for (index, statement) in block.statements.iter().enumerate() {
+            // A compare written in an `if` is the statement the builder put
+            // before the conditional (`ConditionalBlock::compare`).
+            let written = match &statement.kind {
+                StatementKind::Conditional(conditional) => conditional.compare,
+                StatementKind::ConditionalJump(jump) => jump.compare,
+                _ => None,
+            };
+            if written.is_some()
+                && let Some(compare) = index.checked_sub(1).map(|i| &block.statements[i])
+            {
+                self.compare_slot(compare, "an `if`");
+            }
             self.statement(statement);
         }
     }
@@ -114,6 +136,18 @@ impl Checker<'_> {
             StatementKind::Conditional(conditional) => {
                 if k816 {
                     self.condition(&conditional.condition);
+                    if conditional.keyword.is_none() {
+                        self.bare_condition(&conditional.condition, "block");
+                    }
+                } else {
+                    if let Some(keyword) = conditional.keyword {
+                        self.k65_if(keyword, conditional.compare, &conditional.condition);
+                    }
+                    if conditional.chained
+                        && let Some(otherwise) = &conditional.otherwise
+                    {
+                        self.k65_chain(otherwise);
+                    }
                 }
                 self.block(&conditional.body);
                 if let Some(otherwise) = &conditional.otherwise {
@@ -123,6 +157,11 @@ impl Checker<'_> {
             StatementKind::ConditionalJump(jump) => {
                 if k816 {
                     self.condition(&jump.condition);
+                    if jump.keyword.is_none() {
+                        self.bare_condition(&jump.condition, "jump");
+                    }
+                } else if let Some(keyword) = jump.keyword {
+                    self.k65_if(keyword, jump.compare, &jump.condition);
                 }
                 self.statement(&jump.jump);
             }
@@ -132,6 +171,13 @@ impl Checker<'_> {
                     if let LoopCondition::Branch(condition) = &loop_statement.condition {
                         self.condition(condition);
                     }
+                } else if let Some(compare) = loop_statement.test_compare {
+                    self.k65_while_compare(loop_statement, compare);
+                }
+                if loop_statement.test_compare.is_some()
+                    && let Some(compare) = loop_statement.body.statements.last()
+                {
+                    self.compare_slot(compare, "a `while`");
                 }
                 self.block(&loop_statement.body);
             }
@@ -140,6 +186,168 @@ impl Checker<'_> {
             StatementKind::Data(data) => self.data(data),
             _ => {}
         }
+    }
+
+    /// `>= { … }` or `< goto done` in a K816 source: the conditional K816
+    /// writes `if >= { … }`. The fix inserts the keyword, which is the whole
+    /// difference — the parser builds the same statements from both.
+    fn bare_condition(&mut self, condition: &BranchCondition, guarded: &str) {
+        let text = self.source.span_text(condition.span);
+        let what = if guarded == "block" {
+            format!("if {text} {{ ... }}")
+        } else {
+            format!("if {text} ...")
+        };
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::K65_BARE_CONDITION,
+                "a K816 source writes `if` before a condition",
+                Label::new(condition.span, format!("K816 writes this `if {text}`")),
+            )
+            .with_note(format!(
+                "K65 writes the condition alone in front of the {guarded} it guards; K816 says \
+                 where the test begins, and both compile to the same bytes"
+            ))
+            .with_help(format!(
+                "write `{what}`, or name the file `.k65` to keep K65's spelling"
+            ))
+            .with_fix(Fix {
+                title: "insert `if`".to_owned(),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![TextEdit::insert(condition.span, "if ")],
+            })
+            .with_docs("doc/syntax-reference.md#branch-and-flow-control"),
+        );
+    }
+
+    /// The `if` of a `.k65` source, which writes K65's conditional: the
+    /// condition alone, and a compare as the statement before it — which a
+    /// `.k65` source may write on the same line, so deleting `if ` is the
+    /// whole fix (`plans/16-if-statement.md` decision 10).
+    fn k65_if(&mut self, keyword: Span, compare: Option<Span>, condition: &BranchCondition) {
+        if self.chained.contains(&keyword.start) {
+            return;
+        }
+        let next = compare.map_or(condition.span.start, |compare| compare.start);
+        let words = Span::new(keyword.file, keyword.start, next);
+        self.k65_spelling(
+            keyword,
+            "a `.k65` source writes a condition without `if`",
+            "`if` is K816's spelling",
+            "K65 writes the condition alone in front of the block or the jump, and a compare \
+             as a statement before it; both compile to the same bytes",
+            Fix {
+                title: "delete `if`".to_owned(),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![TextEdit::delete(words)],
+            },
+        );
+    }
+
+    /// `} else if == { … }` in a `.k65` source: K65 nests the conditional in
+    /// the `else` block, so the fix gives the chain the braces K816 left out.
+    fn k65_chain(&mut self, otherwise: &Block) {
+        let Some(Statement {
+            kind: StatementKind::Conditional(inner),
+            ..
+        }) = otherwise.statements.last()
+        else {
+            return;
+        };
+        let Some(keyword) = inner.keyword else {
+            return;
+        };
+        self.chained.insert(keyword.start);
+        let next = inner
+            .compare
+            .map_or(inner.condition.span.start, |compare| compare.start);
+        let words = Span::new(keyword.file, keyword.start, next);
+        let end = Span::empty_at(otherwise.span.file, otherwise.span.end);
+        self.k65_spelling(
+            keyword,
+            "a `.k65` source writes `else if` as a conditional inside `else`",
+            "`else if` is K816's spelling",
+            "K65 writes `else { == { ... } }`, the conditional nested in the `else` block; \
+             both compile to the same bytes",
+            Fix {
+                title: "write `else { ... }`".to_owned(),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![TextEdit::replace(words, "{ "), TextEdit::replace(end, " }")],
+            },
+        );
+    }
+
+    /// `while x?10 <` in a `.k65` source, which writes the compare as the
+    /// loop body's last statement — where it runs either way.
+    fn k65_while_compare(&mut self, loop_statement: &LoopStatement, compare: Span) {
+        let LoopCondition::Branch(condition) = loop_statement.condition else {
+            return;
+        };
+        let text = self.source.span_text(compare).to_owned();
+        let brace = Span::empty_at(
+            loop_statement.body.span.file,
+            loop_statement.body.span.end.saturating_sub(1),
+        );
+        let words = Span::new(compare.file, compare.start, condition.span.start);
+        self.k65_spelling(
+            compare,
+            "a `.k65` source writes the loop's compare in its body",
+            "a compare in a `while` is K816's spelling",
+            "K65 writes the compare as the last statement of the body, which is where it runs \
+             in both: a `repeat` skips it, and `nocross` checks it",
+            Fix {
+                title: format!("move `{text}` to the end of the body"),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![
+                    TextEdit::replace(brace, format!("{text} ")),
+                    TextEdit::delete(words),
+                ],
+            },
+        );
+    }
+
+    fn k65_spelling(&mut self, at: Span, title: &str, label: &str, note: &str, fix: Fix) {
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::K816_SPELLING_IN_K65,
+                title,
+                Label::new(at, label),
+            )
+            .with_note(note)
+            .with_help(format!(
+                "{}, or name the file `.kk` to write K816",
+                fix.title
+            ))
+            .with_fix(fix)
+            .with_docs("doc/k65-compat.md#two-dialects-one-grammar"),
+        );
+    }
+
+    /// The statement in an `if`'s or a `while`'s compare slot: one of the
+    /// four compares, whatever the dialect (decision 5).
+    fn compare_slot(&mut self, statement: &Statement, slot: &str) {
+        let StatementKind::Hla(HlaStatement::Arithmetic(arithmetic)) = &statement.kind else {
+            return;
+        };
+        if matches!(arithmetic.op, ArithmeticOp::Compare | ArithmeticOp::BitTest) {
+            return;
+        }
+        let text = self.source.span_text(statement.span);
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::CONDITION_COMPARE,
+                format!("only a compare can be written in {slot}"),
+                Label::new(statement.span, "this is not a compare"),
+            )
+            .with_note(
+                "the slot takes `a?`, `x?`, `y?` and `a&?`, which set flags and change nothing \
+                 else; anything else there reads as a test of what it computes",
+            )
+            .with_help(format!(
+                "write `{text}` as a statement of its own, before the condition"
+            ))
+            .with_docs("doc/syntax-reference.md#branch-and-flow-control"),
+        );
     }
 
     /// `{ x-- } !=`, `{ ... } always`, `{ ... } never`, with or without

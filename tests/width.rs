@@ -226,7 +226,7 @@ func main @a8 {
 #[test]
 fn a_break_leaves_an_always_loop_for_the_code_after_it() {
     for spelling in [
-        "loop {\n    x++\n    == break\n  } always",
+        "loop {\n    x++\n    if == break\n  } always",
         "{\n    x++\n    break\n  } always",
     ] {
         let source = format!("func f @a8 @i8 {{\n  {spelling}\n  a?#3\n}}\n");
@@ -252,7 +252,7 @@ func f @a8 @i8 {
   loop {
     lda #1
     dex
-    == {
+    if == {
       rep #$20
       break
     }
@@ -1299,7 +1299,7 @@ func other @a8 @i8 {
 func f @a8 @i8 {
     @a16 {
         a?0
-        == goto other
+        if == goto other
     }
 .here:
     lda #$12
@@ -1344,7 +1344,7 @@ fn a_goto_out_of_a_width_block_restores_it_too() {
         "func f @a8 @i8 {\n    @a16 {\n        goto .out\n    }\n.out:\n    lda #$12\n}\n",
         "func f @a8 @i8 {\n    @a16 {\n        jmp .out\n    }\n.out:\n    lda #$12\n}\n",
         // Both axes, and a conditional `goto` too.
-        "func f @a8 @i8 {\n    @a16 @i16 {\n        a?0\n        == goto .out\n    }\n.out:\n    lda #$12\n}\n",
+        "func f @a8 @i8 {\n    @a16 @i16 {\n        a?0\n        if == goto .out\n    }\n.out:\n    lda #$12\n}\n",
     ] {
         let (_, _, diagnostics) = analyze(source);
         assert_eq!(codes(&diagnostics), Vec::<&str>::new(), "`{source}`");

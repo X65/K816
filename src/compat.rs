@@ -248,6 +248,13 @@ pub fn reserved_name_refusal(name: &str) -> Option<String> {
             "`{name}` is a 65816 instruction, so a declaration cannot take it"
         ));
     }
+    // `if` is a keyword at statement level as well as in the evaluator, and
+    // the original refuses it as a name too (`plans/16-if-statement.md`
+    // decision 6). Exactly `if`: the keyword is case-sensitive, so `IF` is a
+    // name like any other.
+    if name == "if" {
+        return Some("`if` is a keyword, so a declaration cannot take it".to_owned());
+    }
     let lowered = name.to_ascii_lowercase();
     if !RESERVED_NAMES.contains(&lowered.as_str()) {
         return None;

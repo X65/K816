@@ -516,6 +516,14 @@ impl DiagnosticCode {
     /// `const E:byte = 300`. A size is a range, −2^(n−1) … 2^n−1 for its *n*
     /// bits (`plans/15-constant-sizes.md` decision 6).
     pub const CONST_SIZE_RANGE: Self = Self("K816-E0178");
+    /// A statement other than a compare written in an `if` or a `while`:
+    /// `if a+#1 == { }`. The slot takes `a?`, `x?`, `y?` and `a&?`
+    /// (`plans/16-if-statement.md` decision 5).
+    pub const CONDITION_COMPARE: Self = Self("K816-E0179");
+    /// A spelling only K816 has, in a `.k65` source: an `if`, a compare in
+    /// an `if` or a `while` (`plans/16-if-statement.md` decision 10). A
+    /// `.k65` source takes what K816 adds and nothing it respells.
+    pub const K816_SPELLING_IN_K65: Self = Self("K816-E0180");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -580,6 +588,10 @@ impl DiagnosticCode {
     pub const K65_OVERFLOW_RELATION: Self = Self("K816-K65-0009");
     /// `a!!` / `a??` in a K816 source, which writes `push a` / `pull a`.
     pub const K65_STACK_SHORTHAND: Self = Self("K816-K65-0010");
+    /// A condition alone in front of a block or a jump — `>= { … }`,
+    /// `< goto done` — in a K816 source, which writes `if >= { … }`
+    /// (`plans/16-if-statement.md` decisions 2 and 3).
+    pub const K65_BARE_CONDITION: Self = Self("K816-K65-0011");
 
     // The `K816-CA65-####` family: ca65 syntax recognized *where the grammar
     // already failed*, so that a source carried over from ca65 by hand is
@@ -855,6 +867,8 @@ mod tests {
         DiagnosticCode::NUMBER_AS_PLACE,
         DiagnosticCode::PUSH_PLACE,
         DiagnosticCode::CONST_SIZE_RANGE,
+        DiagnosticCode::CONDITION_COMPARE,
+        DiagnosticCode::K816_SPELLING_IN_K65,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
@@ -866,6 +880,7 @@ mod tests {
         DiagnosticCode::K65_SIGNED_FLAG_TEST,
         DiagnosticCode::K65_OVERFLOW_RELATION,
         DiagnosticCode::K65_STACK_SHORTHAND,
+        DiagnosticCode::K65_BARE_CONDITION,
         DiagnosticCode::CA65_COMMENT,
         DiagnosticCode::CA65_DIRECTIVE,
         DiagnosticCode::CA65_SCOPE_OPERATOR,

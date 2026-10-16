@@ -2006,7 +2006,7 @@ fn the_direct_page_pool_steps_over_its_pinned_slots() {
 fn a_branch_inside_a_data_code_subblock_is_relaxed() {
     let body = "nop\n        ".repeat(200);
     let source = format!(
-        "data blk {{\n  0\n  code {{\n    @a8 {{\n      a?0\n      == {{\n        {body}\n      }}\n    }}\n  }}\n}}\n"
+        "data blk {{\n  0\n  code {{\n    @a8 {{\n      a?0\n      if == {{\n        {body}\n      }}\n    }}\n  }}\n}}\n"
     );
     let mut map = SourceMap::new();
     let file = map.add_file("data-branch.k816", &source);
@@ -2036,7 +2036,7 @@ fn a_branch_inside_a_data_code_subblock_is_relaxed() {
 fn a_nocross_run_is_measured_after_its_branches_settle() {
     let body = "nop\n        ".repeat(250);
     let source = format!(
-        "func f @a8 @i8 {{\n    nocross {{\n        a?0\n        == {{\n        {body}\n        }}\n    }}\n}}\n"
+        "func f @a8 @i8 {{\n    nocross {{\n        a?0\n        if == {{\n        {body}\n        }}\n    }}\n}}\n"
     );
     let mut map = SourceMap::new();
     let file = map.add_file("nocross.k816", &source);
@@ -2062,7 +2062,7 @@ fn a_nocross_run_is_measured_after_its_branches_settle() {
     // A run that still fits carries the *relaxed* length in its guard.
     let body = "nop\n        ".repeat(200);
     let source = format!(
-        "func f @a8 @i8 {{\n    nocross {{\n        a?0\n        == {{\n        {body}\n        }}\n    }}\n}}\n"
+        "func f @a8 @i8 {{\n    nocross {{\n        a?0\n        if == {{\n        {body}\n        }}\n    }}\n}}\n"
     );
     let mut map = SourceMap::new();
     let file = map.add_file("nocross-fits.k816", &source);
@@ -2103,7 +2103,7 @@ fn a_widened_branch_does_not_hide_a_damaged_register() {
          func caller @a8 @i8 {{\n\
          \x20   x = mem\n\
          \x20   a?0\n\
-         \x20   == {{\n        {body}\n    }}\n\
+         \x20   if == {{\n        {body}\n    }}\n\
          \x20   a = #1\n\
          \x20   callee a -> a\n\
          \x20   mem = x\n\
@@ -4930,7 +4930,7 @@ fn a_jump_a_branch_reaches_is_the_branch() {
         ".top:\n    inx\n    goto .top",
         "    goto .past\n    inx\n.past:",
         "    loop {\n        inx\n    } always",
-        "    a?#1\n    == {\n        inx\n    } else {\n        dex\n    }",
+        "    a?#1\n    if == {\n        inx\n    } else {\n        dex\n    }",
         "    loop {\n        inx\n        break\n    } always",
     ] {
         let (jumps, _) = jumps_after("jump-reaches", body, true);

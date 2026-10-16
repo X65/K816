@@ -29,7 +29,7 @@ var mem = $10
 func frozen_run @a8 @i8 {
     nocross {
         a?mem
-        >= {
+        if >= {
             clc
             sec
             mem++
@@ -111,7 +111,7 @@ func frozen_run @a8 @i8 {
 // dead-write pass. The `>=` conditional's branch is emitted long and shrinks.
 func now_fits @a8 @i16 {
     a?10
-    >= {
+    if >= {
         ldx #$0102
         ldx #$0102
         ldx #$0102
@@ -183,7 +183,7 @@ func now_fits @a8 @i16 {
 // than making one decision per branch.
 func second_fits_after_the_first @a8 @i16 {
     a?10
-    >= {
+    if >= {
         ldx #$0102
         ldx #$0102
         ldx #$0102
@@ -243,7 +243,7 @@ func second_fits_after_the_first @a8 @i16 {
         ldx #$0102
         ldx #$0102
         a?20
-        >= {
+        if >= {
             ldx #$0102
             ldx #$0102
             ldx #$0102
@@ -318,7 +318,7 @@ func second_fits_after_the_first @a8 @i16 {
 // refuses with a range error.
 func data_is_counted @a8 @i16 {
     a?10
-    >= {
+    if >= {
         ldx #$0102
         ldx #$0102
         data pad {

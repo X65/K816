@@ -33,7 +33,7 @@ func main {
     x = 0
     loop {
         a = hello, x
-        !z? { SCREEN, x = a x++ }
+        if !z? { SCREEN, x = a x++ }
     } while !z?
 }
 

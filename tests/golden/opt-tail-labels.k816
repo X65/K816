@@ -18,7 +18,7 @@ var mem = $10
 // target, so falling through arrives where the branch was going.
 func branch_to_next @a8 @i8 {
     a?0
-    == goto .next
+    if == goto .next
 .next:
     mem++
 }
@@ -27,7 +27,7 @@ func branch_to_next @a8 @i8 {
 // three bytes of difference between taking the branch and not.
 func branch_over_work @a8 @i8 {
     a?0
-    == goto .after
+    if == goto .after
     x++
 .after:
     mem++
@@ -84,7 +84,7 @@ func mixed_returns @a8 @i8 {
 func frozen_tail @a8 @i8 {
     nocross {
         a?0
-        == goto .done
+        if == goto .done
 .done:
         mem++
         return

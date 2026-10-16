@@ -13,7 +13,7 @@ var mem = $0400
 // because callers arrive by `jsl` and have three bytes on the stack.
 far func banked @a8 @i8 {
     x++
-    == { return }
+    if == { return }
     y++
 }
 
@@ -57,8 +57,8 @@ func tail_jump @a8 @i8 {
 func conditional_jump @a8 @i8 {
 .loop:
     mem++
-    != goto .loop
-    < goto .done
+    if != goto .loop
+    if < goto .done
 .done:
     y++
 }
@@ -66,7 +66,7 @@ func conditional_jump @a8 @i8 {
 // A conditional whose target no branch can reach: the condition branches over
 // the long jump instead, and the sense inverts.
 func conditional_far @a8 @i8 {
-    == goto far banked
+    if == goto far banked
     x++
 }
 
@@ -74,7 +74,7 @@ func conditional_far @a8 @i8 {
 // too: a target the short form cannot reach becomes the inverted branch over a
 // jump, exactly as a conditional's body does.
 func distant_goto @a8 @i8 {
-    < goto .out
+    if < goto .out
     mem++
     mem++
     mem++

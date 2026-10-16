@@ -133,6 +133,19 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::K65_STACK_SHORTHAND,
         caret: "!!",
     },
+    // A condition alone in front of a block or a jump: K816 writes `if`
+    // (`plans/16-if-statement.md` decision 2).
+    Case {
+        source: "func work @a8 @i8 {\n    >= { x++ }\n}\n",
+        code: DiagnosticCode::K65_BARE_CONDITION,
+        caret: ">=",
+    },
+    // The compare slot of an `if` holds a compare (decision 5).
+    Case {
+        source: "func work @a8 @i8 {\n    if a+#1 == { x++ }\n}\n",
+        code: DiagnosticCode::CONDITION_COMPARE,
+        caret: "a+#1",
+    },
     // Rule 3: a number in a K816 source's HLA is a value, so it cannot be
     // the place a statement reaches.
     Case {
@@ -617,6 +630,12 @@ const FAMILY: &[Case] = &[
 /// and two of E's come from lowering — or it cannot be reached from source at
 /// all, in which case the entry says why and that claim is the coverage.
 const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
+    // A spelling only K816 has is refused in a `.k65` source, and
+    // `diagnostic_for` compiles every case as `.k816`.
+    (
+        "K816-E0180",
+        "tests/dialect.rs: a_k65_source_refuses_ifs_and_their_fixes_change_no_byte",
+    ),
     // The ca65 idioms are syntax diagnostics: the parser reports them where
     // the grammar failed, so `diagnostic_for` never sees one.
     (
@@ -1129,6 +1148,32 @@ fn a_declaration_cannot_be_named_after_an_instruction() {
         let (_, diagnostics) = k816::semantic::analyze_file(&parse.file);
         assert_eq!(diagnostics, vec![], "{source}");
     }
+}
+
+/// `if` cannot be a declared name, in any position a name is declared in, and
+/// the refusal says it is a keyword (`plans/16-if-statement.md` decision 6).
+/// `IF` is a name: the keyword is case-sensitive.
+#[test]
+fn a_declaration_cannot_be_named_if() {
+    for source in [
+        "func if @a8 @i8 {\n    nop\n}\n",
+        "func f @a8 @i8 {\nif:\n    nop\n}\n",
+        "var if = $80\n",
+        "const if = 1\n",
+        "data if {\n    1\n}\n",
+    ] {
+        let (_, diagnostic) = diagnostic_for(source, DiagnosticCode::RETIRED_REGISTER_SPELLING);
+        assert_eq!(
+            diagnostic.title, "`if` is a keyword, so a declaration cannot take it",
+            "{source}"
+        );
+    }
+    let mut map = SourceMap::new();
+    let id = map.add_file("case.k816", "func f @a8 @i8 {\nIF:\n    nop\n}\n");
+    let parse = parse_source(map.file(id), None);
+    assert_eq!(parse.diagnostics, vec![]);
+    let (_, diagnostics) = k816::semantic::analyze_file(&parse.file);
+    assert_eq!(diagnostics, vec![]);
 }
 
 /// Every indirect mode checks the pointer it reads, and an undeclared width

@@ -95,7 +95,7 @@ func work @a8 @i8 {
     // An `inline` expansion, which binds both alias kinds at the use site.
     stash a, #LIMIT, #COUNTER -> a
 
-    != goto .again
+    if != goto .again
     return
 }
 

@@ -21,7 +21,7 @@ func generated_exit @a8 @i8 {
     loop {
         @a16 {
             a?0
-            == break
+            if == break
             mem++
         }
     } always

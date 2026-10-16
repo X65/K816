@@ -4,17 +4,21 @@ compare   diagnostics
 units     input.kk
 expect    input.kk K816-K65-0007
 expect    input.kk K816-K65-0008
+expect    input.kk K816-K65-0011
 expect    input.kk K816-K65-0009
+expect    input.kk K816-K65-0011
 expect    input.kk K816-K65-0010
 
-**A `.kk` source is K816, and K816 writes four of K65's forms its own way.**
+**A `.kk` source is K816, and K816 writes five of K65's forms its own way.**
 The postfix loop is `loop { x-- } while !=`, the signed flag test `c?`, the
-overflow relation `v?` and the stack shorthand `push a`, and each K65
-spelling here is refused with a fix that writes the K816 one.  The same
-four lines in a `.k65` source compile without a word, and to the bytes the
-fixed `.kk` compiles to - `tests/dialect.rs` applies every fix and compares
-them - so the dialect decides what is refused and never what anything
-means.
+overflow relation `v?`, the stack shorthand `push a`, and a condition in
+front of a block `if c? { x++ }` (sub-plan Q), and each K65 spelling here
+is refused with a fix that writes the K816 one - the two conditional blocks
+twice, once for their condition's spelling and once for the missing `if`.
+The same four lines in a `.k65` source compile without a word, and to the
+bytes the fixed `.kk` compiles to - `tests/dialect.rs` applies every fix
+and compares them - so the dialect decides what is refused and never what
+anything means.
 
 The rule is one of spelling, which is why it lives in `src/spelling.rs`
 beside the push-width checks rather than in the grammar: the grammar is one

@@ -32,7 +32,7 @@ inline store_to @a8 (a, target) -> a {
 inline settle @a8 @i8 {
 .spin:
     mem++
-    != goto .spin
+    if != goto .spin
 }
 
 func uses_them @a8 @i8 {

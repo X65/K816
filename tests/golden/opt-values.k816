@@ -103,7 +103,7 @@ func xba_reports_on_the_low_byte @a16 @i16 {
     xba
     CELL = a
     lda #$0100
-    == goto .target
+    if == goto .target
     nop
 .target:
     nop
@@ -130,7 +130,7 @@ func a_mask_can_write_n_and_z @a8 @i8 {
     lda #$07
     sep #$82
     lda #$07
-    == goto .out
+    if == goto .out
     nop
 .out:
     nop

@@ -100,9 +100,9 @@ column is this section.
 
 ## Two dialects, one grammar
 
-The superset is the **`.k65` dialect**. A `.kk` or `.k816` source is K816,
-which writes four of K65's forms its own way and refuses K65's spelling of
-them, each with a fix that writes K816's:
+A `.k65` source is K65 and a `.kk` or `.k816` source is K816. K816 writes
+six of K65's forms its own way, and each dialect refuses the other's
+spelling of them, with a fix that writes its own:
 
 | K65 spelling | K816 spelling | Refused in K816 as |
 |---|---|---|
@@ -110,13 +110,24 @@ them, each with a fix that writes K816's:
 | `c+?`, `c-?` (and `z`, `n`, `v`) | `c?`, `!c?` | `K816-K65-0008` |
 | `<<=`, `>>=` | `v?`, `!v?` | `K816-K65-0009` |
 | `a!!`, `a??` | `push a`, `pull a` | `K816-K65-0010` |
+| `>= { }`, `< goto done`, `== break`, `else { == { } }` | `if >= { }`, `if < goto done`, `if == break`, `else if == { }` | `K816-K65-0011` |
+| `a?10` before `< { }`; `x?10` as a loop body's last statement | `if a?10 < { }`; `loop { } while x?10 <` | — (the first spelling is valid K816 too) |
 
 Each pair compiles to the same bytes, so the refusal is about spelling and
 never about meaning: applying the fix changes nothing a program does. The
-grammar is one for both dialects, so an old spelling in a `.kk` parses and is
-refused by name rather than reported as a parse error, which is the rule
-above for any K65 form K816 does not take. A `.k65` source accepts both
-spellings, and `--strict-k65` reports the K816 ones as extensions.
+grammar is one for both dialects, so either spelling parses in either file
+and is refused by name rather than reported as a parse error, which is the
+rule above for any form a dialect does not take.
+
+**A `.k65` source accepts what K816 adds and nothing K816 respells.** Every
+K816 spelling in the table is refused there as `K816-E0180`, with a fix
+that writes K65's. What K816 *adds* has no K65 spelling to write instead —
+widths, `far`, `import`, `extern`, native mnemonics, typed data, the rest
+of the manifest's extension rows — and stays accepted, and `--strict-k65`
+reports it. The user, for sub-plan Q (2026-10-16): "the new syntax is only
+for k816 and .kk files, not for the .k65 compat", and then, of sub-plan O's
+forms, "withdraw them from .k65 too". Until then a `.k65` source accepted
+both spellings (`plans/16-if-statement.md` decisions 10 and 11).
 
 K65 compatibility is kept for bootstrapping and as a baseline, and will
 eventually be dropped (`plans/14-readable-hla.md` decision 11). The
@@ -127,7 +138,7 @@ This document is itself part of the authority chain now
 compatibility *means*, and the manifest is its inventory rather than a rival to
 it.
 
-I would also provide `--strict-k65`, but not make it a separate compiler architecture. A `.k65` source accepts the whole superset, and a K816 one all of it but the four K65 spellings above; strict mode merely rejects K816 extensions so portable K65 programs can be checked.
+I would also provide `--strict-k65`, but not make it a separate compiler architecture. A `.k65` source accepts K65 and what K816 adds, and a K816 one the same with K816's spelling of the six forms above; strict mode merely rejects K816 extensions so portable K65 programs can be checked.
 
 ## `--strict-k65`, and the policy behind it
 

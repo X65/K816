@@ -720,3 +720,23 @@ fn a_compare_slot_takes_only_a_compare() {
         assert!(!codes.contains(&"K816-E0179"), "`{body}`: {codes:?}");
     }
 }
+
+/// A `.k65` source takes none of sub-plan O's respellings either — a `loop`
+/// statement, a flag test without its sign, a `push` / `pull` list — and each
+/// fix writes the K65 twin's bytes (`plans/16-if-statement.md` decision 11:
+/// a `.k65` source accepts what K816 adds and nothing it respells).
+#[test]
+fn a_k65_source_refuses_k816s_respellings_and_their_fixes_change_no_byte() {
+    for (readable, k65) in respelled_pairs() {
+        let (codes, repaired) = fixed("unit.k65", &unit(&readable));
+        assert!(
+            codes.contains(&"K816-E0180"),
+            "`{readable}` in a .k65: {codes:?}"
+        );
+        assert_eq!(
+            code("unit.k65", &repaired),
+            code("unit.k65", &unit(&k65)),
+            "`{readable}` fixed to\n{repaired}"
+        );
+    }
+}

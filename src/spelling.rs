@@ -43,6 +43,10 @@
 //!   K816's respellings, so an `if` or a compare in a `while` is refused
 //!   there with a fix back to K65's spelling. Either way the compare slot
 //!   holds a compare, which is not a dialect rule.
+//! - And sub-plan O's: a `.k65` source accepts what K816 *adds* and nothing
+//!   it *respells* (`plans/16-if-statement.md` decision 11), so a `loop`
+//!   statement, a flag test without its sign and a `push` / `pull` list are
+//!   refused there too, each with the K65 spelling it stands for.
 //! - Rule 3 (decision 10): in a K816 source's HLA, memory is reached only
 //!   through a named variable, and a free-standing number is always a value
 //!   — which `a = $10` already is, loading `#$10`. A number in any memory
@@ -56,11 +60,18 @@ use crate::ast::{
     ArithmeticOp, AstFile, Block, BranchCondition, BranchConditionKind, ComparisonKind, DataBlock,
     DataEntryKind, Expr, ExprKind, FlagTestSpelling, HlaOperand, HlaOperandKind, HlaStack,
     HlaStatement, IndexRegisterKind, ItemKind, LoopCondition, LoopSpelling, LoopStatement,
-    RegisterKind, ShiftOp, StackOp, StackSpelling, Statement, StatementKind, StepOp, TypeWidthKind,
-    UnaryOp,
+    RegisterKind, ShiftOp, StackOp, StackSpelling, Statement, StatementKind, StepOp, TestableFlag,
+    TypeWidthKind, UnaryOp,
 };
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::source::{Dialect, SourceFile, Span};
+
+/// Where `push`/`pull` starts: `gap` is the text from the previous
+/// statement's end to `item`, and `kept` how much of it comes before the
+/// keyword.
+fn previous_start(item: Span, gap: &str, kept: usize) -> u32 {
+    item.start - (gap.len() - kept) as u32
+}
 
 /// Every spelling rule over one unit.
 pub fn check(program: &AstFile, source: &SourceFile) -> Vec<Diagnostic> {
@@ -104,6 +115,9 @@ impl Checker<'_> {
             }
             self.statement(statement);
         }
+        if self.source.dialect() == Dialect::K65 {
+            self.k65_stack_words(block);
+        }
     }
 
     fn data(&mut self, data: &DataBlock) {
@@ -140,6 +154,7 @@ impl Checker<'_> {
                         self.bare_condition(&conditional.condition, "block");
                     }
                 } else {
+                    self.k65_condition(&conditional.condition);
                     if let Some(keyword) = conditional.keyword {
                         self.k65_if(keyword, conditional.compare, &conditional.condition);
                     }
@@ -160,8 +175,11 @@ impl Checker<'_> {
                     if jump.keyword.is_none() {
                         self.bare_condition(&jump.condition, "jump");
                     }
-                } else if let Some(keyword) = jump.keyword {
-                    self.k65_if(keyword, jump.compare, &jump.condition);
+                } else {
+                    self.k65_condition(&jump.condition);
+                    if let Some(keyword) = jump.keyword {
+                        self.k65_if(keyword, jump.compare, &jump.condition);
+                    }
                 }
                 self.statement(&jump.jump);
             }
@@ -171,8 +189,14 @@ impl Checker<'_> {
                     if let LoopCondition::Branch(condition) = &loop_statement.condition {
                         self.condition(condition);
                     }
-                } else if let Some(compare) = loop_statement.test_compare {
-                    self.k65_while_compare(loop_statement, compare);
+                } else {
+                    self.k65_loop(statement.span, loop_statement);
+                    if let LoopCondition::Branch(condition) = &loop_statement.condition {
+                        self.k65_condition(condition);
+                    }
+                    if let Some(compare) = loop_statement.test_compare {
+                        self.k65_while_compare(loop_statement, compare);
+                    }
                 }
                 if loop_statement.test_compare.is_some()
                     && let Some(compare) = loop_statement.body.statements.last()
@@ -304,6 +328,176 @@ impl Checker<'_> {
                 ],
             },
         );
+    }
+
+    /// `loop { … } while COND` in a `.k65` source, which writes K65's
+    /// postfix loop: the same block with its condition after it.
+    fn k65_loop(&mut self, span: Span, loop_statement: &LoopStatement) {
+        if loop_statement.spelling != LoopSpelling::Keyword {
+            return;
+        }
+        let file = span.file;
+        let head = Span::new(file, span.start, loop_statement.body.span.start);
+        let mut edits = vec![TextEdit::replace(
+            head,
+            if loop_statement.nocross {
+                "nocross "
+            } else {
+                ""
+            },
+        )];
+        let after = match loop_statement.condition {
+            LoopCondition::Branch(condition) => {
+                // `while`, from the brace to the compare or the condition.
+                let next = loop_statement
+                    .test_compare
+                    .map_or(condition.span.start, |compare| compare.start);
+                edits.push(TextEdit::replace(
+                    Span::new(file, loop_statement.body.span.end, next),
+                    " ",
+                ));
+                self.source.span_text(condition.span).to_owned()
+            }
+            LoopCondition::Always => "always".to_owned(),
+            LoopCondition::Never => "never".to_owned(),
+        };
+        let keyword = Span::new(file, span.start, loop_statement.body.span.start);
+        self.k65_spelling(
+            keyword,
+            "a `.k65` source writes a loop as a block with its condition after it",
+            "`loop` is K816's spelling",
+            "K65's loop is the block and the condition after it; K816 says where it begins, \
+             and both compile to the same bytes",
+            Fix {
+                title: format!(
+                    "write `{}{{ ... }} {after}`",
+                    if loop_statement.nocross {
+                        "nocross "
+                    } else {
+                        ""
+                    }
+                ),
+                applicability: Applicability::MachineApplicable,
+                edits,
+            },
+        );
+    }
+
+    /// `c?` / `!c?` in a `.k65` source, which writes the flag with its sign:
+    /// `c+?` / `c-?`, and the overflow flag as the relation K65 has for it.
+    fn k65_condition(&mut self, condition: &BranchCondition) {
+        let BranchConditionKind::Flag {
+            flag,
+            set,
+            spelling: FlagTestSpelling::Bare,
+        } = condition.kind
+        else {
+            return;
+        };
+        let text = self.source.span_text(condition.span);
+        let letter = text.trim_start_matches('!').trim_end_matches('?');
+        let written = match (flag, set) {
+            (TestableFlag::Overflow, true) => "<<=".to_owned(),
+            (TestableFlag::Overflow, false) => ">>=".to_owned(),
+            (_, true) => format!("{letter}+?"),
+            (_, false) => format!("{letter}-?"),
+        };
+        self.k65_spelling(
+            condition.span,
+            "a `.k65` source writes a flag test with its sign",
+            "a flag test without its sign is K816's spelling",
+            "K65 writes `c+?` for a set flag and `c-?` for a clear one, and the overflow \
+             flag's tests as `<<=` and `>>=`; both compile to the same branch",
+            Fix {
+                title: format!("write `{written}`"),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![TextEdit::replace(condition.span, written.clone())],
+            },
+        );
+    }
+
+    /// `push a, $0012, x` / `pull x, a` in a `.k65` source, which writes one
+    /// `a!!` or `a??` per register and a pushed constant as the `pea` it is.
+    ///
+    /// The builder makes one statement of each item, spanning only the item,
+    /// so a list is found again in the text: an item whose text before it
+    /// ends in `push` or `pull` begins one, and an item after a `,` goes on.
+    fn k65_stack_words(&mut self, block: &Block) {
+        let text = self.source.text();
+        let mut lists: Vec<(Span, StackOp, Vec<&Statement>)> = Vec::new();
+        let mut previous_end = block.span.start;
+        for statement in &block.statements {
+            let span = statement.span;
+            let op = match &statement.kind {
+                StatementKind::Hla(HlaStatement::Stack(stack))
+                    if stack.spelling == StackSpelling::Word =>
+                {
+                    Some(stack.op)
+                }
+                StatementKind::Hla(HlaStatement::PushConstant { .. }) => Some(StackOp::Push),
+                _ => None,
+            };
+            let gap = text
+                .get(previous_end as usize..span.start as usize)
+                .unwrap_or_default();
+            previous_end = span.end;
+            if span.file != self.source.id() {
+                continue;
+            }
+            let Some(op) = op else { continue };
+            let before = gap.trim_end();
+            let word = if op == StackOp::Push { "push" } else { "pull" };
+            if before.ends_with(',')
+                && let Some((_, _, items)) = lists.last_mut()
+            {
+                items.push(statement);
+            } else if let Some(stripped) = before.strip_suffix(word) {
+                let start = previous_start(span, gap, stripped.len());
+                lists.push((Span::new(span.file, start, span.start), op, vec![statement]));
+            }
+        }
+        for (keyword, op, items) in lists {
+            let line_start = text[..keyword.start as usize]
+                .rfind('\n')
+                .map_or(0, |at| at + 1);
+            let indent: String = text[line_start..keyword.start as usize]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect();
+            let suffix = if op == StackOp::Push { "!!" } else { "??" };
+            let spelled: Vec<String> = items
+                .iter()
+                .map(|item| {
+                    let written = self.source.span_text(item.span);
+                    match &item.kind {
+                        StatementKind::Hla(HlaStatement::PushConstant { marked: true, .. }) => {
+                            format!("pea {written}")
+                        }
+                        StatementKind::Hla(HlaStatement::PushConstant { .. }) => {
+                            format!("pea #{written}")
+                        }
+                        _ => format!("{written}{suffix}"),
+                    }
+                })
+                .collect();
+            let last = items.last().map_or(keyword.end, |item| item.span.end);
+            let word = if op == StackOp::Push { "push" } else { "pull" };
+            self.k65_spelling(
+                Span::new(keyword.file, keyword.start, keyword.start + 4),
+                &format!("a `.k65` source writes `{word}` one register at a time"),
+                &format!("`{word}` is K816's spelling"),
+                "K65 pushes with `a!!` and pulls with `a??`, one register each, and pushes a \
+                 constant with the `pea` it compiles to; the same instructions in the same order",
+                Fix {
+                    title: format!("write `{}`", spelled.join(" ")),
+                    applicability: Applicability::MachineApplicable,
+                    edits: vec![TextEdit::replace(
+                        Span::new(keyword.file, keyword.start, last),
+                        spelled.join(&format!("\n{indent}")),
+                    )],
+                },
+            );
+        }
     }
 
     fn k65_spelling(&mut self, at: Span, title: &str, label: &str, note: &str, fix: Fix) {

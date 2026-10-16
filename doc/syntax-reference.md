@@ -1,6 +1,6 @@
 # K816 Syntax Reference
 
-This reference documents the K816 language, which grew from K65's syntax. Where K816 writes a form its own way — a loop, a flag test, the stack — a `.k65` source still accepts K65's spelling of it ([`k65-compat.md`](k65-compat.md), "Two dialects, one grammar"); the examples here are K816. Behavior is cross-checked with the reference compiler grammar in `vendor/src/compiler.inc`.
+This reference documents the K816 language, which grew from K65's syntax. Where K816 writes a form its own way — a loop, a flag test, the stack, a condition — a `.k65` source writes K65's spelling of it instead, and each dialect refuses the other's ([`k65-compat.md`](k65-compat.md), "Two dialects, one grammar"); the examples here are K816. Behavior is cross-checked with the reference compiler grammar in `vendor/src/compiler.inc`.
 
 ## Comments
 
@@ -2029,7 +2029,7 @@ A register is pushed by its own instruction — `a`, `x`, `y`, `p`, `dbr` and `d
 
 Like every HLA operand, a constant runs on across a line break — K65 is newline-insensitive, and `;` is what ends a statement — so `push LIMIT` above `* 3` pushes `LIMIT * 3`; `push LIMIT; * 3` is a push and a three-NOP wait. `pei` and `per` stay mnemonics: `pei (ptr)` pushes the word at a direct-page address whatever `M` says, which a `push ptr` would make read like the value at the accumulator's width — which is why `push ptr` is refused rather than given that meaning.
 
-`push` and `pull` are keywords only with an operand after them on their line, so `jsr push` still calls a routine of that name. K65 spells the same instructions `a!!` and `a??`, one register at a time, which a `.k65` source accepts and a K816 one refuses with `K816-K65-0010`.
+`push` and `pull` are keywords only with an operand after them on their line, so `jsr push` still calls a routine of that name. K65 spells the same instructions `a!!` and `a??`, one register at a time, which a `.k65` source writes instead and a K816 one refuses with `K816-K65-0010`; a `.k65` source refuses `push` and `pull` as `K816-E0180`.
 
 ### Bytes, Words, Addressing
 
@@ -4146,7 +4146,7 @@ func work @a8 @i8 {
 
 ### K65's Spellings
 
-A `.k65` source also accepts K65's own spellings of these forms, which a `.kk` or `.k816` source refuses with a fix that writes the K816 one ([`k65-compat.md`](k65-compat.md), "Two dialects, one grammar"). Each pair compiles to the same bytes.
+A `.k65` source writes K65's own spellings of these forms. A `.kk` or `.k816` source refuses each K65 spelling with a fix that writes the K816 one, and a `.k65` source refuses each K816 spelling as `K816-E0180` with a fix that writes the K65 one ([`k65-compat.md`](k65-compat.md), "Two dialects, one grammar"). Each pair compiles to the same bytes.
 
 K65|K816|Refused in K816 as
 :---|:---|:---
@@ -4156,6 +4156,9 @@ K65|K816|Refused in K816 as
 `c+?`, `c-?`|`c?`, `!c?`|`K816-K65-0008`
 `<<=`, `>>=`|`v?`, `!v?`|`K816-K65-0009`
 `a!!`, `a??`|`push a`, `pull a`|`K816-K65-0010`
+`>= { ... }`, `< goto done`, `== break`|`if >= { ... }`, `if < goto done`, `if == break`|`K816-K65-0011`
+`else { == { ... } }`|`else if == { ... }`|`K816-K65-0011`, inside the `else`
+`{ x++ x?10 } <`|`loop { x++ } while x?10 <`|`K816-K65-0007`
 
 ### Efficiency Warnings
 

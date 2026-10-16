@@ -483,8 +483,8 @@ and 10, and each changed shape on the way:
 * The branch pass restricts by the **branch's** origin rather than by its
   target. The legacy rule removed a branch only to a label its own lowering
   had synthesized, which in that compiler was the same set as "labels a
-  compiler-emitted branch can name". It is not the same set here — `> goto
-  done` expands to `bcs done`, naming a label the user wrote — so the
+  compiler-emitted branch can name". It is not the same set here — `if >
+  goto done` expands to `bcs done`, naming a label the user wrote — so the
   restriction moved to who wrote the branch. A hand-written `jmp` to the next
   line stays, which is the rule the unreachable pass already follows.
 * It iterates. One removal exposes another: the guard of a `>` expansion is

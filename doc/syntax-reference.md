@@ -2121,11 +2121,11 @@ ASL  Shift Left One Bit (Memory or Accumulator)
 
 ### `BCC` branch on carry clear
 
-- `>= { ... }`
-- `< goto label`
+- `if >= { ... }`
+- `if < goto label`
 - `loop { ... } while <`
-- `c? { ... }`
-- `!c? goto label`
+- `if c? { ... }`
+- `if !c? goto label`
 - `loop { ... } while !c?`
 
 ```none
@@ -2143,11 +2143,11 @@ BCC  Branch on Carry Clear
 
 ### `BCS` branch on carry set
 
-- `< { ... }`
-- `>= goto label`
+- `if < { ... }`
+- `if >= goto label`
 - `loop { ... } while >=`
-- `!c? { ... }`
-- `c? goto label`
+- `if !c? { ... }`
+- `if c? goto label`
 - `loop { ... } while c?`
 
 ```none
@@ -2165,11 +2165,11 @@ BCS  Branch on Carry Set
 
 ### `BEQ` branch on equal (zero set)
 
-- `!= { ... }`
-- `== goto label`
+- `if != { ... }`
+- `if == goto label`
 - `loop { ... } while ==`
-- `!z? { ... }`
-- `z? goto label`
+- `if !z? { ... }`
+- `if z? goto label`
 - `loop { ... } while z?`
 
 ```none
@@ -2210,11 +2210,11 @@ BIT  Test Bits in Memory with Accumulator
 
 ### `BMI` branch on minus (negative set)
 
-- `>=0 { ... }`
-- `<0 goto label`
+- `if >=0 { ... }`
+- `if <0 goto label`
 - `loop { ... } while <0`
-- `!n? { ... }`
-- `n? goto label`
+- `if !n? { ... }`
+- `if n? goto label`
 - `loop { ... } while n?`
 
 ```none
@@ -2232,11 +2232,11 @@ BMI  Branch on Result Minus
 
 ### `BNE` branch on not equal (zero clear)
 
-- `== { ... }`
-- `!= goto label`
+- `if == { ... }`
+- `if != goto label`
 - `loop { ... } while !=`
-- `z? { ... }`
-- `!z? goto label`
+- `if z? { ... }`
+- `if !z? goto label`
 - `loop { ... } while !z?`
 
 ```none
@@ -2254,11 +2254,11 @@ BNE  Branch on Result not Zero
 
 ### `BPL` branch on plus (negative clear)
 
-- `<0 { ... }`
-- `>=0 goto label`
+- `if <0 { ... }`
+- `if >=0 goto label`
 - `loop { ... } while >=0`
-- `n? { ... }`
-- `!n? goto label`
+- `if n? { ... }`
+- `if !n? goto label`
 - `loop { ... } while !n?`
 
 ```none
@@ -2299,8 +2299,8 @@ BRK  Force Break
 
 ### `BVC` branch on overflow clear
 
-- `v? { ... }`
-- `!v? goto label`
+- `if v? { ... }`
+- `if !v? goto label`
 - `loop { ... } while !v?`
 
 ```none
@@ -2318,8 +2318,8 @@ BVC  Branch on Overflow Clear
 
 ### `BVS` branch on overflow set
 
-- `!v? { ... }`
-- `v? goto label`
+- `if !v? { ... }`
+- `if v? goto label`
 - `loop { ... } while v?`
 
 ```none
@@ -4001,7 +4001,7 @@ MVP  Block Move Positive (source > dest, copy descending)
 
 ## Branch and Flow Control
 
-A condition tests flags something has already set. It is never a comparison of its own: a compare is a statement — `a?10`, `x?mem`, `a&?mem` — and the condition after it reads the flags the compare left. That is why a condition has no operand, and why `if (a < x)` has no spelling: the 65816 cannot compare two registers, and nothing here pretends it can.
+A condition tests flags something has already set. It is never a comparison of its own: a compare is a statement — `a?10`, `x?mem`, `a&?mem` — and the condition after it reads the flags the compare left. That is why a condition has no operand, and why `if (a < x)` has no spelling: the 65816 cannot compare two registers, and nothing here pretends it can. The compare may be *written* in the `if` — `if a?10 < { … }` — and it is still that statement, run before the condition reads the flags it set ([The Compare in an `if` or a `while`](#the-compare-in-an-if-or-a-while)).
 
 After a compare the condition is a relation — `<`, `>=`, `==`, `!=`, `<0`, `>=0` — which says what the compare found, and the carry convention behind it is the compiler's to remember. For flags something else set — a load, a shift, an addition, a call answering in the carry — the condition names the flag: `c?` when it is set and `!c?` when it is clear, for `c`, `z`, `n` and `v`.
 
@@ -4020,9 +4020,11 @@ Condition|Flag test|Taken by|A block skips with
 
 A condition goes in three places, and in each the thing happens when the condition holds:
 
-- before a block — `>= { x++ }` runs `x++` when A >= 10, and K816 skips the block with the opposite branch, the last column;
-- before a jump — `< goto done`, `< break`, `!= repeat` are taken when it holds;
+- after `if`, before a block — `if >= { x++ }` runs `x++` when A >= 10, and K816 skips the block with the opposite branch, the last column;
+- after `if`, before a jump — `if < goto done`, `if < break`, `if != repeat` are taken when it holds;
 - after a loop's `while` — `loop { x-- } while !=` repeats while it holds.
+
+`if` says where the test begins. K65 writes the condition alone in front of the block or the jump, which a `.k65` source keeps and a K816 one refuses with a fix that inserts the `if` (`K816-K65-0011`, [K65's Spellings](#k65s-spellings)). The two compile to the same bytes. A hover on `if` names the branch it compiles to.
 
 `<=` and `>` are relations too, and cost two branches each ([Efficiency Warnings](#efficiency-warnings)).
 
@@ -4100,6 +4102,43 @@ func work @a8 @i8 {
   }
 }
 ```
+
+`else if` chains: the `if` after `else` is the conditional nested in the `else` block, without the braces, and compiles exactly as `else { if … }` does. Each `if` in a chain tests the flags it finds, so a test that needs a compare of its own writes it in its `if`:
+
+```k65
+var key = $10
+var mode = $11
+
+func classify @a8 @i8 {
+  a = key
+  if a?'0' < {
+    mode = x = 1
+  } else if a?':' < {
+    mode = x = 2
+  } else {
+    mode = x = 3
+  }
+}
+```
+
+### The Compare in an `if` or a `while`
+
+The compare that sets a condition's flags may be written between `if` and the condition, and between `while` and a loop's condition. It is the statement it would be on a line of its own, and runs where that statement would: before the conditional in an `if`, and as the last statement of the body in a `while` — so a `repeat`, which goes to the top, skips it, and a `nocross` loop checks it inside its page.
+
+```k65
+var count = $10
+
+func drain @a8 @i8 {
+  x = count
+  loop {
+    x--
+    if x?4 == repeat     // CPX #4, BEQ to the top
+    count = x
+  } while x?1 >=         // CPX #1, BCS to the top
+}
+```
+
+The slot takes a compare and nothing else — `a?`, `x?`, `y?`, or the bit test `a&?` — because those set flags and change nothing else. `if a+1 == { … }` would read as a test of `a+1` while it also stores it, and is `K816-E0179`; write the addition as a statement before the `if`.
 
 ### Flow Control Instructions
 

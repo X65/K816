@@ -2,11 +2,11 @@
 ; directly and the one the language server derives its semantic tokens from.
 ;
 ; There are two formats and no third (`plans/07-lsp-tooling.md` decision 6):
-; editors that consume Tree-sitter queries — Helix, Zed, Neovim, Emacs —
-; highlight from this file, and editors that do not are served
-; `textDocument/semanticTokens`, which the server answers by running *this*
-; query and mapping each capture onto its legend.  No TextMate grammar is
-; written or shipped.
+; editors that consume Tree-sitter highlight queries — Zed, Helix, Neovim —
+; can highlight from this file (the repository wires it up for Zed), and any
+; client that asks is served `textDocument/semanticTokens`, which the server
+; answers by running *this* query and mapping each capture onto its legend.
+; No TextMate grammar is written or shipped.
 ;
 ; The capture names are the standard Tree-sitter ones, so a theme written for
 ; any other language applies here.  They are also a closed set: every name

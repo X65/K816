@@ -2,9 +2,15 @@
 
 K816 is a high-level assembler (HLA) for the WDC 65816 microprocessor.
 
-It is a direct port of **K65**: <https://github.com/Krzysiek-K/k65>
+Its language descends from **K65**, a high-level assembler for the 6502:
+<https://github.com/Krzysiek-K/k65>. K816 is a new compiler, not a port of
+that one: it emits ca65 assembly for the cc65 toolchain to assemble and link,
+and it adds the 65816's register widths, 24-bit calls and units that import
+each other. A `.k65` source is read as K65 plus those extensions, except where
+[`doc/k65-compat.md`](doc/k65-compat.md) says the superset stops, and
+`--strict-k65` reports every extension a program uses.
 
-K816 aims to combine a familiar, readable source format — C-like blocks, loops and conditions over the instructions themselves — with the control and predictability of hand-written assembly, while providing a small set of high-level conveniences that remove boilerplate and improve code clarity. Every statement is one instruction or a fixed few, and a condition tests the flags an instruction set, so a program says what the machine does and nothing the machine cannot do has a spelling.
+K816 aims to combine a familiar, readable source format — C-like blocks, loops and conditions over the instructions themselves — with the control and predictability of hand-written assembly, while providing a small set of high-level conveniences that remove boilerplate and improve code clarity. A statement is one instruction or a documented expansion of a few, and a condition tests the flags an instruction set, so nothing the machine cannot do has a spelling. What the compiler adds to what you wrote is the implicit `RTS` and the `REP`/`SEP` a call or a width statement needs, and the optimizer then rewrites what it can prove equivalent — a redundant width switch goes, a store of a known zero becomes `STZ`. `k816 emit-ir --after-opt --explain` shows each rewrite, and `--no-opt` turns them off.
 
 ## Goals
 
@@ -24,16 +30,16 @@ Want to get a feel for [K816 code](doc/syntax-reference.md)? This is the vibe:
 var SCREEN = $0400
 
 func main {
-  x = 0
-  loop {
-    a = hello, x
-    !z? { SCREEN, x = a x++ }
-  } while !z?
+    x = 0
+    loop {
+        a = hello, x
+        !z? { SCREEN, x = a x++ }
+    } while !z?
 }
 
 data text_data {
-  charset ".ABCDEFGHIJKLMNOPQRSTUVWXYZ..... "
-  hello: "HELLO WORLD" $00
+    charset ".ABCDEFGHIJKLMNOPQRSTUVWXYZ..... "
+    hello: "HELLO WORLD" $00
 }
 ```
 
@@ -46,29 +52,45 @@ switches:
 
 ```k65
 func draw @a16 @i16 {
-  lda #$1234          // 16-bit immediate -- sized automatically
+    lda #$1234          // 16-bit immediate -- sized automatically
 }
 
 func main {
-  call draw           // REP #$20 before JSR -- the accumulator half only,
-}                     // because nothing in draw reads the index width
+    call draw           // REP #$20 before JSR -- the accumulator half only
+}
 ```
 
-Functions can also declare register contracts that are echoed at bare call
-sites, and `inline` functions may take typed immediate aliases:
+`draw` states `@i16`, and the call does not establish it: nothing in `draw`,
+and nothing after the call, reads the index flag, so that half of the bridge
+changes no instruction and the optimizer removes it. A width a body never
+depends on is a width no caller has to pay for
+([register-width-aware-syntax.md](doc/register-width-aware-syntax.md),
+"Dead mode elimination").
+
+Functions can also declare the registers they take and hand back. A call
+that names them is checked against the declaration (`K816-E0122`), and an
+`inline` may take typed immediate aliases:
 
 ```k65
+var SUM = $10
+
 func add @a16 @i16 (a, x) -> a, y {
-  // body
+    stx SUM
+    clc
+    adc SUM
+    tay
 }
 
-inline scale @a16 @i8 (a, #factor:byte) -> a {
-  ldx #factor
+inline add_imm @a16 (a, #value:word) -> a {
+    clc
+    adc #value
 }
 
-func main {
-  add a, x -> a, y
-  scale a, #16 -> a
+func total @a16 @i16 {
+    lda #1000
+    ldx #24
+    add a, x -> a, y
+    add_imm a, #16 -> a
 }
 ```
 
@@ -81,14 +103,12 @@ loop whose back edge is already at the width pays nothing per iteration:
 ```k65
 var RDY = $FFE0
 
-func poll @a16 @i16 {
-  tax
-  @a8                 // SEP #$20 here, once, before the loop
+func poll @a16 {
+    @a8                 // SEP #$20 here, once, before the loop
 .wait:
-  bit RDY
-  dex
-  bne .wait           // already 8-bit: no switch on the back edge
-  @a16
+    bit RDY             // 8-bit, so N is bit 7 of RDY
+    bpl .wait           // already 8-bit: no switch on the back edge
+    @a16
 }
 ```
 
@@ -101,16 +121,16 @@ bracket syntax (inspired by Pawn):
 
 ```k65
 var player[
-  .x   :word
-  .y   :word
-  .hp  :byte
+    .x   :word
+    .y   :word
+    .hp  :byte
 ] = $0200
 
 func tick @a16 {
-  a = player.x
-  a++
-  player.x = a
-  lda #player.hp:offsetof   // 4 -- folded at compile time
+    a = player.x
+    a++
+    player.x = a
+    lda #player.hp:offsetof   // 4 -- folded at compile time
 }
 ```
 
@@ -119,29 +139,32 @@ See [symbolic-subscripts.md](doc/symbolic-subscripts.md).
 ## Compile-time Evaluator
 
 Square brackets evaluate arbitrary expressions at compile time, including
-lookup-table generation with `for ... eval`:
+lookup-table generation with `for ... eval`. A range includes both ends, so a
+table of 256 entries runs to 255:
 
 ```k65
 [ TABLE_SIZE = 256 ]
 
 data SineTable {
-  align 256
-  for x=0..TABLE_SIZE eval [ sin(x / TABLE_SIZE * pi * 2) * 127 + 128 ]
+    align 256
+    for x=0..TABLE_SIZE-1 eval [ sin(x / TABLE_SIZE * pi * 2) * 127 + 128 ]
 }
 ```
 
 ## Far Calls
 
-24-bit addressing uses `far func` (emits `JSL`/`RTL`) and `call far` across
-compilation units:
+A `far func` returns with `RTL`, and a call to one is written `call far`,
+which emits `JSL` — in the unit that defines it and in every unit that imports
+it. A plain `call` to a `far func` is an error, since a `JSR` cannot return
+through an `RTL`:
 
 ```k65
 far func lib_init @a8 @i8 {
-  nop
+    nop
 }
 
 func main {
-  call far lib_init
+    call far lib_init
 }
 ```
 
@@ -271,7 +294,7 @@ cl65 -t none --no-target-lib -C fullstack.cfg -o fullstack.bin startup.asm main.
 That is the whole of `examples/fullstack/Makefile`, and it is the command the
 test suite runs: `tests/driver.rs` requires the image `cl65` produces to be
 byte-identical to the one the three tools produce by hand, for every program
-in this repository.
+in the test corpus that compiles and every committed compatibility image.
 
 **`-t none --no-target-lib -C <config>` is what a K816 build says.** `cl65`
 defaults to the C64, so without `-t none` `ld65` looks for `c64.cfg` and links
@@ -289,9 +312,10 @@ cl65 -t none --no-target-lib -C game.cfg -o game.bin startup.asm main.k816 sprit
 ```
 
 Both K816 files are compiled and both objects are linked, in the order they
-appear. A file that is only imported need not be on the line at all, and an
-interface unit — nothing but `extern` declarations — usually is not, since it
-produces no object.
+appear. Importing a unit does not put it in the link: a unit whose code or
+data the program uses has to be on the line, or ld65 reports its symbols as
+unresolved externals. Only an interface unit — nothing but `extern`
+declarations — is left off, since it produces no object.
 
 **`-Wk` forwards one option to `k816`, exactly as written.** Unlike `-Wa`,
 `-Wc` and `-Wl`, it does not split its argument at commas — a comma is data
@@ -310,16 +334,14 @@ either way, because it asks for debug info itself.
 
 **`--create-dep` works, and it is `k816` that writes it.** The dependencies of
 a K816 object are the source, every unit it imports — transitively — and every
-file a `binary` includes, and only the compiler knows the last two. That is
-what a build generator needs, and with CMake it is the whole integration:
-
-```cmake
-set( CMAKE_ASM_SOURCE_FILE_EXTENSIONS s;asm;k65;k816;kk )
-```
-
-A program of several units needs nothing more. The generator compiles one
-source per invocation and has nothing to compute, because the source states
-which units it belongs with and the dependency file names them.
+file a `binary` includes, and only the compiler knows the last two. The file
+is a make rule naming the object, so a `Makefile` can `-include` it and a
+build generator that reads make-style dependency files can use it — once it
+is told to pass `--create-dep`. A build generator also has to be told
+everything else above: that `cl65` is the compiler for these extensions,
+`-t none --no-target-lib`, and the `-C` configuration. Adding the extensions
+to CMake's assembler language does none of that, and no CMake integration is
+shipped or tested.
 
 `doc/cl65.sgml` in the cc65 tree is the driver's reference.
 
@@ -334,9 +356,10 @@ cargo test
 make -C .. k816          # cc65 integration; produces ../../bin/k816
 ```
 
-`cargo test` needs `ca65` and `ld65` on hand for the end-to-end tests: they are
-looked up in the cc65 tree's `bin/` (build them with `make -C ../..`) and can be
-pointed elsewhere with the `CA65` and `LD65` environment variables.
+`cargo test` needs `ca65`, `ld65` and `cl65` on hand for the end-to-end tests:
+they are looked up in the cc65 tree's `bin/` (build them with
+`make -C ../.. bin`) and can be pointed elsewhere with the `CA65`, `LD65` and
+`CL65` environment variables.
 
 Two tracked files are generated, and their tests tell you so when they drift:
 
@@ -380,11 +403,12 @@ the flags are, so a spelling the command line refuses is refused in the editor
 with the same words.
 
 **Highlighting comes in two formats, and the second is derived from the
-first.** Editors that read Tree-sitter queries — Helix, Neovim, Zed, Emacs —
-highlight from `tree-sitter-k65/queries/highlights.scm`. Editors that do not
-are served `textDocument/semanticTokens`, which the server answers by running
-that same query and refining what only the symbol table knows. No TextMate
-grammar is shipped (`doc/tree-sitter.md`).
+first.** `tree-sitter-k65/queries/highlights.scm` uses the standard capture
+names, so an editor that reads Tree-sitter highlight queries — Zed, Helix,
+Neovim — can highlight from it; the repository wires it up for Zed only.
+Any client that asks is served `textDocument/semanticTokens`, which the
+server answers by running that same query and refining what only the symbol
+table knows. No TextMate grammar is shipped (`doc/tree-sitter.md`).
 
 **Zed has an extension in this repository**, `editors/zed-k816/`. Install it
 with Zed's `zed: install dev extension` command and pick that directory. Zed
@@ -430,9 +454,12 @@ still no project file, and there is nothing for one to say.
 
 `k816 convert` converts a ca65 program: every `.asm`, and every `.inc` it
 includes, becomes a `.kk` unit with the program's shape kept — its
-segments, its routines in order, its comments — so that the build compares
-with the original's byte for byte. Each place it could not be faithful is
-a note. A program can also be carried over by hand, one file at a time:
+segments, its routines in order, its comments — so that the build can be
+compared with the original's symbol by symbol. The bytes differ where K816
+decides something the assembler did not: a width switch the optimizer proves
+redundant, a call it has to bridge, a branch that arrives at another width
+(`doc/ca65-to-k816.md`, "The converter"). Each place it could not be
+faithful is a note. A program can also be carried over by hand, one file at a time:
 `cl65` compiles `.asm` and `.k816` alike and ld65 links the objects, so the
 program links at every step. [doc/ca65-to-k816.md](doc/ca65-to-k816.md) is
 the idiom table — what K816 writes where ca65 writes each thing, every pair

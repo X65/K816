@@ -227,7 +227,7 @@ TextMate half, and what is implemented is what follows
 
 There are two formats and no third:
 
-* **`queries/highlights.scm`**, which Helix, Neovim, Zed and Emacs read
+* **`queries/highlights.scm`**, which Zed, Helix and Neovim can read
   directly. Tree-sitter highlighting is defined through query captures over
   syntax nodes. [Official highlighting documentation](https://tree-sitter.github.io/tree-sitter/3-syntax-highlighting.html)
   The Zed extension in `editors/zed-k816/` reads a copy, because Zed reads

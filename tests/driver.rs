@@ -400,6 +400,38 @@ fn two_units_that_import_each_other_link_to_the_manual_image() {
     assert!(!by_hand.is_empty(), "the pair linked to nothing");
 }
 
+/// Importing a unit does not put it in the link.
+///
+/// `unit-a.k816` imports `unit-b.k816` and uses its code, and an `import`
+/// gives the compiler the sibling's declarations and nothing else: no object
+/// is made for it. So `cl65` given `unit-a` alone fails to link, and the
+/// README and `cl65.sgml` once said the opposite — that a file only imported
+/// need not be on the command line.
+#[test]
+fn an_imported_unit_left_off_the_line_is_not_linked() {
+    let directory = work_dir("driver-imported-only");
+    let golden = root().join("tests/golden");
+    let config = root().join("tests/driver.cfg");
+
+    let output = run(
+        cl65()
+            .args(TARGET_ARGS)
+            .args(["-C".as_ref(), config.as_os_str()])
+            .args(["-o".as_ref(), directory.join("driver.bin").as_os_str()])
+            .arg(golden.join("unit-a.k816")),
+        "cl65 with one unit of a pair",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a program missing unit-b's object linked"
+    );
+    assert!(
+        stderr.contains("unresolved external"),
+        "the link did not fail on unit-b's symbols:\n{stderr}"
+    );
+}
+
 /// `.k65`, `.k816` and `.kk` are one language and one compiler.
 ///
 /// Every extension is read by the same parser, and `cl65` maps all three

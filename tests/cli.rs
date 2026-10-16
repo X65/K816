@@ -783,6 +783,67 @@ fn every_readme_example_compiles() {
     }
 }
 
+/// Every K65 example in the README is already what `k816 fmt` writes.
+///
+/// The README documents the formatter's four-space indentation, and every
+/// example under it was indented by two: a reader who formatted a pasted
+/// example got a diff.
+#[test]
+fn every_readme_example_is_formatted() {
+    let readme = std::fs::read_to_string(readme_path()).expect("read README.md");
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("readme-fmt");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+
+    for (index, example) in fenced_blocks(&readme, "k65").iter().enumerate() {
+        let source = dir.join(format!("example-{index}.k816"));
+        std::fs::write(&source, example).expect("write source");
+        let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+            .args(["fmt", "--check"])
+            .arg(&source)
+            .output()
+            .expect("run k816 fmt");
+        assert!(
+            output.status.success(),
+            "README example {} is not formatted:\n\n{example}",
+            index + 1
+        );
+    }
+}
+
+/// The README's sine table is the 256 bytes its `align 256` page holds.
+///
+/// A `for` range includes both ends, and the example once ran `0..TABLE_SIZE`:
+/// 257 bytes, the last a copy of the first and one past the aligned page.
+/// Compiling was all the README gate asked, and that table compiles.
+#[test]
+fn the_readme_sine_table_fills_its_page_exactly() {
+    let readme = std::fs::read_to_string(readme_path()).expect("read README.md");
+    let example = fenced_blocks(&readme, "k65")
+        .into_iter()
+        .find(|block| block.contains("data SineTable"))
+        .expect("the README's sine-table example");
+    let (stderr, success) = compile("readme-sine-table", &example, &[]);
+    assert!(success, "{stderr}");
+
+    let assembly = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("readme-sine-table/out.s"),
+    )
+    .expect("read the assembly");
+    let bytes: usize = assembly
+        .lines()
+        .skip_while(|line| !line.starts_with("SineTable:"))
+        .skip(1)
+        .filter(|line| !line.trim_start().starts_with(".dbg"))
+        .take_while(|line| line.trim_start().starts_with(".byte"))
+        .map(|line| {
+            let values = line.trim_start().trim_start_matches(".byte");
+            let values = values.split(';').next().unwrap_or("");
+            values.split(',').filter(|v| !v.trim().is_empty()).count()
+        })
+        .sum();
+    assert_eq!(bytes, 256, "the table is not one page:\n{assembly}");
+}
+
 /// `--create-dep` reports what the compilation read, in make's shape.
 ///
 /// A build system needs three things a `.s` cannot tell it: the source, the

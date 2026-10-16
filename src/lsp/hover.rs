@@ -72,7 +72,110 @@ pub fn hover(analysis: &Analysis, file: FileId, offset: u32) -> Option<Hover> {
         .or_else(|| field_hover(&context))
         .or_else(|| metadata_hover(&context))
         .or_else(|| instruction_hover(&context))
+        .or_else(|| if_hover(&context))
         .or_else(|| statement_hover(&context))
+}
+
+/// A condition in its K816 spelling, from what it means.
+fn spell_condition(condition: crate::ast::BranchConditionKind) -> String {
+    use crate::ast::{BranchConditionKind as K, ComparisonKind as C, FlagTestSpelling};
+    match condition {
+        K::Comparison(comparison) => match comparison {
+            C::Less => "<",
+            C::GreaterEqual => ">=",
+            C::Equal => "==",
+            C::NotEqual => "!=",
+            C::Negative => "<0",
+            C::NotNegative => ">=0",
+            C::Greater => ">",
+            C::LessEqual => "<=",
+            C::OverflowSet => "<<=",
+            C::OverflowClear => ">>=",
+        }
+        .to_owned(),
+        K::Flag {
+            flag,
+            set,
+            spelling,
+        } => {
+            let letter = flag_letter(flag);
+            match (spelling, set) {
+                (FlagTestSpelling::Bare, true) => format!("{letter}?"),
+                (FlagTestSpelling::Bare, false) => format!("!{letter}?"),
+                (FlagTestSpelling::Signed, true) => format!("{letter}+?"),
+                (FlagTestSpelling::Signed, false) => format!("{letter}-?"),
+            }
+        }
+    }
+}
+
+/// The branch an `if` compiles to, on the keyword: the instruction that
+/// skips its block, or that takes its jump (`plans/16-if-statement.md`).
+///
+/// Read off [`crate::hla::branch`], the function lowering emits from, so the
+/// hover names the instruction the listing will show.
+fn if_hover(context: &Context<'_>) -> Option<Hover> {
+    use crate::hla::{BranchPlan, BranchSense, branch};
+    let statement = context.conditional_at_if()?;
+    let (keyword, condition, compare, sense, what) = match &statement.kind {
+        StatementKind::Conditional(conditional) => (
+            conditional.keyword?,
+            conditional.condition,
+            conditional.compare,
+            BranchSense::Skip,
+            if conditional.otherwise.is_some() {
+                "runs its block when the condition holds and the `else` block otherwise"
+            } else {
+                "runs its block when the condition holds"
+            },
+        ),
+        StatementKind::ConditionalJump(jump) => (
+            jump.keyword?,
+            jump.condition,
+            jump.compare,
+            BranchSense::Take,
+            match jump.jump.kind {
+                StatementKind::Break => "leaves the loop when the condition holds",
+                StatementKind::Repeat => {
+                    "goes back to the top of the loop when the condition holds"
+                }
+                _ => "jumps when the condition holds",
+            },
+        ),
+        _ => return None,
+    };
+    let written = spell_condition(condition.kind);
+    let mut out = format!("`if {written}` {what}.\n");
+    if compare.is_some() {
+        let _ = writeln!(
+            out,
+            "\nThe compare written in the `if` runs first and sets the flags it tests."
+        );
+    }
+    let name = |mnemonic: crate::isa::Mnemonic| format!("`{}`", mnemonic.ca65().to_uppercase());
+    let (verb, plan) = match sense {
+        BranchSense::Skip => ("skips the block with", branch(condition.kind, sense)),
+        BranchSense::Take => ("branches with", branch(condition.kind, sense)),
+    };
+    let instructions = match plan {
+        BranchPlan::Single(mnemonic) => name(mnemonic),
+        BranchPlan::Pair(first, second) => format!(
+            "{} and {} — two branches, because the 65816 has no single one for it",
+            name(first),
+            name(second)
+        ),
+        BranchPlan::Guarded { over, take } => format!(
+            "{} guarded by {} over it — two branches, because the 65816 has no single one \
+             for it",
+            name(take),
+            name(over)
+        ),
+    };
+    let _ = writeln!(out, "\nK816 {verb} {instructions}.");
+    Some(Hover {
+        markdown: out,
+        span: keyword,
+    })
 }
 
 // ---------------------------------------------------------------------------

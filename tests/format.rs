@@ -479,3 +479,14 @@ fn a_comment_continuing_the_one_above_keeps_its_column() {
         "idempotent"
     );
 }
+
+/// An `else if` chain and a compare in a `while` indent like any other
+/// block: the chained `if` is not a block of its own in the source, so
+/// nothing in it sits a level deeper (`plans/16-if-statement.md`, Q5).
+#[test]
+fn an_else_if_chain_formats_at_one_level() {
+    let written = "func f @a8 @i8 {\nif == {\nx++\n} else if a?#2 < {\ny++\n} else {\nx--\n}\nloop {\nif == break\n} while x?#3 <\n}\n";
+    let expected = "func f @a8 @i8 {\n    if == {\n        x++\n    } else if a?#2 < {\n        y++\n    } else {\n        x--\n    }\n    loop {\n        if == break\n    } while x?#3 <\n}\n";
+    assert_eq!(formatted("chain.kk", written).as_deref(), Some(expected));
+    assert_eq!(formatted("chain.kk", expected).as_deref(), Some(expected));
+}

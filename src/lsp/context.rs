@@ -157,6 +157,32 @@ impl<'a> Context<'a> {
     /// The walk is here rather than generic because a consumer wants a borrow
     /// of the *program*, and `ast::visit_statements` hands out a borrow of the
     /// closure's own frame.
+    /// The conditional or conditional jump whose `if` keyword covers the
+    /// offset. The keyword is outside the statement's own span, which starts
+    /// at the condition (`ConditionalBlock`), so [`Self::statement`] does not
+    /// find it.
+    pub fn conditional_at_if(&self) -> Option<&'a Statement> {
+        let mut found: Option<&'a Statement> = None;
+        for item in &self.unit.program().items {
+            let mut visit = |candidate: &'a Statement| {
+                let keyword = match &candidate.kind {
+                    StatementKind::Conditional(conditional) => conditional.keyword,
+                    StatementKind::ConditionalJump(jump) => jump.keyword,
+                    _ => None,
+                };
+                if keyword.is_some_and(|keyword| keyword.contains(self.offset)) {
+                    found = Some(candidate);
+                }
+            };
+            match &item.kind {
+                ItemKind::Func(function) => collect(&function.body, &mut visit),
+                ItemKind::Data(data) => collect_data(data, &mut visit),
+                _ => {}
+            }
+        }
+        found
+    }
+
     pub fn statement_node(&self, id: StmtId) -> Option<&'a Statement> {
         let mut found: Option<&'a Statement> = None;
         for item in &self.unit.program().items {

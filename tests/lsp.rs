@@ -3529,3 +3529,89 @@ fn deleting_an_import_drops_the_unit_it_reached() {
         analysis.diagnostics
     );
 }
+
+/// A hover on `if` names the branch it compiles to: the instruction that
+/// skips a block, or that takes a jump — read off the plan lowering emits
+/// from, so `if <=` is the pair of branches `K816-W0157` warns about
+/// (`plans/16-if-statement.md`, Q5).
+#[test]
+fn a_hover_on_if_names_the_branch_it_compiles_to() {
+    const SOURCE: &str = "func f @a8 @i8 {\n    \
+                          if >= { x++ }\n    \
+                          if a?#10 == { x++ } else { y++ }\n    \
+                          if <= { x++ }\n    \
+                          loop {\n        \
+                          if c? break\n        \
+                          if != repeat\n    \
+                          } always\n    \
+                          if < goto .out\n\
+                          .out:\n}\n";
+    let mut workspace = Workspace::new();
+    workspace.update("file:///if.kk", SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file("file:///if.kk").expect("open");
+    let hover = |nth: usize| {
+        let offset = SOURCE.match_indices("if ").nth(nth).expect("an if").0 as u32;
+        k816::lsp::hover::hover(&analysis, file, offset)
+            .unwrap_or_else(|| panic!("no hover on if #{nth}"))
+    };
+    let cases: [(usize, &[&str]); 7] = [
+        (
+            0,
+            &[
+                "`if >=` runs its block when the condition holds",
+                "skips the block with `BCC`",
+            ],
+        ),
+        (
+            1,
+            &[
+                "`if ==` runs its block when the condition holds and the `else` block otherwise",
+                "The compare written in the `if` runs first",
+                "skips the block with `BNE`",
+            ],
+        ),
+        // Skipping a `<=` block is branching on `>`: `BEQ` over a `BCS`, the
+        // expansion `K816-W0157`'s note describes.
+        (
+            2,
+            &[
+                "skips the block with `BCS` guarded by `BEQ`",
+                "two branches",
+            ],
+        ),
+        (3, &["`if c?` leaves the loop", "branches with `BCS`"]),
+        (
+            4,
+            &["goes back to the top of the loop", "branches with `BNE`"],
+        ),
+        (
+            5,
+            &[
+                "`if <` jumps when the condition holds",
+                "branches with `BCC`",
+            ],
+        ),
+        (0, &[]),
+    ];
+    for (nth, wanted) in cases {
+        let hover = hover(nth);
+        assert_eq!(
+            &SOURCE[hover.span.start as usize..hover.span.end as usize],
+            "if"
+        );
+        for phrase in wanted {
+            assert!(
+                hover.markdown.contains(phrase),
+                "if #{nth}: no `{phrase}` in\n{}",
+                hover.markdown
+            );
+        }
+    }
+    let codes: Vec<_> = analysis
+        .diagnostics
+        .iter()
+        .map(|d| d.code.as_str())
+        .collect();
+    assert_eq!(codes, ["K816-W0157"], "only the `<=` is told anything");
+}

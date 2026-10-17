@@ -1179,6 +1179,45 @@
     }
   },
   {
+    "type": "chain_element",
+    "named": true,
+    "fields": {
+      "condition": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "branch_condition",
+            "named": true
+          },
+          {
+            "type": "flag_condition",
+            "named": true
+          }
+        ]
+      },
+      "slot": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "hla_arithmetic",
+            "named": true
+          },
+          {
+            "type": "hla_step",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "chain_operator",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "charset_directive",
     "named": true,
     "fields": {
@@ -1215,6 +1254,32 @@
           {
             "type": "nocross",
             "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "condition_chain",
+    "named": true,
+    "fields": {
+      "element": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "chain_element",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "chain_operator",
+            "named": true
           }
         ]
       }
@@ -4961,26 +5026,12 @@
           }
         ]
       },
-      "compare": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "hla_arithmetic",
-            "named": true
-          }
-        ]
-      },
       "condition": {
         "multiple": false,
         "required": true,
         "types": [
           {
-            "type": "branch_condition",
-            "named": true
-          },
-          {
-            "type": "flag_condition",
+            "type": "condition_chain",
             "named": true
           }
         ]
@@ -6781,26 +6832,12 @@
     "type": "while_condition",
     "named": true,
     "fields": {
-      "compare": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "hla_arithmetic",
-            "named": true
-          }
-        ]
-      },
       "condition": {
         "multiple": false,
         "required": true,
         "types": [
           {
-            "type": "branch_condition",
-            "named": true
-          },
-          {
-            "type": "flag_condition",
+            "type": "condition_chain",
             "named": true
           }
         ]

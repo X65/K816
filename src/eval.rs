@@ -1671,14 +1671,27 @@ pub fn sites_of_statement<'a>(statement: &'a crate::ast::Statement, out: &mut Ve
             }
             StatementKind::WidthBlock(width) => sites_of_block(&width.body, out),
             StatementKind::Nocross(body) => sites_of_block(body, out),
-            StatementKind::Loop(loop_statement) => sites_of_block(&loop_statement.body, out),
+            StatementKind::Loop(loop_statement) => {
+                sites_of_block(&loop_statement.body, out);
+                if let crate::ast::LoopCondition::Branch(chain) = &loop_statement.condition {
+                    for slot in chain.slots() {
+                        sites_of_block(slot, out);
+                    }
+                }
+            }
             StatementKind::Conditional(conditional) => {
+                for slot in conditional.condition.slots() {
+                    sites_of_block(slot, out);
+                }
                 sites_of_block(&conditional.body, out);
                 if let Some(otherwise) = &conditional.otherwise {
                     sites_of_block(otherwise, out);
                 }
             }
             StatementKind::ConditionalJump(jump) => {
+                for slot in jump.condition.slots() {
+                    sites_of_block(slot, out);
+                }
                 sites_of_statement(&jump.jump, out);
             }
             // A call site's immediate arguments are ordinary expressions,

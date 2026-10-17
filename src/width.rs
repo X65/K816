@@ -997,6 +997,12 @@ impl Flattener<'_> {
                 );
             }
             StatementKind::Conditional(conditional) => {
+                // A later element's compare or step runs before the branch
+                // it belongs to and changes no width, so it is a node on the
+                // fall-through path in front of the condition's own.
+                for slot in conditional.condition.slots() {
+                    self.block(slot);
+                }
                 // The condition either enters the body or skips it; both
                 // paths meet at a join node the solver treats as a merge.
                 let branch = self.push(
@@ -1036,6 +1042,9 @@ impl Flattener<'_> {
                 self.nodes[branch].control.target = Some(Target::Node(skip.0));
             }
             StatementKind::ConditionalJump(jump) => {
+                for slot in jump.condition.slots() {
+                    self.block(slot);
+                }
                 // The transfer becomes conditional: control may take it, or
                 // may continue with the next statement. The inner statement
                 // keeps its own identity, so both are addressable.
@@ -1050,7 +1059,12 @@ impl Flattener<'_> {
                 let head = self.push(id, span, Transfer::Identity, Control::fall_through());
                 self.loops.push(head);
                 self.block(&loop_statement.body);
-                let control = match loop_statement.condition {
+                if let LoopCondition::Branch(chain) = &loop_statement.condition {
+                    for slot in chain.slots() {
+                        self.block(slot);
+                    }
+                }
+                let control = match &loop_statement.condition {
                     // `{ ... } !=` closes the loop conditionally, so the back
                     // edge and the fall-through both exist.
                     LoopCondition::Branch(_) => Control {

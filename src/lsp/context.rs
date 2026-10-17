@@ -213,14 +213,26 @@ fn collect<'a>(block: &'a Block, visit: &mut impl FnMut(&'a Statement)) {
             StatementKind::Nocross(body) => stack.extend(body.statements.iter()),
             StatementKind::Loop(loop_statement) => {
                 stack.extend(loop_statement.body.statements.iter());
+                if let crate::ast::LoopCondition::Branch(chain) = &loop_statement.condition {
+                    stack.extend(chain.slots().flat_map(|slot| slot.statements.iter()));
+                }
             }
             StatementKind::Conditional(conditional) => {
+                stack.extend(
+                    conditional
+                        .condition
+                        .slots()
+                        .flat_map(|s| s.statements.iter()),
+                );
                 stack.extend(conditional.body.statements.iter());
                 if let Some(otherwise) = &conditional.otherwise {
                     stack.extend(otherwise.statements.iter());
                 }
             }
-            StatementKind::ConditionalJump(jump) => stack.push(&jump.jump),
+            StatementKind::ConditionalJump(jump) => {
+                stack.extend(jump.condition.slots().flat_map(|s| s.statements.iter()));
+                stack.push(&jump.jump);
+            }
             StatementKind::Data(data) => collect_data(data, visit),
             _ => {}
         }

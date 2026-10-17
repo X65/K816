@@ -3615,3 +3615,38 @@ fn a_hover_on_if_names_the_branch_it_compiles_to() {
         .collect();
     assert_eq!(codes, ["K816-W0157"], "only the `<=` is told anything");
 }
+
+/// Sub-plan S: a hover on an `if` with a chain names each element's branch
+/// and where it lands.
+#[test]
+fn a_hover_on_a_chained_if_names_every_branch() {
+    const SOURCE: &str =
+        "func f @a8 @i8 {\n    if c | z { x++ }\n    if !c & !z goto .out\n.out:\n}\n";
+    let mut workspace = Workspace::new();
+    workspace.update("file:///chain.kk", SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file("file:///chain.kk").expect("open");
+    let hover = |nth: usize| {
+        let offset = SOURCE.match_indices("if ").nth(nth).expect("an if").0 as u32;
+        k816::lsp::hover::hover(&analysis, file, offset)
+            .expect("a hover")
+            .markdown
+    };
+    let first = hover(0);
+    for phrase in [
+        "`if c | z`",
+        "when any condition holds",
+        "`c`: `BCS` to the block",
+        "`z`: `BNE` past the block",
+    ] {
+        assert!(first.contains(phrase), "no `{phrase}` in\n{first}");
+    }
+    let second = hover(1);
+    for phrase in [
+        "`if !c & !z`",
+        "`!c`: `BCS` over the last branch",
+        "`!z`: `BNE` to the target",
+    ] {
+        assert!(second.contains(phrase), "no `{phrase}` in\n{second}");
+    }
+}

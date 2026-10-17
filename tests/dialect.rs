@@ -855,3 +855,121 @@ fn a_bare_k65_flag_test_is_fixed_once() {
         );
     }
 }
+
+/// Sub-plan S: each chain and step form against the branches and labels it
+/// stands for, written as native instructions in the same dialect
+/// (`plans/18-conditions.md` decision 5).
+fn chain_pairs() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("if c | z { x++ }", "bcs .b\n bne .e\n.b:\n x++\n.e:"),
+        ("if !c & !z { x++ }", "bcs .e\n beq .e\n x++\n.e:"),
+        (
+            "if c | z | n { x++ }",
+            "bcs .b\n beq .b\n bpl .e\n.b:\n x++\n.e:",
+        ),
+        // A statement after each jump, so the branches do not land on the
+        // next label — pass 9 removes a K816 branch that does, and leaves a
+        // written one.
+        ("if c | z goto .out\n y++", "bcs .out\n beq .out\n y++"),
+        ("if !c & !z goto .out\n y++", "bcs .p\n bne .out\n.p:\n y++"),
+        (
+            "if a?#10 >= & a?#20 < { y++ }",
+            "a?#10\n bcc .e\n a?#20\n bcs .e\n y++\n.e:",
+        ),
+        (
+            "if a?#10 < | a?#20 == { y-- }",
+            "a?#10\n bcc .b\n a?#20\n bne .e\n.b:\n y--\n.e:",
+        ),
+        (
+            "if == { x++ } else { y++ }",
+            "bne .o\n x++\n goto .e\n.o:\n y++\n.e:",
+        ),
+        (
+            "if c | z { x++ } else { y++ }",
+            "bcs .b\n bne .o\n.b:\n x++\n goto .e\n.o:\n y++\n.e:",
+        ),
+        ("loop { x++ } while c | z", ".t:\n x++\n bcs .t\n beq .t"),
+        (
+            "loop { x++ } while !c & !z",
+            ".t:\n x++\n bcs .p\n bne .t\n.p:",
+        ),
+        ("loop { x++ } while x--", ".t:\n x++\n x--\n bne .t"),
+        ("loop { x++ } while x-- !=", ".t:\n x++\n x--\n bne .t"),
+        ("loop { x++ } while x-- >=0", ".t:\n x++\n x--\n bpl .t"),
+        (
+            "loop { x++ } while flags-- | c",
+            ".t:\n x++\n flags--\n bne .t\n bcs .t",
+        ),
+        (
+            "loop { x++ } while a?#8 < & !z",
+            ".t:\n x++\n a?#8\n bcs .p\n bne .t\n.p:",
+        ),
+        ("if x-- { x++ }", "x--\n beq .e\n x++\n.e:"),
+        ("if y-- >=0 goto .out\n y++", "y--\n bpl .out\n y++"),
+        ("if a-- { x++ }", "a--\n beq .e\n x++\n.e:"),
+        ("if flags++ == { x++ }", "flags++\n bne .e\n x++\n.e:"),
+        (
+            "loop { x++\n if c | z break } always",
+            ".t:\n x++\n bcs .e\n beq .e\n goto .t\n.e:",
+        ),
+        (
+            "loop { x++\n if !c & x-- repeat } always",
+            ".t:\n x++\n bcs .p\n x--\n bne .t\n.p:\n goto .t",
+        ),
+    ]
+}
+
+/// The code lines with every label spelled alike: a chain's branches land on
+/// K816's unnamed anchors (`:+`, `:`) and the written-out twin's on the
+/// labels it names (`@b`, `@b:`), which are the same bytes under different
+/// names. The link test over `tests/golden/conditions.kk` is the byte-level
+/// claim; this is the same claim per form, in text.
+fn shape(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|line| {
+            let line = line.trim();
+            if line == ":" || (line.starts_with('@') && line.ends_with(':')) {
+                return "L:".to_owned();
+            }
+            let mut words: Vec<String> = line.split_whitespace().map(str::to_owned).collect();
+            if let Some(operand) = words.get_mut(1)
+                && (operand.starts_with('@') || operand.starts_with(':'))
+            {
+                *operand = "L".to_owned();
+            }
+            words.join(" ")
+        })
+        .collect()
+}
+
+#[test]
+fn every_chain_and_step_compiles_to_the_bytes_of_its_branches() {
+    for (chain, native) in chain_pairs() {
+        let (codes, lines) = code("unit.kk", &unit(chain));
+        let (native_codes, native_lines) = code("unit.kk", &unit(native));
+        assert_eq!(codes, native_codes, "`{chain}`");
+        assert_eq!(shape(lines), shape(native_lines), "`{chain}` and\n{native}");
+    }
+}
+
+/// A later element's slot holds a compare or a step and nothing else, like
+/// the first (`K816-E0179`); and `|` with `&` in one chain is refused
+/// (`K816-E0183`, from the builder, so it is a parse diagnostic).
+#[test]
+fn a_later_slot_takes_only_a_compare_or_a_step() {
+    for body in ["if c | a+#1 == { x++ }", "loop { x++ } while !z & a|#1 !="] {
+        let (codes, _) = fixed("unit.kk", &unit(body));
+        assert!(codes.contains(&"K816-E0179"), "`{body}`: {codes:?}");
+    }
+    for body in [
+        "if c | a?#1 == { x++ }",
+        "if c & x-- { x++ }",
+        "loop { x++ } while !z & flags-- >=0",
+    ] {
+        let (codes, _) = fixed("unit.kk", &unit(body));
+        assert!(!codes.contains(&"K816-E0179"), "`{body}`: {codes:?}");
+    }
+    let (codes, _) = fixed("unit.kk", &unit("if c | z & n { x++ }"));
+    assert!(codes.contains(&"K816-E0183"), "{codes:?}");
+}

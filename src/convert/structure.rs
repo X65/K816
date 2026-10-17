@@ -544,8 +544,15 @@ fn nested_blocks(statement: &Statement) -> Vec<&Block> {
         StatementKind::WidthBlock(width) => vec![&width.body],
         StatementKind::Conditional(conditional) => std::iter::once(&conditional.body)
             .chain(&conditional.otherwise)
+            .chain(conditional.condition.slots())
             .collect(),
-        StatementKind::Loop(loop_statement) => vec![&loop_statement.body],
+        StatementKind::ConditionalJump(jump) => jump.condition.slots().collect(),
+        StatementKind::Loop(loop_statement) => match &loop_statement.condition {
+            crate::ast::LoopCondition::Branch(chain) => std::iter::once(&loop_statement.body)
+                .chain(chain.slots())
+                .collect(),
+            _ => vec![&loop_statement.body],
+        },
         StatementKind::Nocross(block) => vec![block],
         _ => Vec::new(),
     }

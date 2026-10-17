@@ -1070,13 +1070,28 @@ fn called_in_statement(statement: &Statement, names: &mut BTreeSet<String>) {
         }
         StatementKind::WidthBlock(block) => called_in_block(&block.body, names),
         StatementKind::Conditional(conditional) => {
+            for slot in conditional.condition.slots() {
+                called_in_block(slot, names);
+            }
             called_in_block(&conditional.body, names);
             if let Some(otherwise) = &conditional.otherwise {
                 called_in_block(otherwise, names);
             }
         }
-        StatementKind::ConditionalJump(jump) => called_in_statement(&jump.jump, names),
-        StatementKind::Loop(loop_statement) => called_in_block(&loop_statement.body, names),
+        StatementKind::ConditionalJump(jump) => {
+            for slot in jump.condition.slots() {
+                called_in_block(slot, names);
+            }
+            called_in_statement(&jump.jump, names);
+        }
+        StatementKind::Loop(loop_statement) => {
+            called_in_block(&loop_statement.body, names);
+            if let crate::ast::LoopCondition::Branch(chain) = &loop_statement.condition {
+                for slot in chain.slots() {
+                    called_in_block(slot, names);
+                }
+            }
+        }
         StatementKind::Nocross(block) => called_in_block(block, names),
         StatementKind::Data(data) => called_in_data(&data.entries, names),
         StatementKind::Label(_)

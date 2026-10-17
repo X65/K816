@@ -637,6 +637,11 @@ const FAMILY: &[Case] = &[
 /// and two of E's come from lowering — or it cannot be reached from source at
 /// all, in which case the entry says why and that claim is the coverage.
 const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
+    // A mixed chain is refused as the chain is built.
+    (
+        "K816-E0183",
+        "tests/parser.rs: a_chain_keeps_its_later_slots_and_assumes_a_steps_condition",
+    ),
     // The builder decides a flag letter as it builds the condition, so the
     // refusal is a parse diagnostic and `diagnostic_for` never sees one.
     (

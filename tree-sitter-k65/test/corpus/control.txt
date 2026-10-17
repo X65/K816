@@ -375,7 +375,9 @@ func main {
           (hla_step
             target: (register)))
         condition: (while_condition
-          condition: (branch_condition)))
+          condition: (condition_chain
+            element: (chain_element
+              condition: (branch_condition)))))
       (loop_statement
         body: (block
           (hla_assignment
@@ -383,7 +385,9 @@ func main {
             operand: (address
               value: (identifier))))
         condition: (while_condition
-          condition: (branch_condition)))
+          condition: (condition_chain
+            element: (chain_element
+              condition: (branch_condition)))))
       (loop_statement
         body: (block
           (hla_step
@@ -400,7 +404,9 @@ func main {
           (hla_step
             target: (register)))
         condition: (while_condition
-          condition: (branch_condition))))))
+          condition: (condition_chain
+            element: (chain_element
+              condition: (branch_condition))))))))
 
 ================================================================================
 Flag tests without the sign
@@ -444,7 +450,9 @@ func main {
             operand: (address
               value: (identifier))))
         condition: (while_condition
-          condition: (branch_condition))))))
+          condition: (condition_chain
+            element: (chain_element
+              condition: (branch_condition))))))))
 
 ================================================================================
 An if before a block
@@ -467,12 +475,16 @@ func main {
         operand: (address
           value: (number)))
       (if_statement
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            condition: (branch_condition)))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            condition: (branch_condition)))
         body: (block
           (hla_step
             target: (address
@@ -501,7 +513,9 @@ func main {
     name: (identifier)
     body: (block
       (if_statement
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            condition: (branch_condition)))
         body: (block
           (hla_assignment
             operand: (register)
@@ -509,7 +523,9 @@ func main {
               value: (number))))
         else: (else_clause
           chain: (if_statement
-            condition: (branch_condition)
+            condition: (condition_chain
+              element: (chain_element
+                condition: (branch_condition)))
             body: (block
               (hla_assignment
                 operand: (register)
@@ -517,11 +533,13 @@ func main {
                   value: (number))))
             else: (else_clause
               chain: (if_statement
-                compare: (hla_arithmetic
-                  register: (register)
-                  operand: (immediate
-                    value: (number)))
-                condition: (branch_condition)
+                condition: (condition_chain
+                  element: (chain_element
+                    slot: (hla_arithmetic
+                      register: (register)
+                      operand: (immediate
+                        value: (number)))
+                    condition: (branch_condition)))
                 body: (block
                   (hla_assignment
                     operand: (register)
@@ -553,43 +571,51 @@ done:
     name: (identifier)
     body: (block
       (if_statement
-        compare: (hla_arithmetic
-          register: (register)
-          operand: (address
-            value: (binary_expression
-              left: (identifier)
-              right: (number))))
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            slot: (hla_arithmetic
+              register: (register)
+              operand: (address
+                value: (binary_expression
+                  left: (identifier)
+                  right: (number))))
+            condition: (branch_condition)))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        compare: (hla_arithmetic
-          register: (register)
-          operand: (address
-            value: (identifier)))
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            slot: (hla_arithmetic
+              register: (register)
+              operand: (address
+                value: (identifier)))
+            condition: (branch_condition)))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        compare: (hla_arithmetic
-          register: (register)
-          operand: (address
-            value: (identifier)
-            index: (index_register)))
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            slot: (hla_arithmetic
+              register: (register)
+              operand: (address
+                value: (identifier)
+                index: (index_register)))
+            condition: (branch_condition)))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        compare: (hla_arithmetic
-          register: (register)
-          operand: (immediate
-            value: (binary_expression
-              left: (identifier)
-              right: (number))))
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            slot: (hla_arithmetic
+              register: (register)
+              operand: (immediate
+                value: (binary_expression
+                  left: (identifier)
+                  right: (number))))
+            condition: (branch_condition)))
         jump: (goto_statement
           target: (identifier)))
       (label
@@ -616,25 +642,33 @@ done:
     name: (identifier)
     body: (block
       (if_statement
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            condition: (branch_condition)))
         jump: (goto_statement
           target: (identifier)))
       (if_statement
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            condition: (branch_condition)))
         jump: (goto_statement
           far: (far_marker)
           target: (identifier)))
       (loop_statement
         body: (block
           (if_statement
-            condition: (branch_condition)
+            condition: (condition_chain
+              element: (chain_element
+                condition: (branch_condition)))
             jump: (break_statement))
           (if_statement
-            compare: (hla_arithmetic
-              register: (register)
-              operand: (immediate
-                value: (number)))
-            condition: (branch_condition)
+            condition: (condition_chain
+              element: (chain_element
+                slot: (hla_arithmetic
+                  register: (register)
+                  operand: (immediate
+                    value: (number)))
+                condition: (branch_condition)))
             jump: (repeat_statement)))
         condition: (loop_condition))
       (label
@@ -661,27 +695,33 @@ func main {
           (hla_step
             target: (register)))
         condition: (while_condition
-          compare: (hla_arithmetic
-            register: (register)
-            operand: (immediate
-              value: (number)))
-          condition: (branch_condition)))
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_arithmetic
+                register: (register)
+                operand: (immediate
+                  value: (number)))
+              condition: (branch_condition)))))
       (loop_statement
         body: (block
           (hla_step
             target: (register)))
         condition: (while_condition
-          compare: (hla_arithmetic
-            register: (register)
-            operand: (immediate
-              value: (number)))
-          condition: (branch_condition)))
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_arithmetic
+                register: (register)
+                operand: (immediate
+                  value: (number)))
+              condition: (branch_condition)))))
       (loop_statement
         body: (block
           (hla_step
             target: (register)))
         condition: (while_condition
-          condition: (branch_condition))))))
+          condition: (condition_chain
+            element: (chain_element
+              condition: (branch_condition))))))))
 
 ================================================================================
 if as a label and a goto target, for the analysis to refuse
@@ -727,7 +767,9 @@ func main {
         width: (width_annotation)
         body: (block
           (if_statement
-            condition: (branch_condition)
+            condition: (condition_chain
+              element: (chain_element
+                condition: (branch_condition)))
             body: (block
               (hla_step
                 target: (register))))))
@@ -736,11 +778,13 @@ func main {
           (hla_step
             target: (register)))
         condition: (while_condition
-          compare: (hla_arithmetic
-            register: (register)
-            operand: (address
-              value: (identifier)))
-          condition: (branch_condition))))))
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_arithmetic
+                register: (register)
+                operand: (address
+                  value: (identifier)))
+              condition: (branch_condition))))))))
 
 ================================================================================
 A flag test by its letter, after if and while, beside the old spelling
@@ -767,14 +811,18 @@ func main {
     name: (identifier)
     body: (block
       (if_statement
-        condition: (flag_condition
-          flag: (identifier))
+        condition: (condition_chain
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier))))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        condition: (flag_condition
-          flag: (identifier))
+        condition: (condition_chain
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier))))
         jump: (goto_statement
           target: (local_identifier)))
       (loop_statement
@@ -782,62 +830,304 @@ func main {
           (native_instruction
             mnemonic: (mnemonic)))
         condition: (while_condition
-          condition: (flag_condition
-            flag: (identifier))))
+          condition: (condition_chain
+            element: (chain_element
+              condition: (flag_condition
+                flag: (identifier))))))
       (if_statement
-        compare: (hla_arithmetic
-          register: (register)
-          operand: (address
-            value: (identifier)))
-        condition: (flag_condition
-          flag: (identifier))
+        condition: (condition_chain
+          element: (chain_element
+            slot: (hla_arithmetic
+              register: (register)
+              operand: (address
+                value: (identifier)))
+            condition: (flag_condition
+              flag: (identifier))))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        condition: (flag_condition
-          flag: (identifier))
+        condition: (condition_chain
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier))))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        condition: (flag_condition
-          flag: (identifier))
+        condition: (condition_chain
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier))))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            condition: (branch_condition)))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            condition: (branch_condition)))
         body: (block
           (hla_step
             target: (register))))
       (if_statement
-        condition: (branch_condition)
+        condition: (condition_chain
+          element: (chain_element
+            condition: (branch_condition)))
         body: (block
           (hla_step
             target: (register)))
         else: (else_clause
           chain: (if_statement
-            condition: (flag_condition
-              flag: (identifier))
+            condition: (condition_chain
+              element: (chain_element
+                condition: (flag_condition
+                  flag: (identifier))))
             body: (block
               (hla_step
                 target: (register))))))
       (loop_statement
         body: (block
           (if_statement
-            condition: (flag_condition
-              flag: (identifier))
+            condition: (condition_chain
+              element: (chain_element
+                condition: (flag_condition
+                  flag: (identifier))))
             jump: (break_statement))
           (if_statement
-            condition: (flag_condition
-              flag: (identifier))
+            condition: (condition_chain
+              element: (chain_element
+                condition: (flag_condition
+                  flag: (identifier))))
             jump: (repeat_statement)))
         condition: (loop_condition))
       (label
         name: (local_identifier)))))
+
+================================================================================
+Flag chains after if and while, a compare or a step in each element
+================================================================================
+
+func main {
+  if c | z { x++ }
+  if !c & !z goto .out
+  if a?#10 >= & a?#20 < { x++ }
+  if c | z & n { x++ }
+  loop { x++ } while mem-- | c
+  loop { x++ } while x-- & !z
+.out:
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (if_statement
+        condition: (condition_chain
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier)))
+          operator: (chain_operator)
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier))))
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (condition_chain
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier)))
+          operator: (chain_operator)
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier))))
+        jump: (goto_statement
+          target: (local_identifier)))
+      (if_statement
+        condition: (condition_chain
+          element: (chain_element
+            slot: (hla_arithmetic
+              register: (register)
+              operand: (immediate
+                value: (number)))
+            condition: (branch_condition))
+          operator: (chain_operator)
+          element: (chain_element
+            slot: (hla_arithmetic
+              register: (register)
+              operand: (immediate
+                value: (number)))
+            condition: (branch_condition)))
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (condition_chain
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier)))
+          operator: (chain_operator)
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier)))
+          operator: (chain_operator)
+          element: (chain_element
+            condition: (flag_condition
+              flag: (identifier))))
+        body: (block
+          (hla_step
+            target: (register))))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_step
+                target: (address
+                  value: (identifier))))
+            operator: (chain_operator)
+            element: (chain_element
+              condition: (flag_condition
+                flag: (identifier))))))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_step
+                target: (register)))
+            operator: (chain_operator)
+            element: (chain_element
+              condition: (flag_condition
+                flag: (identifier))))))
+      (label
+        name: (local_identifier)))))
+
+================================================================================
+A step in the slot, with and without a condition
+================================================================================
+
+func main {
+  loop { x++ } while x--
+  loop { x++ } while x-- !=
+  loop { x++ } while x-- >=0
+  if x-- { x++ }
+  if mem,x-- == goto .out
+.out:
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_step
+                target: (register))))))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_step
+                target: (register))
+              condition: (branch_condition)))))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_step
+                target: (register))
+              condition: (branch_condition)))))
+      (if_statement
+        condition: (condition_chain
+          element: (chain_element
+            slot: (hla_step
+              target: (register))))
+        body: (block
+          (hla_step
+            target: (register))))
+      (if_statement
+        condition: (condition_chain
+          element: (chain_element
+            slot: (hla_step
+              target: (address
+                value: (identifier)
+                index: (index_register)))
+            condition: (branch_condition)))
+        jump: (goto_statement
+          target: (local_identifier)))
+      (label
+        name: (local_identifier)))))
+
+================================================================================
+A chain ends at the line's end
+================================================================================
+
+func main {
+  loop { x++ } while c
+  &2,x = a
+  loop { x++ } while x--
+  < { x++ }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (condition_chain
+            element: (chain_element
+              condition: (flag_condition
+                flag: (identifier))))))
+      (hla_assignment
+        operand: (address
+          value: (number)
+          index: (index_register))
+        operand: (register))
+      (loop_statement
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (while_condition
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_step
+                target: (register))))))
+      (conditional_block
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register)))))))

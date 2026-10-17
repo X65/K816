@@ -372,7 +372,7 @@ fn dump_ast(file: &AstFile) -> String {
                         }
                         StatementKind::Conditional(conditional) => format!(
                             "if {} ({} statements){}",
-                            dump_condition(conditional.condition.kind),
+                            dump_condition(conditional.condition.first().kind),
                             conditional.body.statements.len(),
                             match &conditional.otherwise {
                                 Some(otherwise) =>
@@ -381,7 +381,7 @@ fn dump_ast(file: &AstFile) -> String {
                             }
                         ),
                         StatementKind::ConditionalJump(jump) => {
-                            format!("{} jump", dump_condition(jump.condition.kind))
+                            format!("{} jump", dump_condition(jump.condition.first().kind))
                         }
                         StatementKind::Loop(loop_statement) => format!(
                             "{}loop{} ({} statements) {}",
@@ -395,10 +395,10 @@ fn dump_ast(file: &AstFile) -> String {
                                 ""
                             },
                             loop_statement.body.statements.len(),
-                            match loop_statement.condition {
+                            match &loop_statement.condition {
                                 LoopCondition::Always => "always".to_owned(),
                                 LoopCondition::Never => "never".to_owned(),
-                                LoopCondition::Branch(condition) => dump_condition(condition.kind),
+                                LoopCondition::Branch(chain) => dump_condition(chain.first().kind),
                             }
                         ),
                         StatementKind::Goto(goto) => format!(
@@ -3253,7 +3253,7 @@ fn an_if_is_built_as_the_statements_it_stands_for() {
     let StatementKind::Loop(loop_statement) = &statements[3].kind else {
         panic!("a loop: {:?}", statements[3].kind);
     };
-    assert_eq!(loop_statement.test_compare.map(text), Some("x?#5"));
+    assert_eq!(loop_statement.test.map(text), Some("x?#5"));
     let last = loop_statement.body.statements.last().expect("a body");
     assert!(
         matches!(last.kind, StatementKind::Hla(HlaStatement::Arithmetic(_))),
@@ -3275,7 +3275,7 @@ fn an_if_is_built_as_the_statements_it_stands_for() {
 /// building sub-plan Q, where the generic path did both.
 #[test]
 fn a_dangling_if_says_what_is_missing_and_invents_no_jump() {
-    for body in ["if <", "if a?#10 <", "if < nop"] {
+    for body in ["if <", "if a?#10 <"] {
         let source = format!("func f @a8 @i8 {{\n    {body}\n}}\n");
         let mut map = SourceMap::new();
         let id = map.add_file("dangling.kk", source.as_str());
@@ -3297,6 +3297,17 @@ fn a_dangling_if_says_what_is_missing_and_invents_no_jump() {
             missing.fixes
         );
     }
+    // With a statement where the block or jump should be, the line is one
+    // syntax error — since sub-plan S's chain grammar, the generic one over
+    // the whole `if` rather than a MISSING token — and still no invented
+    // jump and no fix.
+    let source = "func f @a8 @i8 {\n    if < nop\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("dangling.kk", source);
+    let result = k816::compile_to_ca65(&map, id, &k816::Options::default());
+    let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, vec![DiagnosticCode::SYNTAX_ERROR], "{codes:?}");
+    assert!(result.diagnostics[0].fixes.is_empty());
 }
 
 /// A malformed `if` body is phrased for the `if`, which is what
@@ -3337,8 +3348,8 @@ fn a_flag_test_by_its_letter_names_one_of_the_four() {
         .statements
         .iter()
         .filter_map(|statement| match &statement.kind {
-            StatementKind::Conditional(conditional) => Some(conditional.condition.kind),
-            StatementKind::ConditionalJump(jump) => Some(jump.condition.kind),
+            StatementKind::Conditional(conditional) => Some(conditional.condition.first().kind),
+            StatementKind::ConditionalJump(jump) => Some(jump.condition.first().kind),
             _ => None,
         })
         .collect();
@@ -3381,4 +3392,79 @@ fn a_flag_test_by_its_letter_names_one_of_the_four() {
             assert!(fixed.contains("if v { x++ }"), "{fixed}");
         }
     }
+}
+
+/// Sub-plan S: a chain is built with the first element's slot hoisted as the
+/// statement before (Q's shape) and every later slot inside its element; a
+/// step alone carries an assumed `!=`; the operator is one, and a mix is
+/// `K816-E0183` from the builder (`plans/18-conditions.md` decision 1).
+#[test]
+fn a_chain_keeps_its_later_slots_and_assumes_a_steps_condition() {
+    use k816::ast::{BranchConditionKind, ChainOperator, ComparisonKind};
+    let source =
+        "func f @a8 @i8 {\n    if a?#10 >= & a?#20 < { x++ }\n    loop { y++ } while x-- | c\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("chain.kk", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let text = |span: Span| &source[span.start as usize..span.end as usize];
+    let ItemKind::Func(function) = &result.file.items[0].kind else {
+        panic!("expected a function");
+    };
+    let statements = &function.body.statements;
+    assert_eq!(statements.len(), 3, "{statements:#?}");
+    assert_eq!(
+        text(statements[0].span),
+        "a?#10",
+        "the first slot is hoisted"
+    );
+    let StatementKind::Conditional(conditional) = &statements[1].kind else {
+        panic!("a conditional: {:?}", statements[1].kind);
+    };
+    let chain = &conditional.condition;
+    assert_eq!(chain.operator, Some(ChainOperator::All));
+    assert_eq!(chain.elements.len(), 2);
+    assert!(chain.elements[0].slot.is_none());
+    let slot = chain.elements[1]
+        .slot
+        .as_ref()
+        .expect("the later slot stays");
+    assert_eq!(text(slot.span), "a?#20");
+    assert_eq!(text(chain.elements[1].condition.span), "<");
+    assert_eq!(text(chain.span), ">= & a?#20 <");
+
+    let StatementKind::Loop(loop_statement) = &statements[2].kind else {
+        panic!("a loop");
+    };
+    assert_eq!(loop_statement.test.map(text), Some("x--"));
+    assert_eq!(
+        text(
+            loop_statement
+                .body
+                .statements
+                .last()
+                .expect("the step")
+                .span
+        ),
+        "x--"
+    );
+    let k816::ast::LoopCondition::Branch(chain) = &loop_statement.condition else {
+        panic!("a tested loop");
+    };
+    assert_eq!(chain.operator, Some(ChainOperator::Any));
+    assert!(chain.elements[0].assumed, "a step alone tests `!=`");
+    assert_eq!(
+        chain.elements[0].condition.kind,
+        BranchConditionKind::Comparison(ComparisonKind::NotEqual)
+    );
+    assert!(!chain.elements[1].assumed);
+
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "mixed.kk",
+        "func f @a8 @i8 {\n    if c | z & n { x++ }\n}\n",
+    );
+    let result = parse_source(map.file(id), None);
+    let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, vec![DiagnosticCode::MIXED_CHAIN]);
 }

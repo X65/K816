@@ -1355,6 +1355,8 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     ("FlagTestSpelling", "Signed", "branchop"),
     ("FlagTestSpelling", "Bare", "k816-bare-flag-test"),
     ("FlagTestSpelling", "Letter", "k816-bare-flag-test"),
+    ("ChainOperator", "Any", "k816-condition-chain"),
+    ("ChainOperator", "All", "k816-condition-chain"),
     // ---- CallArgument --------------------------------------------------
     ("CallArgument", "Register", "k816-call-contracts"),
     ("CallArgument", "Immediate", "k816-call-contracts"),
@@ -1571,7 +1573,10 @@ const AST_FIELDS: &[(&str, &str, &str)] = &[
     ("ConditionalBlock", "compare", "k816-condition-compare"),
     ("ConditionalJump", "keyword", "k816-if-statement"),
     ("ConditionalJump", "compare", "k816-condition-compare"),
-    ("LoopStatement", "test_compare", "k816-condition-compare"),
+    ("LoopStatement", "test", "k816-condition-compare"),
+    ("ConditionChain", "operator", "k816-condition-chain"),
+    ("ChainElement", "slot", "k816-condition-compare"),
+    ("ChainElement", "assumed", "k816-condition-compare"),
     (
         "LoopStatement",
         "nocross",
@@ -1959,7 +1964,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
 
     assert_eq!(
         marked.len(),
-        35,
+        36,
         "the manifest marks {} rows for the flag; if that is deliberate, move the \
          number here so the count stays a statement someone made",
         marked.len()

@@ -445,9 +445,90 @@ pub enum TestableFlag {
 /// spelled (`plans/16-if-statement.md` decision 5). The statement's span
 /// therefore starts at the condition, never at the `if`, so that the
 /// compare's span and this one do not overlap.
+/// `c | z`, `!c & !z`, `a?#10 >= & a?#20 <`: one or more conditions joined
+/// by one operator, each with a slot of its own (`plans/18-conditions.md`
+/// decision 1). A single condition is a chain of one element with no
+/// operator — the shape every condition has had since sub-plan Q, so a pass
+/// that reads `elements[0]` of a one-element chain reads what it always did.
+///
+/// **The first element's slot is not here.** A compare or step written
+/// before the first condition is the statement before the conditional, as
+/// Q built it (`ConditionalBlock::compare`); a later element's slot runs
+/// only when the branches before it fell through, so it stays inside the
+/// element, as a block of one statement every walker descends into
+/// ([`ConditionChain::slots`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionChain {
+    pub elements: Vec<ChainElement>,
+    /// `None` for a chain of one element.
+    pub operator: Option<ChainOperator>,
+    pub span: Span,
+}
+
+impl ConditionChain {
+    /// A chain of the one condition.
+    pub fn single(condition: BranchCondition) -> Self {
+        let span = condition.span;
+        Self {
+            elements: vec![ChainElement {
+                slot: None,
+                condition,
+                assumed: false,
+                span,
+            }],
+            operator: None,
+            span,
+        }
+    }
+
+    /// The first condition — the only one, for every chain written before
+    /// sub-plan S, and the one a hover or a fix on "the condition" means.
+    pub fn first(&self) -> &BranchCondition {
+        &self.elements[0].condition
+    }
+
+    /// The slot blocks of the elements after the first, which hold the
+    /// statements a walker over nested blocks has to reach.
+    pub fn slots(&self) -> impl Iterator<Item = &Block> {
+        self.elements
+            .iter()
+            .filter_map(|element| element.slot.as_ref())
+    }
+
+    pub fn slots_mut(&mut self) -> impl Iterator<Item = &mut Block> {
+        self.elements
+            .iter_mut()
+            .filter_map(|element| element.slot.as_mut())
+    }
+}
+
+/// One condition of a chain, and the compare or step written in front of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainElement {
+    /// The element's compare or step — a block of one statement (two, when a
+    /// step's target began with a bare call). `None` for the first element,
+    /// whose slot is the statement before the conditional.
+    pub slot: Option<Block>,
+    pub condition: BranchCondition,
+    /// The condition was not written: a step alone tests `!=`
+    /// (`plans/18-conditions.md` decision 3). Its span is empty, at the
+    /// step's end.
+    pub assumed: bool,
+    pub span: Span,
+}
+
+/// How a chain's conditions combine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainOperator {
+    /// `|` — any condition holds.
+    Any,
+    /// `&` — all conditions hold.
+    All,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionalBlock {
-    pub condition: BranchCondition,
+    pub condition: ConditionChain,
     pub body: Block,
     /// The `else` block, if one was written.
     pub otherwise: Option<Block>,
@@ -469,7 +550,7 @@ pub struct ConditionalBlock {
 /// [`ConditionalBlock`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionalJump {
-    pub condition: BranchCondition,
+    pub condition: ConditionChain,
     pub jump: Box<Statement>,
     /// The `if` this jump was written with, or `None` for K65's bare form.
     pub keyword: Option<Span>,
@@ -485,10 +566,11 @@ pub struct LoopStatement {
     pub nocross: bool,
     pub condition: LoopCondition,
     pub spelling: LoopSpelling,
-    /// `while x?10 <`: the span of the compare written in the test. The
-    /// compare itself is the last statement of `body`, which is where it
-    /// runs and what K65 writes (`plans/16-if-statement.md` decision 9).
-    pub test_compare: Option<Span>,
+    /// `while x?10 <`, `while x--`: the span of the compare or step written
+    /// in the test's first element. The statement itself is the last of
+    /// `body`, which is where it runs and what K65 writes
+    /// (`plans/16-if-statement.md` decision 9).
+    pub test: Option<Span>,
 }
 
 /// How a loop was written. Both mean the same loop; a K816 source may use
@@ -502,10 +584,10 @@ pub enum LoopSpelling {
     Keyword,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoopCondition {
     /// `{ ... } !=` — branch back while the condition holds.
-    Branch(BranchCondition),
+    Branch(ConditionChain),
     /// `{ ... } always` — an unconditional loop.
     Always,
     /// `{ ... } never` — a one-shot block.
@@ -1531,14 +1613,29 @@ fn visit_statement(statement: &Statement, visit: &mut impl FnMut(&Statement)) {
     match &statement.kind {
         StatementKind::WidthBlock(width) => visit_statements(&width.body, visit),
         StatementKind::Nocross(body) => visit_statements(body, visit),
-        StatementKind::Loop(loop_statement) => visit_statements(&loop_statement.body, visit),
+        StatementKind::Loop(loop_statement) => {
+            visit_statements(&loop_statement.body, visit);
+            if let LoopCondition::Branch(chain) = &loop_statement.condition {
+                for slot in chain.slots() {
+                    visit_statements(slot, visit);
+                }
+            }
+        }
         StatementKind::Conditional(conditional) => {
+            for slot in conditional.condition.slots() {
+                visit_statements(slot, visit);
+            }
             visit_statements(&conditional.body, visit);
             if let Some(otherwise) = &conditional.otherwise {
                 visit_statements(otherwise, visit);
             }
         }
-        StatementKind::ConditionalJump(jump) => visit_statement(&jump.jump, visit),
+        StatementKind::ConditionalJump(jump) => {
+            for slot in jump.condition.slots() {
+                visit_statements(slot, visit);
+            }
+            visit_statement(&jump.jump, visit);
+        }
         StatementKind::Data(data) => visit_data_statements(data, visit),
         StatementKind::Label(_)
         | StatementKind::Native(_)

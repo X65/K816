@@ -1296,19 +1296,69 @@ impl<'a> Lowering<'a> {
         self.ops.push(op);
     }
 
-    /// Emits the branches a condition means, all landing on `anchor`.
+    /// Emits the branches a condition chain means, all landing on `anchor`.
     fn branch_to(
         &mut self,
-        condition: crate::ast::BranchCondition,
+        chain: &crate::ast::ConditionChain,
         sense: hla::BranchSense,
         anchor: AnchorId,
         span: Span,
     ) {
-        self.branch_to_operand(condition, sense, &Operand::Anchor(anchor), span);
+        self.branch_chain(chain, sense, &Operand::Anchor(anchor), span);
     }
 
-    /// The same, landing on a target that is a named label rather than a
-    /// generated anchor — which is what a conditional `goto` branches to.
+    /// The branches a chain means, by its operator and the sense
+    /// (`plans/18-conditions.md` decision 1).
+    ///
+    /// `Skip` is a block's: the body runs when the chain holds, so for `|`
+    /// every element but the last branches *to the body* and the last
+    /// branches past it, and for `&` every element branches past it. `Take`
+    /// is a jump's and a loop's back edge: for `|` every element branches to
+    /// the target, and for `&` every element but the last branches over the
+    /// last one. A later element's slot — its compare or step — runs only
+    /// when the branches before it fell through, which is where it stands.
+    fn branch_chain(
+        &mut self,
+        chain: &crate::ast::ConditionChain,
+        sense: hla::BranchSense,
+        target: &Operand,
+        span: Span,
+    ) {
+        use crate::ast::ChainOperator;
+        use hla::BranchSense::{Skip, Take};
+        let last = chain.elements.len() - 1;
+        // The anchor the elements before the last reach for, when they do
+        // not reach the target: the body, for `|` skipping; past the last
+        // element's branch, for `&` taking.
+        let near = match (chain.operator, sense) {
+            (Some(ChainOperator::Any), Skip) | (Some(ChainOperator::All), Take) if last > 0 => {
+                Some(self.anchor())
+            }
+            _ => None,
+        };
+        for (index, element) in chain.elements.iter().enumerate() {
+            if let Some(slot) = &element.slot {
+                self.block(slot);
+            }
+            let (element_sense, element_target) = match (chain.operator, sense, near) {
+                (Some(ChainOperator::Any), Skip, Some(body)) if index < last => {
+                    (Take, Operand::Anchor(body))
+                }
+                (Some(ChainOperator::All), Take, Some(past)) if index < last => {
+                    (Skip, Operand::Anchor(past))
+                }
+                _ => (sense, target.clone()),
+            };
+            self.branch_to_operand(element.condition, element_sense, &element_target, span);
+        }
+        if let Some(near) = near {
+            self.place(near, span);
+        }
+    }
+
+    /// One condition's branches, landing on a target that may be a named
+    /// label rather than a generated anchor — which is what a conditional
+    /// `goto` branches to.
     fn branch_to_operand(
         &mut self,
         condition: crate::ast::BranchCondition,
@@ -1705,7 +1755,7 @@ impl<'a> Lowering<'a> {
                 let end = self.anchor();
                 let otherwise = conditional.otherwise.as_ref().map(|_| self.anchor());
                 self.branch_to(
-                    conditional.condition,
+                    &conditional.condition,
                     hla::BranchSense::Skip,
                     otherwise.unwrap_or(end),
                     span,
@@ -1729,9 +1779,9 @@ impl<'a> Lowering<'a> {
                 self.place(head, span);
                 self.loops.push(LoopAnchors { head, exit });
                 self.block(&loop_statement.body);
-                match loop_statement.condition {
-                    crate::ast::LoopCondition::Branch(condition) => {
-                        self.branch_to(condition, hla::BranchSense::Take, head, span);
+                match &loop_statement.condition {
+                    crate::ast::LoopCondition::Branch(chain) => {
+                        self.branch_to(chain, hla::BranchSense::Take, head, span);
                     }
                     crate::ast::LoopCondition::Always => {
                         self.jump_to(head, span, None);
@@ -1763,11 +1813,11 @@ impl<'a> Lowering<'a> {
                         return self.skipped(span, "a conditional jump outside a loop");
                     }
                     (StatementKind::Goto(goto), _) => {
-                        return self.conditional_goto(statement, jump.condition, goto, span);
+                        return self.conditional_goto(statement, &jump.condition, goto, span);
                     }
                     _ => return self.skipped(span, "a conditional jump"),
                 };
-                self.branch_to(jump.condition, hla::BranchSense::Take, anchor, span);
+                self.branch_to(&jump.condition, hla::BranchSense::Take, anchor, span);
             }
             // `nocross` on code is advisory: the body is ordinary code, and
             // the guard is a link-time assertion about where it lands.
@@ -1975,7 +2025,7 @@ impl<'a> Lowering<'a> {
     fn conditional_goto(
         &mut self,
         statement: &crate::ast::Statement,
-        condition: crate::ast::BranchCondition,
+        chain: &crate::ast::ConditionChain,
         goto: &crate::ast::GotoStatement,
         span: Span,
     ) {
@@ -1984,10 +2034,10 @@ impl<'a> Lowering<'a> {
         };
         if let (Mnemonic::Jmp, Operand::Address { expr, .. }) = (jump.mnemonic, &jump.operand) {
             let target = Operand::Label(expr.clone());
-            return self.branch_to_operand(condition, hla::BranchSense::Take, &target, span);
+            return self.branch_chain(chain, hla::BranchSense::Take, &target, span);
         }
         let past = self.anchor();
-        self.branch_to(condition, hla::BranchSense::Skip, past, span);
+        self.branch_to(chain, hla::BranchSense::Skip, past, span);
         self.expanded_instruction(
             jump.mnemonic,
             jump.mode,

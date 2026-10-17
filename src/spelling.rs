@@ -57,11 +57,11 @@
 //!   one after `&` says it is an offset, so both stay.
 
 use crate::ast::{
-    ArithmeticOp, AstFile, Block, BranchCondition, BranchConditionKind, ComparisonKind, DataBlock,
-    DataEntryKind, Expr, ExprKind, FlagTestSpelling, HlaOperand, HlaOperandKind, HlaStack,
-    HlaStatement, IndexRegisterKind, ItemKind, LoopCondition, LoopSpelling, LoopStatement,
-    RegisterKind, ShiftOp, StackOp, StackSpelling, Statement, StatementKind, StepOp, TestableFlag,
-    TypeWidthKind, UnaryOp,
+    ArithmeticOp, AstFile, Block, BranchCondition, BranchConditionKind, ComparisonKind,
+    ConditionChain, DataBlock, DataEntryKind, Expr, ExprKind, FlagTestSpelling, HlaOperand,
+    HlaOperandKind, HlaStack, HlaStatement, IndexRegisterKind, ItemKind, LoopCondition,
+    LoopSpelling, LoopStatement, RegisterKind, ShiftOp, StackOp, StackSpelling, Statement,
+    StatementKind, StepOp, TestableFlag, TypeWidthKind, UnaryOp,
 };
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::source::{Dialect, SourceFile, Span};
@@ -173,12 +173,12 @@ impl Checker<'_> {
             StatementKind::Hla(hla) if k816 => self.numbered_places(hla, statement.span),
             StatementKind::Conditional(conditional) => {
                 if k816 {
-                    self.condition(&conditional.condition, conditional.keyword.is_some());
+                    self.chain(&conditional.condition, conditional.keyword.is_some());
                     if conditional.keyword.is_none() {
                         self.bare_condition(&conditional.condition, "block");
                     }
                 } else {
-                    self.k65_condition(&conditional.condition);
+                    self.k65_chain_conditions(&conditional.condition);
                     if let Some(keyword) = conditional.keyword {
                         self.k65_if(keyword, conditional.compare, &conditional.condition);
                     }
@@ -188,6 +188,7 @@ impl Checker<'_> {
                         self.k65_chain(otherwise);
                     }
                 }
+                self.slots(&conditional.condition, "an `if`");
                 self.block(&conditional.body);
                 if let Some(otherwise) = &conditional.otherwise {
                     self.block(otherwise);
@@ -195,16 +196,17 @@ impl Checker<'_> {
             }
             StatementKind::ConditionalJump(jump) => {
                 if k816 {
-                    self.condition(&jump.condition, jump.keyword.is_some());
+                    self.chain(&jump.condition, jump.keyword.is_some());
                     if jump.keyword.is_none() {
                         self.bare_condition(&jump.condition, "jump");
                     }
                 } else {
-                    self.k65_condition(&jump.condition);
+                    self.k65_chain_conditions(&jump.condition);
                     if let Some(keyword) = jump.keyword {
                         self.k65_if(keyword, jump.compare, &jump.condition);
                     }
                 }
+                self.slots(&jump.condition, "an `if`");
                 self.statement(&jump.jump);
             }
             StatementKind::Loop(loop_statement) => {
@@ -212,22 +214,25 @@ impl Checker<'_> {
                     self.postfix_loop(loop_statement);
                     // A loop's condition is after `while`, or is once
                     // `K816-K65-0007`'s fix has written it.
-                    if let LoopCondition::Branch(condition) = &loop_statement.condition {
-                        self.condition(condition, true);
+                    if let LoopCondition::Branch(chain) = &loop_statement.condition {
+                        self.chain(chain, true);
                     }
                 } else {
                     self.k65_loop(statement.span, loop_statement);
-                    if let LoopCondition::Branch(condition) = &loop_statement.condition {
-                        self.k65_condition(condition);
+                    if let LoopCondition::Branch(chain) = &loop_statement.condition {
+                        self.k65_chain_conditions(chain);
                     }
-                    if let Some(compare) = loop_statement.test_compare {
+                    if let Some(compare) = loop_statement.test {
                         self.k65_while_compare(loop_statement, compare);
                     }
                 }
-                if loop_statement.test_compare.is_some()
+                if loop_statement.test.is_some()
                     && let Some(compare) = loop_statement.body.statements.last()
                 {
                     self.compare_slot(compare, "a `while`");
+                }
+                if let LoopCondition::Branch(chain) = &loop_statement.condition {
+                    self.slots(chain, "a `while`");
                 }
                 self.block(&loop_statement.body);
             }
@@ -247,7 +252,9 @@ impl Checker<'_> {
     /// so that this one fix leaves a K816 condition (`plans/17-flag-tests.md`
     /// decision 2); the refusals of those spellings offer no fix of their own
     /// here, where theirs and this one would overlap.
-    fn bare_condition(&mut self, condition: &BranchCondition, guarded: &str) {
+    fn bare_condition(&mut self, chain: &ConditionChain, guarded: &str) {
+        // A bare condition predates chains, so it is one element.
+        let condition = chain.first();
         let text = letter(condition.kind)
             .unwrap_or_else(|| self.source.span_text(condition.span).to_owned());
         let what = if guarded == "block" {
@@ -281,11 +288,11 @@ impl Checker<'_> {
     /// condition alone, and a compare as the statement before it — which a
     /// `.k65` source may write on the same line, so deleting `if ` is the
     /// whole fix (`plans/16-if-statement.md` decision 10).
-    fn k65_if(&mut self, keyword: Span, compare: Option<Span>, condition: &BranchCondition) {
+    fn k65_if(&mut self, keyword: Span, compare: Option<Span>, chain: &ConditionChain) {
         if self.chained.contains(&keyword.start) {
             return;
         }
-        let next = compare.map_or(condition.span.start, |compare| compare.start);
+        let next = compare.map_or(chain.span.start, |compare| compare.start);
         let words = Span::new(keyword.file, keyword.start, next);
         self.k65_spelling(
             keyword,
@@ -337,9 +344,10 @@ impl Checker<'_> {
     /// `while x?10 <` in a `.k65` source, which writes the compare as the
     /// loop body's last statement — where it runs either way.
     fn k65_while_compare(&mut self, loop_statement: &LoopStatement, compare: Span) {
-        let LoopCondition::Branch(condition) = loop_statement.condition else {
+        let LoopCondition::Branch(chain) = &loop_statement.condition else {
             return;
         };
+        let condition = chain.first();
         let text = self.source.span_text(compare).to_owned();
         let brace = Span::empty_at(
             loop_statement.body.span.file,
@@ -379,17 +387,17 @@ impl Checker<'_> {
                 ""
             },
         )];
-        let after = match loop_statement.condition {
-            LoopCondition::Branch(condition) => {
+        let after = match &loop_statement.condition {
+            LoopCondition::Branch(chain) => {
                 // `while`, from the brace to the compare or the condition.
                 let next = loop_statement
-                    .test_compare
-                    .map_or(condition.span.start, |compare| compare.start);
+                    .test
+                    .map_or(chain.span.start, |compare| compare.start);
                 edits.push(TextEdit::replace(
                     Span::new(file, loop_statement.body.span.end, next),
                     " ",
                 ));
-                self.source.span_text(condition.span).to_owned()
+                self.source.span_text(chain.span).to_owned()
             }
             LoopCondition::Always => "always".to_owned(),
             LoopCondition::Never => "never".to_owned(),
@@ -553,6 +561,7 @@ impl Checker<'_> {
     /// The statement in an `if`'s or a `while`'s compare slot: one of the
     /// four compares, whatever the dialect (decision 5).
     fn compare_slot(&mut self, statement: &Statement, slot: &str) {
+        // A step — `x--`, `mem++` — stands there too (decision 3).
         let StatementKind::Hla(HlaStatement::Arithmetic(arithmetic)) = &statement.kind else {
             return;
         };
@@ -588,8 +597,9 @@ impl Checker<'_> {
         let brace = loop_statement.body.span;
         let brace = Span::new(brace.file, brace.start, brace.start + 1);
         let mut edits = vec![TextEdit::insert(brace, "loop ")];
-        let after = match loop_statement.condition {
-            LoopCondition::Branch(condition) => {
+        let after = match &loop_statement.condition {
+            LoopCondition::Branch(chain) => {
+                let condition = chain.first();
                 edits.push(TextEdit::insert(condition.span, "while "));
                 // A flag test is written as its letter there, by its own
                 // refusal's fix (`plans/17-flag-tests.md`).
@@ -633,6 +643,36 @@ impl Checker<'_> {
     /// `guarded` says the condition already stands after `if` or `while`.
     /// Where it does not, the condition's `K816-K65-0011` writes `if` and the
     /// letter in one edit, and this refusal carries no fix of its own.
+    /// [`Self::condition`] over every element of a chain, and the slot rule
+    /// over every element's slot.
+    fn chain(&mut self, chain: &ConditionChain, guarded: bool) {
+        for element in &chain.elements {
+            if !element.assumed {
+                self.condition(&element.condition, guarded);
+            }
+        }
+    }
+
+    /// The slots of a chain's later elements: each holds a compare or a step
+    /// (decision 3), and its statements are this unit's to check.
+    fn slots(&mut self, chain: &ConditionChain, slot_name: &str) {
+        for slot in chain.slots() {
+            if let Some(statement) = slot.statements.last() {
+                self.compare_slot(statement, slot_name);
+            }
+            self.block(slot);
+        }
+    }
+
+    /// [`Self::k65_condition`] over every element of a chain.
+    fn k65_chain_conditions(&mut self, chain: &ConditionChain) {
+        for element in &chain.elements {
+            if !element.assumed {
+                self.k65_condition(&element.condition);
+            }
+        }
+    }
+
     fn condition(&mut self, condition: &BranchCondition, guarded: bool) {
         let Some(written) = letter(condition.kind) else {
             return;

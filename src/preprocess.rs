@@ -189,6 +189,14 @@ fn item_has_directive(item: &Item) -> bool {
     }
 }
 
+/// Whether a loop test's later slots hold a directive.
+fn chain_has_directive(condition: &crate::ast::LoopCondition) -> bool {
+    match condition {
+        crate::ast::LoopCondition::Branch(chain) => chain.slots().any(block_has_directive),
+        _ => false,
+    }
+}
+
 fn block_has_directive(block: &Block) -> bool {
     block.statements.iter().any(statement_has_directive)
 }
@@ -198,15 +206,20 @@ fn statement_has_directive(statement: &Statement) -> bool {
         StatementKind::Preprocessor(_) => true,
         StatementKind::WidthBlock(width) => block_has_directive(&width.body),
         StatementKind::Nocross(body) => block_has_directive(body),
-        StatementKind::Loop(statement) => block_has_directive(&statement.body),
+        StatementKind::Loop(statement) => {
+            block_has_directive(&statement.body) || chain_has_directive(&statement.condition)
+        }
         StatementKind::Conditional(conditional) => {
             block_has_directive(&conditional.body)
                 || conditional
                     .otherwise
                     .as_ref()
                     .is_some_and(block_has_directive)
+                || conditional.condition.slots().any(block_has_directive)
         }
-        StatementKind::ConditionalJump(jump) => statement_has_directive(&jump.jump),
+        StatementKind::ConditionalJump(jump) => {
+            statement_has_directive(&jump.jump) || jump.condition.slots().any(block_has_directive)
+        }
         StatementKind::Data(data) => data_has_directive(data),
         StatementKind::Label(_)
         | StatementKind::Native(_)
@@ -574,10 +587,18 @@ impl Preprocess {
             StatementKind::Loop(statement) => {
                 let mut statement = statement.clone();
                 statement.body = self.block(&statement.body);
+                if let crate::ast::LoopCondition::Branch(chain) = &mut statement.condition {
+                    for slot in chain.slots_mut() {
+                        *slot = self.block(slot);
+                    }
+                }
                 StatementKind::Loop(statement)
             }
             StatementKind::Conditional(conditional) => {
                 let mut conditional = conditional.clone();
+                for slot in conditional.condition.slots_mut() {
+                    *slot = self.block(slot);
+                }
                 conditional.body = self.block(&conditional.body);
                 conditional.otherwise = conditional
                     .otherwise
@@ -587,6 +608,9 @@ impl Preprocess {
             }
             StatementKind::ConditionalJump(jump) => {
                 let mut jump = jump.clone();
+                for slot in jump.condition.slots_mut() {
+                    *slot = self.block(slot);
+                }
                 jump.jump.kind = self.statement_kind(&jump.jump.clone());
                 StatementKind::ConditionalJump(jump)
             }
@@ -1395,11 +1419,23 @@ mod tests {
                 + match &statement.kind {
                     StatementKind::WidthBlock(width) => block(&width.body),
                     StatementKind::Nocross(body) => block(body),
-                    StatementKind::Loop(loop_statement) => block(&loop_statement.body),
-                    StatementKind::Conditional(conditional) => {
-                        block(&conditional.body) + conditional.otherwise.as_ref().map_or(0, block)
+                    StatementKind::Loop(loop_statement) => {
+                        block(&loop_statement.body)
+                            + match &loop_statement.condition {
+                                crate::ast::LoopCondition::Branch(chain) => {
+                                    chain.slots().map(block).sum()
+                                }
+                                _ => 0,
+                            }
                     }
-                    StatementKind::ConditionalJump(jump) => one(&jump.jump),
+                    StatementKind::Conditional(conditional) => {
+                        block(&conditional.body)
+                            + conditional.otherwise.as_ref().map_or(0, block)
+                            + conditional.condition.slots().map(block).sum::<usize>()
+                    }
+                    StatementKind::ConditionalJump(jump) => {
+                        one(&jump.jump) + jump.condition.slots().map(block).sum::<usize>()
+                    }
                     StatementKind::Data(data) => data_instructions(data),
                     _ => 0,
                 }

@@ -206,13 +206,28 @@ fn statement_names(statement: &Statement, visit: &mut impl FnMut(&Name, NameRole
             }
         }
         StatementKind::Conditional(conditional) => {
+            for slot in conditional.condition.slots() {
+                block_names(slot, visit);
+            }
             block_names(&conditional.body, visit);
             if let Some(otherwise) = &conditional.otherwise {
                 block_names(otherwise, visit);
             }
         }
-        StatementKind::ConditionalJump(jump) => statement_names(&jump.jump, visit),
-        StatementKind::Loop(loop_statement) => block_names(&loop_statement.body, visit),
+        StatementKind::ConditionalJump(jump) => {
+            for slot in jump.condition.slots() {
+                block_names(slot, visit);
+            }
+            statement_names(&jump.jump, visit);
+        }
+        StatementKind::Loop(loop_statement) => {
+            block_names(&loop_statement.body, visit);
+            if let LoopCondition::Branch(chain) = &loop_statement.condition {
+                for slot in chain.slots() {
+                    block_names(slot, visit);
+                }
+            }
+        }
         StatementKind::Goto(goto) => expr_names(&goto.target, visit),
         StatementKind::Break | StatementKind::Repeat => {}
         StatementKind::Nocross(body) => block_names(body, visit),

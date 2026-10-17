@@ -1039,11 +1039,24 @@ impl Analysis {
                 StatementKind::Nocross(body) => self.check_inline_label_values(body),
                 StatementKind::Loop(loop_statement) => {
                     self.check_inline_label_values(&loop_statement.body);
+                    if let crate::ast::LoopCondition::Branch(chain) = &loop_statement.condition {
+                        for slot in chain.slots() {
+                            self.check_inline_label_values(slot);
+                        }
+                    }
                 }
                 StatementKind::Conditional(conditional) => {
+                    for slot in conditional.condition.slots() {
+                        self.check_inline_label_values(slot);
+                    }
                     self.check_inline_label_values(&conditional.body);
                     if let Some(otherwise) = &conditional.otherwise {
                         self.check_inline_label_values(otherwise);
+                    }
+                }
+                StatementKind::ConditionalJump(jump) => {
+                    for slot in jump.condition.slots() {
+                        self.check_inline_label_values(slot);
                     }
                 }
                 _ => {}
@@ -2341,14 +2354,29 @@ impl Analysis {
             match &statement.kind {
                 StatementKind::WidthBlock(width) => self.check_block(scope, &width.body),
                 StatementKind::Conditional(conditional) => {
+                    for slot in conditional.condition.slots() {
+                        self.check_block(scope, slot);
+                    }
                     self.check_block(scope, &conditional.body);
                     if let Some(otherwise) = &conditional.otherwise {
                         self.check_block(scope, otherwise);
                     }
                 }
+                StatementKind::ConditionalJump(jump) => {
+                    for slot in jump.condition.slots() {
+                        self.check_block(scope, slot);
+                    }
+                }
                 StatementKind::Loop(loop_statement) => {
                     self.loops += 1;
                     self.check_block(scope, &loop_statement.body);
+                    // The test's later slots are inside the loop too, and
+                    // run under it.
+                    if let crate::ast::LoopCondition::Branch(chain) = &loop_statement.condition {
+                        for slot in chain.slots() {
+                            self.check_block(scope, slot);
+                        }
+                    }
                     self.loops -= 1;
                 }
                 StatementKind::Nocross(body) => self.check_block(scope, body),
@@ -4291,6 +4319,7 @@ fn returns_through_rti(block: &crate::ast::Block) -> bool {
                         .otherwise
                         .as_ref()
                         .is_some_and(returns_through_rti)
+                    || conditional.condition.slots().any(returns_through_rti)
             }
             StatementKind::Loop(loop_statement) => returns_through_rti(&loop_statement.body),
             StatementKind::Nocross(body) => returns_through_rti(body),

@@ -29,14 +29,14 @@
 use crate::ast::{
     AddressEncoding, AddressOperand, AlignDirective, ArithmeticOp, AstFile, BareCall,
     BinaryDeclaration, BinaryExpr, BinaryInclusion, BinaryOp, Block, BlockMoveOperand,
-    BranchCondition, BranchConditionKind, CallArgument, CallContract, CallStatement,
-    ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
-    ContractOutput, ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind,
-    DataValue, EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind, ExternConst,
-    ExternDeclaration, ExternExit, ExternFunction, ExternKind, ExternVar, FieldAccess,
-    FieldDeclaration, FlagKind, FlagTestSpelling, Function, FunctionKind, GotoStatement,
-    HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift,
-    HlaStack, HlaStatement, HlaStep, IllegalOpcode, ImportDeclaration, IndexRegister,
+    BranchCondition, BranchConditionKind, CallArgument, CallContract, CallStatement, ChainElement,
+    ChainOperator, ComparisonKind, ConditionChain, ConditionalBlock, ConditionalJump,
+    ConstDeclaration, ConstEntry, ContractOutput, ContractOutputs, ContractParameter, DataBlock,
+    DataEntry, DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr,
+    ExprKind, ExternConst, ExternDeclaration, ExternExit, ExternFunction, ExternKind, ExternVar,
+    FieldAccess, FieldDeclaration, FlagKind, FlagTestSpelling, Function, FunctionKind,
+    GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind,
+    HlaShift, HlaStack, HlaStatement, HlaStep, IllegalOpcode, ImportDeclaration, IndexRegister,
     IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
     LongIndirectOperand, LoopCondition, LoopSpelling, LoopStatement, MetadataQuery,
     MetadataQueryKind, Name, NativeInstruction, NativeOperand, PreprocessorDirective,
@@ -112,14 +112,29 @@ fn number_statement(statement: &mut Statement, next: &mut u32) {
     match &mut statement.kind {
         StatementKind::WidthBlock(width) => number_block(&mut width.body, next),
         StatementKind::Nocross(body) => number_block(body, next),
-        StatementKind::Loop(loop_statement) => number_block(&mut loop_statement.body, next),
+        StatementKind::Loop(loop_statement) => {
+            number_block(&mut loop_statement.body, next);
+            if let LoopCondition::Branch(chain) = &mut loop_statement.condition {
+                for slot in chain.slots_mut() {
+                    number_block(slot, next);
+                }
+            }
+        }
         StatementKind::Conditional(conditional) => {
+            for slot in conditional.condition.slots_mut() {
+                number_block(slot, next);
+            }
             number_block(&mut conditional.body, next);
             if let Some(otherwise) = &mut conditional.otherwise {
                 number_block(otherwise, next);
             }
         }
-        StatementKind::ConditionalJump(jump) => number_statement(&mut jump.jump, next),
+        StatementKind::ConditionalJump(jump) => {
+            for slot in jump.condition.slots_mut() {
+                number_block(slot, next);
+            }
+            number_statement(&mut jump.jump, next);
+        }
         StatementKind::Data(data) => number_data(data, next),
         StatementKind::Label(_)
         | StatementKind::Native(_)
@@ -1611,11 +1626,127 @@ impl AstBuilder<'_> {
         })
     }
 
+    /// The `condition_chain` of an `if` or a `while`, and the span of its
+    /// first slot — which is hoisted as a statement of its own, pushed onto
+    /// `before`, as Q built the compare in an `if`
+    /// (`plans/18-conditions.md` decision 1). A later element's slot stays
+    /// in the element. A mix of `|` and `&` is refused.
+    fn condition_chain(
+        &mut self,
+        parent: Node<'_>,
+        before: &mut Vec<Statement>,
+    ) -> (Option<Span>, ConditionChain) {
+        let Some(chain) = parent.child_by_field_name("condition") else {
+            self.unexpected(parent, "a condition");
+            let parent_span = self.span(parent);
+            let fallback = BranchCondition {
+                kind: BranchConditionKind::Comparison(ComparisonKind::NotEqual),
+                span: Span::empty_at(parent_span.file, parent_span.start),
+            };
+            return (None, ConditionChain::single(fallback));
+        };
+        let mut cursor = chain.walk();
+        let mut operator: Option<(ChainOperator, Span)> = None;
+        for node in chain.children_by_field_name("operator", &mut cursor) {
+            let written = match self.text(node) {
+                "|" => ChainOperator::Any,
+                _ => ChainOperator::All,
+            };
+            match operator {
+                None => operator = Some((written, self.span(node))),
+                Some((first, first_span)) if first != written => {
+                    let span = self.span(node);
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::MIXED_CHAIN,
+                            "a chain joins its conditions with one operator",
+                            Label::new(span, "this is the other operator"),
+                        )
+                        .with_secondary(Label::new(first_span, "the chain's operator"))
+                        .with_note(
+                            "`|` branches when any condition holds and `&` when all do; a chain \
+                             of both has no precedence to read it by",
+                        )
+                        .with_help("nest an `if` for the inner group")
+                        .with_docs("doc/syntax-reference.md#conditions"),
+                    );
+                }
+                Some(_) => {}
+            }
+        }
+        let mut cursor = chain.walk();
+        let mut elements = Vec::new();
+        let mut first_slot = None;
+        for (index, node) in chain
+            .children_by_field_name("element", &mut cursor)
+            .enumerate()
+        {
+            let slot_node = node.child_by_field_name("slot");
+            let slot_statements = slot_node.map(|slot| match slot.kind() {
+                "hla_step" => self.hla_step(slot),
+                _ => vec![self.hla_arithmetic(slot)],
+            });
+            let slot = match (index, slot_statements) {
+                (0, Some(statements)) => {
+                    first_slot = slot_node.map(|slot| self.span(slot));
+                    before.extend(statements);
+                    None
+                }
+                (_, Some(statements)) => {
+                    let span = self.span(slot_node.expect("a slot has a node"));
+                    Some(Block { statements, span })
+                }
+                (_, None) => None,
+            };
+            let condition_node = node.child_by_field_name("condition");
+            let (condition, assumed) = match condition_node {
+                Some(condition) => (self.branch_condition(Some(condition), node), false),
+                // A step alone tests `!=`, as `DEX`/`BNE` does.
+                None => {
+                    let end = self.span(node).end;
+                    (
+                        BranchCondition {
+                            kind: BranchConditionKind::Comparison(ComparisonKind::NotEqual),
+                            span: Span::empty_at(self.span(node).file, end),
+                        },
+                        true,
+                    )
+                }
+            };
+            let element_span = match (index, slot_node, condition_node) {
+                // The first element's span starts at its condition: its
+                // slot is a statement of its own.
+                (0, _, Some(condition)) => self.span(condition),
+                _ => self.span(node),
+            };
+            elements.push(ChainElement {
+                slot,
+                condition,
+                assumed,
+                span: element_span,
+            });
+        }
+        let whole = self.span(chain);
+        let start = elements
+            .first()
+            .map_or(whole.start, |element| element.span.start);
+        (
+            first_slot,
+            ConditionChain {
+                elements,
+                operator: operator.map(|(operator, _)| operator),
+                span: Span::new(whole.file, start, whole.end),
+            },
+        )
+    }
+
     fn conditional_block(&mut self, node: Node<'_>) -> Statement {
         let (otherwise, chained) = self.else_clause(node);
         Statement::new(
             StatementKind::Conditional(ConditionalBlock {
-                condition: self.branch_condition(node.child_by_field_name("condition"), node),
+                condition: ConditionChain::single(
+                    self.branch_condition(node.child_by_field_name("condition"), node),
+                ),
                 body: self.body_of(node),
                 otherwise,
                 keyword: None,
@@ -1653,24 +1784,15 @@ impl AstBuilder<'_> {
     /// written in the `if`) and then the bare conditional or jump.
     fn if_statement(&mut self, node: Node<'_>) -> Vec<Statement> {
         let mut statements = Vec::new();
-        let compare = node.child_by_field_name("compare").map(|compare| {
-            statements.push(self.hla_arithmetic(compare));
-            self.span(compare)
-        });
         let keyword = node
             .child(0)
             .filter(|child| child.kind() == "if")
             .map(|child| self.span(child));
-        let condition_node = node.child_by_field_name("condition");
+        let (compare, condition) = self.condition_chain(node, &mut statements);
         let whole = self.span(node);
-        // From the condition on: the compare before it has a statement of
-        // its own, and two statements must not claim the same text.
-        let span = Span::new(
-            whole.file,
-            condition_node.map_or(whole.start, |condition| self.span(condition).start),
-            whole.end,
-        );
-        let condition = self.branch_condition(condition_node, node);
+        // From the first condition on: the compare before it has a statement
+        // of its own, and two statements must not claim the same text.
+        let span = Span::new(whole.file, condition.span.start, whole.end);
         if node.child_by_field_name("jump").is_some() {
             let jump = self.jump(node, span);
             statements.push(Statement::new(
@@ -1705,7 +1827,7 @@ impl AstBuilder<'_> {
         let jump = self.jump(node, span);
         Statement::new(
             StatementKind::ConditionalJump(ConditionalJump {
-                condition,
+                condition: ConditionChain::single(condition),
                 jump: Box::new(jump),
                 keyword: None,
                 compare: None,
@@ -1753,7 +1875,9 @@ impl AstBuilder<'_> {
         let condition = match condition_node.map(|condition| self.text(condition)) {
             Some("always") => LoopCondition::Always,
             Some("never") => LoopCondition::Never,
-            _ => LoopCondition::Branch(self.branch_condition(condition_node, node)),
+            _ => LoopCondition::Branch(ConditionChain::single(
+                self.branch_condition(condition_node, node),
+            )),
         };
         Statement::new(
             StatementKind::Loop(LoopStatement {
@@ -1761,7 +1885,7 @@ impl AstBuilder<'_> {
                 nocross,
                 condition,
                 spelling: LoopSpelling::Postfix,
-                test_compare: None,
+                test: None,
             }),
             span,
         )
@@ -1774,24 +1898,21 @@ impl AstBuilder<'_> {
         let span = self.span(node);
         let mut body = self.body_of(node);
         let condition_node = node.child_by_field_name("condition");
-        // `while x?10 <`: the compare runs as the body's last statement,
-        // which is where K65 writes it (`plans/16-if-statement.md` decision
-        // 9) — so a `repeat`, which goes to the top, skips it, and `nocross`
-        // keeps it inside the page it checks.
-        let test_compare = condition_node
-            .filter(|condition| condition.kind() == "while_condition")
-            .and_then(|condition| condition.child_by_field_name("compare"))
-            .map(|compare| {
-                body.statements.push(self.hla_arithmetic(compare));
-                self.span(compare)
-            });
+        // `while x?10 <`, `while x--`: the first element's compare or step
+        // runs as the body's last statement, which is where K65 writes it
+        // (`plans/16-if-statement.md` decision 9) — so a `repeat`, which goes
+        // to the top, skips it, and `nocross` keeps it inside the page it
+        // checks.
+        let mut test = None;
         let condition = match condition_node {
-            Some(condition) if condition.kind() == "while_condition" => LoopCondition::Branch(
-                self.branch_condition(condition.child_by_field_name("condition"), condition),
-            ),
+            Some(condition) if condition.kind() == "while_condition" => {
+                let (first_slot, chain) = self.condition_chain(condition, &mut body.statements);
+                test = first_slot;
+                LoopCondition::Branch(chain)
+            }
             Some(condition) if self.text(condition) == "always" => LoopCondition::Always,
             Some(condition) if self.text(condition) == "never" => LoopCondition::Never,
-            _ => LoopCondition::Branch(self.branch_condition(None, node)),
+            _ => LoopCondition::Branch(ConditionChain::single(self.branch_condition(None, node))),
         };
         Statement::new(
             StatementKind::Loop(LoopStatement {
@@ -1799,7 +1920,7 @@ impl AstBuilder<'_> {
                 nocross: node.child_by_field_name("nocross").is_some(),
                 condition,
                 spelling: LoopSpelling::Keyword,
-                test_compare,
+                test,
             }),
             span,
         )

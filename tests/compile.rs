@@ -4864,6 +4864,34 @@ fn the_readable_spellings_link_to_their_k65_twins_bytes() {
     assert_eq!(readable, k65);
 }
 
+/// `conditions.kk` links to the bytes of `conditions-native.kk`: a chain and
+/// a step in a condition's slot are the branches and labels written out
+/// (`plans/18-conditions.md` decision 5).
+#[test]
+fn the_chains_and_steps_link_to_their_native_twins_bytes() {
+    let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let read = |name: &str| std::fs::read_to_string(golden.join(name)).expect("read golden");
+    let options = Options::default();
+    let (k816, _) = compile_and_link(
+        "conditions-kk",
+        "conditions.kk",
+        &read("conditions.kk"),
+        &options,
+    );
+    let (native, _) = compile_and_link(
+        "conditions-native",
+        "conditions-native.kk",
+        &read("conditions-native.kk"),
+        &options,
+    );
+    assert!(
+        k816.len() > 40,
+        "the program linked to {} bytes",
+        k816.len()
+    );
+    assert_eq!(k816, native);
+}
+
 /// `if-statement.kk` links to the bytes of `if-statement.k65`: an `if`, an
 /// `else if`, and a compare written in an `if` or a `while` are the K65
 /// statements they stand for (`plans/16-if-statement.md` decision 7).

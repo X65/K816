@@ -531,6 +531,9 @@ impl DiagnosticCode {
     /// `if c?` / `while !z?` in a K816 source, which writes the letter:
     /// `if c`, `while !z` (`plans/17-flag-tests.md` decision 2).
     pub const FLAG_TEST_MARK: Self = Self("K816-E0182");
+    /// `|` and `&` in one chain: `if c | z & n { }`. A chain has one
+    /// operator (`plans/18-conditions.md` decision 1).
+    pub const MIXED_CHAIN: Self = Self("K816-E0183");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -880,6 +883,7 @@ mod tests {
         DiagnosticCode::K816_SPELLING_IN_K65,
         DiagnosticCode::FLAG_TEST_LETTER,
         DiagnosticCode::FLAG_TEST_MARK,
+        DiagnosticCode::MIXED_CHAIN,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

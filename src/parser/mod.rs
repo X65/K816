@@ -140,6 +140,8 @@ mod tests {
         "bare_call",
         "branch_condition",
         "flag_condition",
+        "condition_chain",
+        "chain_element",
         "if_statement",
         "conditional_block",
         "else_clause",

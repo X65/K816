@@ -119,10 +119,10 @@ fn spell_condition(condition: crate::ast::BranchConditionKind) -> String {
 fn if_hover(context: &Context<'_>) -> Option<Hover> {
     use crate::hla::{BranchPlan, BranchSense, branch};
     let statement = context.conditional_at_if()?;
-    let (keyword, condition, compare, sense, what) = match &statement.kind {
+    let (keyword, chain, compare, sense, what) = match &statement.kind {
         StatementKind::Conditional(conditional) => (
             conditional.keyword?,
-            conditional.condition,
+            &conditional.condition,
             conditional.compare,
             BranchSense::Skip,
             if conditional.otherwise.is_some() {
@@ -133,7 +133,7 @@ fn if_hover(context: &Context<'_>) -> Option<Hover> {
         ),
         StatementKind::ConditionalJump(jump) => (
             jump.keyword?,
-            jump.condition,
+            &jump.condition,
             jump.compare,
             BranchSense::Take,
             match jump.jump.kind {
@@ -146,20 +146,8 @@ fn if_hover(context: &Context<'_>) -> Option<Hover> {
         ),
         _ => return None,
     };
-    let written = spell_condition(condition.kind);
-    let mut out = format!("`if {written}` {what}.\n");
-    if compare.is_some() {
-        let _ = writeln!(
-            out,
-            "\nThe compare written in the `if` runs first and sets the flags it tests."
-        );
-    }
     let name = |mnemonic: crate::isa::Mnemonic| format!("`{}`", mnemonic.ca65().to_uppercase());
-    let (verb, plan) = match sense {
-        BranchSense::Skip => ("skips the block with", branch(condition.kind, sense)),
-        BranchSense::Take => ("branches with", branch(condition.kind, sense)),
-    };
-    let instructions = match plan {
+    let instructions = |kind, sense| match branch(kind, sense) {
         BranchPlan::Single(mnemonic) => name(mnemonic),
         BranchPlan::Pair(first, second) => format!(
             "{} and {} — two branches, because the 65816 has no single one for it",
@@ -173,7 +161,74 @@ fn if_hover(context: &Context<'_>) -> Option<Hover> {
             name(over)
         ),
     };
-    let _ = writeln!(out, "\nK816 {verb} {instructions}.");
+    let mut out = String::new();
+    match chain.operator {
+        None => {
+            let written = spell_condition(chain.first().kind);
+            let _ = writeln!(out, "`if {written}` {what}.");
+            if compare.is_some() {
+                let _ = writeln!(
+                    out,
+                    "\nThe compare written in the `if` runs first and sets the flags it tests."
+                );
+            }
+            let verb = match sense {
+                BranchSense::Skip => "skips the block with",
+                BranchSense::Take => "branches with",
+            };
+            let _ = writeln!(
+                out,
+                "\nK816 {verb} {}.",
+                instructions(chain.first().kind, sense)
+            );
+        }
+        // A chain: one branch per element, each named with where it goes
+        // (`plans/18-conditions.md` decision 1).
+        Some(operator) => {
+            let spelled: Vec<String> = chain
+                .elements
+                .iter()
+                .map(|element| spell_condition(element.condition.kind))
+                .collect();
+            let joiner = match operator {
+                crate::ast::ChainOperator::Any => " | ",
+                crate::ast::ChainOperator::All => " & ",
+            };
+            let holds = match operator {
+                crate::ast::ChainOperator::Any => "when any condition holds",
+                crate::ast::ChainOperator::All => "when every condition holds",
+            };
+            let _ = writeln!(
+                out,
+                "`if {}` {}: {holds}.",
+                spelled.join(joiner),
+                what.trim_end_matches(" when the condition holds")
+            );
+            let last = chain.elements.len() - 1;
+            for (index, element) in chain.elements.iter().enumerate() {
+                use crate::ast::ChainOperator::{All, Any};
+                let (element_sense, lands) = match (operator, sense, index < last) {
+                    (Any, BranchSense::Skip, true) => (BranchSense::Take, "to the block"),
+                    (Any, BranchSense::Skip, false) => (BranchSense::Skip, "past the block"),
+                    (All, BranchSense::Skip, _) => (BranchSense::Skip, "past the block"),
+                    (Any, BranchSense::Take, _) => (BranchSense::Take, "to the target"),
+                    (All, BranchSense::Take, true) => (BranchSense::Skip, "over the last branch"),
+                    (All, BranchSense::Take, false) => (BranchSense::Take, "to the target"),
+                };
+                let slot = if element.slot.is_some() || (index == 0 && compare.is_some()) {
+                    " after its own compare or step"
+                } else {
+                    ""
+                };
+                let _ = writeln!(
+                    out,
+                    "\n`{}`: {} {lands}{slot}.",
+                    spelled[index],
+                    instructions(element.condition.kind, element_sense)
+                );
+            }
+        }
+    }
     Some(Hover {
         markdown: out,
         span: keyword,

@@ -960,11 +960,47 @@ export default grammar({
     if_statement: $ =>
       seq(
         'if',
-        optional(field('compare', $.hla_arithmetic)),
-        field('condition', choice($.branch_condition, $.flag_condition)),
+        field('condition', $.condition_chain),
         choice(
           seq(field('body', $.block), optional(field('else', $.else_clause))),
           field('jump', $._jump),
+        ),
+      ),
+
+    // `c | z`, `!c & !z`, `a?#10 >= & a?#20 <`: conditions joined by one
+    // operator, each with a slot of its own (`plans/18-conditions.md`
+    // decision 1). The builder refuses a mix of `|` and `&`. A chain
+    // operator is read only after a condition: `&` and `|` are expression
+    // operators too, so after a bare compare they belong to its operand.
+    //
+    // Right-associative — shift, not reduce — so that a `|` or `&` after a
+    // loop's `while` condition continues the chain rather than beginning the
+    // next statement: an `&` can open an HLA target (`&2,x = a`), and a chain
+    // is the likelier reading of one on the line of a condition.
+    condition_chain: $ =>
+      prec.right(
+        seq(
+          field('element', $.chain_element),
+          repeat(seq(field('operator', $.chain_operator), field('element', $.chain_element))),
+        ),
+      ),
+
+    chain_operator: _ => choice('|', '&'),
+
+    // A slot — a compare, or a step such as `x--` — and the condition that
+    // reads the flags it set; or a step alone, which tests `!=`.
+    //
+    // Right-associative — shift — so that a condition after a step belongs
+    // to the step: `while x-- <` is one test, not `while x--` and a K65 bare
+    // condition beginning the next line.
+    chain_element: $ =>
+      prec.right(
+        choice(
+          seq(
+            optional(field('slot', choice($.hla_arithmetic, $.hla_step))),
+            field('condition', choice($.branch_condition, $.flag_condition)),
+          ),
+          field('slot', $.hla_step),
         ),
       ),
 
@@ -972,7 +1008,12 @@ export default grammar({
     conditional_jump: $ =>
       seq(field('condition', $.branch_condition), field('jump', $._jump)),
 
-    _jump: $ => choice($.goto_statement, $.break_statement, $.repeat_statement),
+    _jump: $ =>
+      choice(
+        $.goto_statement,
+        $.break_statement,
+        $.repeat_statement,
+      ),
 
     // `{ ... } !=`, `{ ... } always`, `{ ... } never`, and the `nocross`
     // wrapper form `nocross { ... } !=`.
@@ -1014,20 +1055,26 @@ export default grammar({
 
     // `while !=`, or `while x?10 <` with the compare the body would
     // otherwise end with (`plans/16-if-statement.md` decision 9).
+    //
+    // The chain ends at the line's end, as a mnemonic's operand does: with
+    // `_line_end` valid here, the scanner produces it before a token on the
+    // next line, so `&2,x = a` under a `while c` is the next statement and
+    // not a chain operator. A chain is written on one line.
     while_condition: $ =>
-      seq(
-        'while',
-        optional(field('compare', $.hla_arithmetic)),
-        field('condition', choice($.branch_condition, $.flag_condition)),
-      ),
+      seq('while', field('condition', $.condition_chain), optional($._line_end)),
 
     // `if z`, `while !c`: a flag test by its letter, which the position after
     // `if` or `while` says is one (`plans/17-flag-tests.md`). The letter is
     // an identifier, never a token — a token for a flag letter wins wherever
     // an identifier is also valid, which is how `i+ d-` once parsed as
     // `i + d` — and the analysis checks it names one of `c z n v`.
+    //
+    // Outranks the expression layer: after `if` an identifier followed by
+    // `|` or `&` is a flag test and a chain operator, not the start of the
+    // expression `mem | z` — a step's target still reads as an expression,
+    // because `--` cannot follow a flag test.
     flag_condition: $ =>
-      seq(optional(field('negated', '!')), field('flag', $.identifier)),
+      prec(1, seq(optional(field('negated', '!')), field('flag', $.identifier))),
 
     // `goto done`, `goto .loop`, `goto (vec)`, `goto far handler`. A local
     // label is as ordinary a target as a global one — the documentation's

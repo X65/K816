@@ -1353,6 +1353,14 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "the_if_spellings_link_to_their_k65_twins_bytes",
         ),
         (
+            "conditions.kk",
+            "the_chains_and_steps_link_to_their_native_twins_bytes",
+        ),
+        (
+            "conditions-native.kk",
+            "the_chains_and_steps_link_to_their_native_twins_bytes",
+        ),
+        (
             "opt-jumps.k816",
             "the_jumps_fixture_shortens_k816s_jumps_and_keeps_the_written_one",
         ),

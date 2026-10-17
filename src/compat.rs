@@ -36,10 +36,10 @@
 
 use crate::ast::{
     AstFile, BinaryOp, Block, BranchCondition, BranchConditionKind, CallArgument, ComparisonKind,
-    ContractOutput, DataBlock, DataEntry, DataEntryKind, DataValue, EvalExpr, EvalExprKind, Expr,
-    ExprKind, FieldDeclaration, FlagTestSpelling, Function, HlaOperand, HlaOperandKind,
-    HlaStatement, Item, ItemKind, LoopCondition, LoopSpelling, NativeOperand, Register,
-    RegisterKind, StackSpelling, Statement, StatementKind, StorageClassKind, UnaryOp,
+    ConditionChain, ContractOutput, DataBlock, DataEntry, DataEntryKind, DataValue, EvalExpr,
+    EvalExprKind, Expr, ExprKind, FieldDeclaration, FlagTestSpelling, Function, HlaOperand,
+    HlaOperandKind, HlaStatement, Item, ItemKind, LoopCondition, LoopSpelling, NativeOperand,
+    Register, RegisterKind, StackSpelling, Statement, StatementKind, StorageClassKind, UnaryOp,
     VarDeclaration,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -584,6 +584,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-loop-keyword", K816Extension, Rejects),
     row("k816-if-statement", K816Extension, Rejects),
     row("k816-condition-compare", K816Extension, Rejects),
+    row("k816-condition-chain", K816Extension, Rejects),
     row("k816-bare-flag-test", K816Extension, Rejects),
     row("k816-stack-words", K816Extension, Rejects),
     row("k816-dialect", K816Extension, Quiet),
@@ -811,11 +812,16 @@ const REPORTED: &[Reported] = &[
     },
     Reported {
         id: "k816-condition-compare",
-        what: "a compare written in an `if` or a `while`",
+        what: "a compare or a step written in an `if` or a `while`",
         instead: Some(
             "K65 writes the compare as a statement of its own, before the condition it sets the \
              flags for",
         ),
+    },
+    Reported {
+        id: "k816-condition-chain",
+        what: "conditions joined with `|` or `&`",
+        instead: Some("K65 writes one condition in front of a block, and nests another inside"),
     },
     Reported {
         id: "k816-bare-flag-test",
@@ -1154,7 +1160,7 @@ impl StrictWalk<'_> {
             }
             StatementKind::Conditional(conditional) => {
                 self.spelled_if(conditional.keyword, conditional.compare);
-                self.condition(&conditional.condition);
+                self.chain(&conditional.condition);
                 self.block(&conditional.body);
                 if let Some(otherwise) = &conditional.otherwise {
                     self.block(otherwise);
@@ -1162,18 +1168,18 @@ impl StrictWalk<'_> {
             }
             StatementKind::ConditionalJump(jump) => {
                 self.spelled_if(jump.keyword, jump.compare);
-                self.condition(&jump.condition);
+                self.chain(&jump.condition);
                 self.statement(&jump.jump);
             }
             StatementKind::Loop(loop_statement) => {
                 if loop_statement.spelling == LoopSpelling::Keyword {
                     self.mark("k816-loop-keyword", statement.span);
                 }
-                if let Some(compare) = loop_statement.test_compare {
+                if let Some(compare) = loop_statement.test {
                     self.mark("k816-condition-compare", compare);
                 }
-                if let LoopCondition::Branch(condition) = &loop_statement.condition {
-                    self.condition(condition);
+                if let LoopCondition::Branch(chain) = &loop_statement.condition {
+                    self.chain(chain);
                 }
                 self.block(&loop_statement.body);
             }
@@ -1204,6 +1210,21 @@ impl StrictWalk<'_> {
         }
         if let Some(compare) = compare {
             self.mark("k816-condition-compare", compare);
+        }
+    }
+
+    /// A chain: its conditions, its operator and its later slots
+    /// (`plans/18-conditions.md`).
+    fn chain(&mut self, chain: &ConditionChain) {
+        if chain.operator.is_some() {
+            self.mark("k816-condition-chain", chain.span);
+        }
+        for element in &chain.elements {
+            self.condition(&element.condition);
+            if let Some(slot) = &element.slot {
+                self.mark("k816-condition-compare", slot.span);
+                self.block(slot);
+            }
         }
     }
 

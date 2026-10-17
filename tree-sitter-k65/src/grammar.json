@@ -2572,36 +2572,11 @@
           "value": "if"
         },
         {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "FIELD",
-              "name": "compare",
-              "content": {
-                "type": "SYMBOL",
-                "name": "hla_arithmetic"
-              }
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        },
-        {
           "type": "FIELD",
           "name": "condition",
           "content": {
-            "type": "CHOICE",
-            "members": [
-              {
-                "type": "SYMBOL",
-                "name": "branch_condition"
-              },
-              {
-                "type": "SYMBOL",
-                "name": "flag_condition"
-              }
-            ]
+            "type": "SYMBOL",
+            "name": "condition_chain"
           }
         },
         {
@@ -2647,6 +2622,124 @@
           ]
         }
       ]
+    },
+    "condition_chain": {
+      "type": "PREC_RIGHT",
+      "value": 0,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "element",
+            "content": {
+              "type": "SYMBOL",
+              "name": "chain_element"
+            }
+          },
+          {
+            "type": "REPEAT",
+            "content": {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "operator",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "chain_operator"
+                  }
+                },
+                {
+                  "type": "FIELD",
+                  "name": "element",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "chain_element"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "chain_operator": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "|"
+        },
+        {
+          "type": "STRING",
+          "value": "&"
+        }
+      ]
+    },
+    "chain_element": {
+      "type": "PREC_RIGHT",
+      "value": 0,
+      "content": {
+        "type": "CHOICE",
+        "members": [
+          {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "FIELD",
+                    "name": "slot",
+                    "content": {
+                      "type": "CHOICE",
+                      "members": [
+                        {
+                          "type": "SYMBOL",
+                          "name": "hla_arithmetic"
+                        },
+                        {
+                          "type": "SYMBOL",
+                          "name": "hla_step"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              },
+              {
+                "type": "FIELD",
+                "name": "condition",
+                "content": {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "SYMBOL",
+                      "name": "branch_condition"
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "flag_condition"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "type": "FIELD",
+            "name": "slot",
+            "content": {
+              "type": "SYMBOL",
+              "name": "hla_step"
+            }
+          }
+        ]
+      }
     },
     "conditional_jump": {
       "type": "SEQ",
@@ -2809,68 +2902,59 @@
           "value": "while"
         },
         {
+          "type": "FIELD",
+          "name": "condition",
+          "content": {
+            "type": "SYMBOL",
+            "name": "condition_chain"
+          }
+        },
+        {
           "type": "CHOICE",
           "members": [
             {
-              "type": "FIELD",
-              "name": "compare",
-              "content": {
-                "type": "SYMBOL",
-                "name": "hla_arithmetic"
-              }
+              "type": "SYMBOL",
+              "name": "_line_end"
             },
             {
               "type": "BLANK"
             }
           ]
-        },
-        {
-          "type": "FIELD",
-          "name": "condition",
-          "content": {
-            "type": "CHOICE",
-            "members": [
-              {
-                "type": "SYMBOL",
-                "name": "branch_condition"
-              },
-              {
-                "type": "SYMBOL",
-                "name": "flag_condition"
-              }
-            ]
-          }
         }
       ]
     },
     "flag_condition": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "FIELD",
-              "name": "negated",
-              "content": {
-                "type": "STRING",
-                "value": "!"
+      "type": "PREC",
+      "value": 1,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "negated",
+                "content": {
+                  "type": "STRING",
+                  "value": "!"
+                }
+              },
+              {
+                "type": "BLANK"
               }
-            },
-            {
-              "type": "BLANK"
+            ]
+          },
+          {
+            "type": "FIELD",
+            "name": "flag",
+            "content": {
+              "type": "SYMBOL",
+              "name": "identifier"
             }
-          ]
-        },
-        {
-          "type": "FIELD",
-          "name": "flag",
-          "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
           }
-        }
-      ]
+        ]
+      }
     },
     "goto_statement": {
       "type": "SEQ",

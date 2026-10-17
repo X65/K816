@@ -3650,3 +3650,28 @@ fn a_hover_on_a_chained_if_names_every_branch() {
         assert!(second.contains(phrase), "no `{phrase}` in\n{second}");
     }
 }
+
+/// `when`, `continue` and `unroll` say on their keyword what they do: what a
+/// `when` compares and costs, where `continue` goes, how many copies an
+/// `unroll` writes (`plans/18-conditions.md`).
+#[test]
+fn a_hover_on_when_continue_and_unroll_says_what_each_does() {
+    const SOURCE: &str = "func f @a8 @i8 {\n    when x {\n        1 { nop }\n        2, 3 { nop }\n    }\n    loop {\n        continue\n    } while y--\n    unroll 3 { nop }\n}\n";
+    let mut workspace = Workspace::new();
+    workspace.update("file:///words.kk", SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file("file:///words.kk").expect("open");
+    let hover = |word: &str| {
+        let offset = SOURCE.find(word).expect("the word") as u32;
+        let hover = k816::lsp::hover::hover(&analysis, file, offset).expect("a hover");
+        let span = hover.span;
+        assert_eq!(&SOURCE[span.start as usize..span.end as usize], word);
+        hover.markdown
+    };
+    let when = hover("when");
+    for phrase in ["compares `x`", "3 compares (`CPX`) and 3 branches"] {
+        assert!(when.contains(phrase), "no `{phrase}` in\n{when}");
+    }
+    assert!(hover("continue").contains("goes to the loop's test"));
+    assert!(hover("unroll").contains("writes its block 3 times"));
+}

@@ -471,3 +471,34 @@ fn extern_declarations_are_tagged_as_definitions() {
         .collect();
     assert_eq!(names, vec!["_puts", "rom_entry", "ptr", "ROWS"]);
 }
+
+/// Sub-plan S's words are highlighted as the words beside them are: `when`
+/// and `unroll` as control keywords, `continue` as `break` is, and a chain's
+/// `|` and `&` as operators — `&` included, which elsewhere is the address
+/// marker (`plans/18-conditions.md`).
+#[test]
+fn the_condition_words_are_highlighted() {
+    let source = "func f @a8 @i8 {\n    if c & z { nop }\n    if c | z { nop }\n    when a { 1 { nop } }\n    loop { continue } while x--\n    unroll 2 { nop }\n}\n";
+    let found = captures("highlights", source);
+    let captured = |word: &str, nth: usize| {
+        let start = source.match_indices(word).nth(nth).expect("the word").0 as u32;
+        found
+            .iter()
+            .filter(|capture| capture.span.start == start)
+            .map(|capture| capture.name.clone())
+            .collect::<Vec<_>>()
+    };
+    for (word, nth, name) in [
+        ("when", 0, "keyword.control"),
+        ("unroll", 0, "keyword.control"),
+        ("continue", 0, "keyword.return"),
+        ("&", 0, "operator"),
+        ("|", 0, "operator"),
+    ] {
+        let names = captured(word, nth);
+        assert!(
+            names.iter().any(|captured| captured == name),
+            "`{word}` is captured as {names:?}"
+        );
+    }
+}

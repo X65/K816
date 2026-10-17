@@ -183,6 +183,28 @@ impl<'a> Context<'a> {
         found
     }
 
+    /// The statement whose keyword, as `keyword` reads it off the
+    /// statement, holds the offset.
+    pub fn statement_at_keyword(
+        &self,
+        keyword: impl Fn(&Statement) -> Option<Span>,
+    ) -> Option<&'a Statement> {
+        let mut found: Option<&'a Statement> = None;
+        for item in &self.unit.program().items {
+            let mut visit = |candidate: &'a Statement| {
+                if keyword(candidate).is_some_and(|keyword| keyword.contains(self.offset)) {
+                    found = Some(candidate);
+                }
+            };
+            match &item.kind {
+                ItemKind::Func(function) => collect(&function.body, &mut visit),
+                ItemKind::Data(data) => collect_data(data, &mut visit),
+                _ => {}
+            }
+        }
+        found
+    }
+
     pub fn statement_node(&self, id: StmtId) -> Option<&'a Statement> {
         let mut found: Option<&'a Statement> = None;
         for item in &self.unit.program().items {

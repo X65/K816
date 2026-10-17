@@ -73,6 +73,7 @@ pub fn hover(analysis: &Analysis, file: FileId, offset: u32) -> Option<Hover> {
         .or_else(|| metadata_hover(&context))
         .or_else(|| instruction_hover(&context))
         .or_else(|| if_hover(&context))
+        .or_else(|| keyword_hover(&context))
         .or_else(|| statement_hover(&context))
 }
 
@@ -109,6 +110,64 @@ fn spell_condition(condition: crate::ast::BranchConditionKind) -> String {
             }
         }
     }
+}
+
+/// What `when`, `continue` and `unroll` do, on the keyword
+/// (`plans/18-conditions.md`): the instructions a `when` costs, where a
+/// `continue` goes, and how many copies an `unroll` writes.
+fn keyword_hover(context: &Context<'_>) -> Option<Hover> {
+    let statement = context.statement_at_keyword(|statement| match &statement.kind {
+        StatementKind::Conditional(conditional) => conditional
+            .arm
+            .as_ref()
+            .filter(|arm| !arm.values.is_empty())
+            .map(|arm| arm.keyword),
+        StatementKind::Continue => Some(statement.span),
+        StatementKind::Unroll(unroll) => Some(unroll.keyword),
+        _ => None,
+    })?;
+    let (span, markdown) = match &statement.kind {
+        StatementKind::Conditional(conditional) => {
+            let arm = conditional.arm.as_ref()?;
+            let (register, compare) = match arm.register.kind {
+                crate::ast::RegisterKind::X => ("`x`", "CPX"),
+                crate::ast::RegisterKind::Y => ("`y`", "CPY"),
+                _ => ("the accumulator", "CMP"),
+            };
+            let values = arm.values.len();
+            let plural = |count: usize, one: &str, many: &str| {
+                if count == 1 {
+                    format!("one {one}")
+                } else {
+                    format!("{count} {many}")
+                }
+            };
+            (
+                arm.keyword,
+                format!(
+                    "`when` compares {register} with each value in order and runs the first arm                      that matches, or the `else` when none does; arms do not fall through.
+
+                     {} (`{compare}`) and {}, one of each per value, and a jump past the rest                      from each arm with one after it: the `if … else if …` ladder it stands for.",
+                    plural(values, "compare", "compares"),
+                    plural(values, "branch", "branches"),
+                ),
+            )
+        }
+        StatementKind::Continue => (
+            statement.span,
+            "`continue` goes to the loop's test: the `while`'s compare or step, then its              branch. In an `always` loop that is the back edge, as `repeat`; in a `never`              loop the end, as `break`."
+                .to_owned(),
+        ),
+        StatementKind::Unroll(unroll) => (
+            unroll.keyword,
+            format!(
+                "`unroll` writes its block {} times: no counter, no jump, no register. Each                  copy is compiled as if it were written out, an `inline` used in it expanded                  once per copy.",
+                unroll.copies
+            ),
+        ),
+        _ => return None,
+    };
+    Some(Hover { markdown, span })
 }
 
 /// The branch an `if` compiles to, on the keyword: the instruction that

@@ -131,7 +131,8 @@ pub const ITEM_KEYWORDS: &[&str] = &[
 /// The keywords that open or close a statement inside a body.
 pub const STATEMENT_KEYWORDS: &[&str] = &[
     "address", "align", "always", "break", "call", "charset", "code", "continue", "data", "else",
-    "far", "goto", "if", "never", "nocross", "repeat", "return", "return_i", "while",
+    "far", "goto", "if", "never", "nocross", "repeat", "return", "return_i", "unroll", "when",
+    "while",
 ];
 
 /// The four width annotations, without their `@`.

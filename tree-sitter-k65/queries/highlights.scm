@@ -40,6 +40,9 @@
   "%=" "<<=" ">>=" "!!" "??" "?<" "?>" "&&" "||"
 ] @operator
 
+; `|` and `&` between conditions, where `&` is not the address marker.
+(chain_operator) @operator
+
 ; The markers that say what an operand *is* rather than what it computes, and
 ; which are the same tokens the evaluator uses for its logical operators.
 ; Scoped to the node that makes them markers, and written after the general
@@ -66,7 +69,7 @@
 (break_statement) @keyword.return
 (continue_statement) @keyword.return
 
-["else" "always" "never" "if" "while" "for" "loop" "when"] @keyword.control
+["else" "always" "never" "if" "while" "for" "loop" "when" "unroll"] @keyword.control
 
 ; A width annotation is a type: it says how wide the register is, which is
 ; the only type the language has.

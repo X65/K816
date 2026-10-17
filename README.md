@@ -43,6 +43,12 @@ data text_data {
 }
 ```
 
+Conditions chain (`if c | z`), a loop counts in its test (`while x--`),
+`when` is the compare ladder over one register, `continue` goes to a loop's
+test, and `unroll 4 { … }` writes a block out four times — each compiling to
+exactly the branches and compares it names
+([Branch and Flow Control](doc/syntax-reference.md#branch-and-flow-control)).
+
 ## Register-Width-Aware Syntax
 
 Functions declare their expected register widths with `@a8`/`@a16` and

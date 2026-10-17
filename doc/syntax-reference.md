@@ -4001,7 +4001,7 @@ MVP  Block Move Positive (source > dest, copy descending)
 
 ## Branch and Flow Control
 
-A condition tests flags something has already set. It is never a comparison of its own: a compare is a statement — `a?10`, `x?mem`, `a&?mem` — and the condition after it reads the flags the compare left. That is why a condition has no operand, and why `if (a < x)` has no spelling: the 65816 cannot compare two registers, and nothing here pretends it can. The compare may be *written* in the `if` — `if a?10 < { … }` — and it is still that statement, run before the condition reads the flags it set ([The Compare in an `if` or a `while`](#the-compare-in-an-if-or-a-while)).
+A condition tests flags something has already set. It is never a comparison of its own: a compare is a statement — `a?10`, `x?mem`, `a&?mem` — and the condition after it reads the flags the compare left. That is why a condition has no operand, and why `if (a < x)` has no spelling: the 65816 cannot compare two registers, and nothing here pretends it can. The compare may be *written* in the `if` — `if a?10 < { … }` — and it is still that statement, run before the condition reads the flags it set ([The Compare or Step in a Condition](#the-compare-or-step-in-a-condition)).
 
 After a compare the condition is a relation — `<`, `>=`, `==`, `!=`, `<0`, `>=0` — which says what the compare found, and the carry convention behind it is the compiler's to remember. For flags something else set — a load, a shift, an addition, a call answering in the carry — the condition is the flag's letter: `c` when it is set and `!c` when it is clear, for `c`, `z`, `n` and `v`. After `if` or `while` the position says a name is a test, so a flag test needs no mark; `if c?` is sub-plan O's spelling, refused with a fix that drops the `?` (`K816-E0182`), and a name that is not one of the four is `K816-E0181`.
 
@@ -4027,6 +4027,22 @@ A condition goes in three places, and in each the thing happens when the conditi
 `if` says where the test begins. K65 writes the condition alone in front of the block or the jump, which a `.k65` source keeps and a K816 one refuses with a fix that inserts the `if` (`K816-K65-0011`, [K65's Spellings](#k65s-spellings)). The two compile to the same bytes. A hover on `if` names the branch it compiles to.
 
 `<=` and `>` are relations too, and cost two branches each ([Efficiency Warnings](#efficiency-warnings)).
+
+Conditions join into a chain with `|`, which holds when any of them does, or with `&`, which holds when all of them do: `if c | z { … }`, `if !c & !z goto done`, `loop { … } while !c & !z`. Each element costs the one branch its condition costs, and the chain itself adds nothing. A block runs when the chain holds, so for `|` every element but the last branches to the block and the last one past it, and for `&` every element branches past it; a jump and a loop's `while` are taken when it holds, so for `|` every element branches to the target, and for `&` every element but the last branches over the last one. A hover on the `if` lists each element's branch.
+
+A branch changes no flag, so every element reads the flags the chain started with — unless the element writes a compare or a step of its own ([The Compare or Step in a Condition](#the-compare-or-step-in-a-condition)), which sets the flags it and the elements after it read, and runs only when the branches before it fell through. That makes a range test one line:
+
+```k65
+var key = $10
+
+func classify @a8 @i8 {
+  a = key
+  if a?'0' >= & a?':' < { x++ }   // CMP #'0', BCC past; CMP #':', BCS past
+  if c | z { y++ }                // BCS to the block, then BNE past it
+}
+```
+
+A chain has one operator: `if c | z & n` has no precedence to read it by, and is `K816-E0183`; nest an `if` for the inner group.
 
 ### Conditional Blocks
 
@@ -4089,7 +4105,26 @@ func work @a8 @i8 {
 }
 ```
 
-`repeat` goes to the top of the loop, never to its `while` test: the test reads flags the body sets, and the body has not run yet. A conditional repeat has a test of its own. A compare written in the `while` is the body's last statement, so a `repeat` skips it too ([The Compare in an `if` or a `while`](#the-compare-in-an-if-or-a-while)).
+`repeat` goes to the top of the loop, never to its `while` test: the test reads flags the body sets, and the body has not run yet. A conditional repeat has a test of its own. A compare or step written in the `while` is the body's last statement, so a `repeat` skips it too ([The Compare or Step in a Condition](#the-compare-or-step-in-a-condition)); `continue` is the jump that runs it.
+
+### `continue`
+
+`continue` goes to the loop's test: the `while`'s compare or step, then its branch. So in a counted loop the count still steps, which `repeat` would skip.
+
+```k65
+var buffer = $10
+
+func count_set @a8 @i8 {
+  x = 16
+  loop {
+    a = buffer, x
+    if z continue         // BEQ to the test: the DEX and the BNE still run
+    y++
+  } while x--
+}
+```
+
+`if c continue` is conditional, as `break` and `repeat` are. An `always` loop has no test, so there `continue` is the back edge, as `repeat` is; a `never` loop has no back edge, so there it is the end, as `break` is. Outside a loop it is `K816-E0128`, as they are. A hover on it says where it goes.
 
 ### If-Else
 
@@ -4121,9 +4156,9 @@ func classify @a8 @i8 {
 }
 ```
 
-### The Compare in an `if` or a `while`
+### The Compare or Step in a Condition
 
-The compare that sets a condition's flags may be written between `if` and the condition, and between `while` and a loop's condition. It is the statement it would be on a line of its own, and runs where that statement would: before the conditional in an `if`, and as the last statement of the body in a `while` — so a `repeat`, which goes to the top, skips it, and a `nocross` loop checks it inside its page.
+The compare that sets a condition's flags may be written between `if` and the condition, and between `while` and a loop's condition, and in front of each later element of a chain. It is the statement it would be on a line of its own, and runs where that statement would: before the conditional in an `if`, and as the last statement of the body in a `while` — so a `repeat`, which goes to the top, skips it, a `continue` runs it, and a `nocross` loop checks it inside its page. A compare in a later element runs only when the branches before it fell through.
 
 ```k65
 var count = $10
@@ -4138,11 +4173,49 @@ func drain @a8 @i8 {
 }
 ```
 
-The slot takes a compare and nothing else — `a?`, `x?`, `y?`, or the bit test `a&?` — because those set flags and change nothing else. `if a+1 == { … }` would read as a test of `a+1` while it also stores it, and is `K816-E0179`; write the addition as a statement before the `if`.
+A step may stand there as well — `x--`, `y++`, `a--`, `mem--`, `mem++` — and a step with no condition after it tests `!=`, as C's `while (x--)` reads. The test is *after* the step, as `DEX` and `BNE` are: with `x = 3`, `loop { … } while x--` runs the body three times and leaves `x` at zero, where C's `do { … } while (x--)` tests first and runs it four times. Any condition may follow the step instead:
+
+```k65
+var count = $10
+
+func drain @a8 @i8 {
+  x = 8
+  loop { count++ } while x--         // DEX, BNE to the top: eight times
+  y = 8
+  loop { count-- } while y-- >=0     // DEY, BPL to the top: nine times
+  if count-- { x++ }                 // DEC count, BEQ past the block
+}
+```
+
+The slot takes a compare or a step and nothing else — `a?`, `x?`, `y?`, the bit test `a&?`, `++` or `--` — because those set flags and change nothing a reader would not see. `if a+1 == { … }` would read as a test of `a+1` while it also stores it, and is `K816-E0179`; write the addition as a statement before the `if`.
+
+### `when`
+
+`when` compares one register with each of a list of values in turn and runs the first arm that matches:
+
+```k65
+const ESC = $1B
+var key = $10
+var mode = $11
+
+func dispatch @a8 @i8 {
+  a = key
+  when a {
+    'q', ESC { x = 1 }    // CMP #'q', BEQ to the arm; CMP #ESC, BNE to the next
+    ' ' { x = 2 }
+    else { x = 0 }
+  }
+  mode = x
+}
+```
+
+The register is `a`, `x` or `y`. A value is a compare's operand without an index: a number or a `const` is a value (`CMP #4`), `#expr` is too, and a memory name is the memory (`CMP limit`). An index would read as the next value, since the comma separates them; an indexed compare is written with `if`. Arms do not fall through, the `else` is optional and last, and with no `else` and no match nothing runs.
+
+It is the `if … else if …` ladder it is written for — `if a?'q' == | a?ESC == { … } else if a?' ' == { … } else { … }` — and compiles to exactly its bytes: one compare and one branch per value, and a jump past the rest from each arm that has one after it. A hover on `when` counts them. It is not a jump table; `jmp (table,x)` is the one the author writes. A `when` with no value arm, an `else` that is not last, or a register with no compare is `K816-E0184`; a value two arms share, folded, is `K816-E0185`.
 
 ### Flow Control Instructions
 
-A jump K816 writes — `goto`, and the ones `always`, `else` and `break` lower to — is a two-byte `BRA` after optimization wherever its target is in the same function and within a branch's reach, and a `JMP` otherwise. A `jmp` written as a mnemonic is always a `JMP`: a native instruction means exactly what it says.
+A jump K816 writes — `goto`, and the ones `always`, `else`, `break` and `continue` lower to — is a two-byte `BRA` after optimization wherever its target is in the same function and within a branch's reach, and a `JMP` otherwise. A `jmp` written as a mnemonic is always a `JMP`: a native instruction means exactly what it says.
 
 ```k65
 goto label             // JMP absolute
@@ -4168,6 +4241,26 @@ func work @a8 @i8 {
   } while !=
 }
 ```
+
+### `unroll`
+
+`unroll N { … }` writes its block out `N` times, and nothing else: no counter, no jump, no register.
+
+```k65
+const COLUMNS = 4
+var VERA_DATA = $9F23
+var tile = $10
+
+inline put { VERA_DATA = a }
+
+func row @a8 @i8 {
+  a = tile
+  unroll COLUMNS { put }    // four stores: the inline expanded once per copy
+  unroll [2 * 2] { x++ }    // four INX
+}
+```
+
+`N` is a compile-time count — a number, a `const` declared above the `unroll`, or an evaluator bracket — from 1 to `$10000`, and anything else is `K816-E0186`; a count of nothing is `#if`'s work. The copies are compiled as if they were written out: an `inline` used inside is expanded in each, an `if` or a loop inside has labels of its own in each, a width the first copy leaves is the one the second starts at, and unrolls nest. A `goto` out of the block, and `break`, `repeat` and `continue` to a loop around it, work in every copy. A label inside it is `K816-E0187`, because every copy would define it again. A hover on `unroll` says how many copies it wrote.
 
 ### Wait-Loop Patterns
 

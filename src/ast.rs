@@ -515,8 +515,8 @@ pub struct ChainElement {
     pub slot: Option<Block>,
     pub condition: BranchCondition,
     /// The condition was not written: a step alone tests `!=`
-    /// (`plans/18-conditions.md` decision 3). Its span is empty, at the
-    /// step's end.
+    /// (`plans/18-conditions.md` decision 3), and a `when` value `==`
+    /// (decision 2). Its span is empty, at the step's or the value's end.
     pub assumed: bool,
     pub span: Span,
 }
@@ -547,6 +547,29 @@ pub struct ConditionalBlock {
     /// built around that `if`, and has no braces in the source. A chain is
     /// the nested `else { if … }` in every other respect.
     pub chained: bool,
+    /// The `when` arm this conditional was built from, or `None` for one
+    /// written as such.
+    pub arm: Option<WhenArm>,
+}
+
+/// An arm of `when a { 4 { … } 10, 20 { … } else { … } }`, which the
+/// builder desugars into the `if a?4 == { … } else if a?10 == | a?20 == { … }
+/// else { … }` it stands for (`plans/18-conditions.md` decision 2): the
+/// conditional is that `if`, and this records what was written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WhenArm {
+    /// The `when` keyword.
+    pub keyword: Span,
+    /// The register the `when` compares.
+    pub register: Register,
+    /// The whole `when`, from its keyword to its closing brace.
+    pub span: Span,
+    /// Every value of every arm, in source order, on the first arm's
+    /// conditional; empty on the others. One list is what the duplicate
+    /// check and the hover read.
+    pub values: Vec<HlaOperand>,
+    /// How many arms have values: one conditional each.
+    pub arms: usize,
 }
 
 /// `< goto done`, `< break`, `!= repeat`, or K816's `if < goto done`.

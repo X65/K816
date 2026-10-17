@@ -1111,6 +1111,27 @@ export default grammar({
 
     repeat_statement: _ => 'repeat',
 
+    // `when a { 4 { … } 10, 20 { … } else { … } }` — the `if … else if …`
+    // ladder over one register, each value compared for equality
+    // (`plans/18-conditions.md` decision 2). A value is a compare's operand
+    // without an index: the comma separates values, so `mem,x` would read
+    // as two.
+    when_statement: $ =>
+      seq('when', field('register', $.register), field('arms', $.when_arms)),
+
+    when_arms: $ => seq('{', repeat(choice(field('arm', $.when_arm), ';')), '}'),
+
+    when_arm: $ =>
+      choice(
+        seq(
+          commaSep1(field('value', choice($.immediate, alias($.when_address, $.address)))),
+          field('body', $.block),
+        ),
+        seq(field('else', 'else'), field('body', $.block)),
+      ),
+
+    when_address: $ => field('value', $._expression),
+
     // `nocross { ... }` — advisory on code, asking that the block fit a page.
     nocross_block: $ => seq('nocross', field('body', $.block)),
 
@@ -1188,6 +1209,7 @@ export default grammar({
         $.break_statement,
         $.repeat_statement,
         $.continue_statement,
+        $.when_statement,
         $.nocross_block,
         $.data_block,
         $.preprocessor_directive,

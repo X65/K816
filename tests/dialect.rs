@@ -1016,3 +1016,54 @@ fn continue_goes_to_the_loops_test() {
         assert_eq!(shape(lines), shape(native_lines), "`{k816}` and\n{native}");
     }
 }
+
+/// `when` compiles to the bytes of the `if … else if …` it stands for
+/// (`plans/18-conditions.md` decisions 2 and 5): a compare and an `==` per
+/// value, an arm's values a `|` chain. In a `.k65` it is an addition,
+/// accepted, and its values read as K65 reads a compare's operand — so does
+/// `continue`.
+#[test]
+fn a_when_compiles_to_the_ladder_it_stands_for() {
+    for (when, ladder) in [
+        ("when a { 4 { x++ } }", "if a?4 == { x++ }"),
+        (
+            "when a { 4 { x++ } else { y++ } }",
+            "if a?4 == { x++ } else { y++ }",
+        ),
+        (
+            "when x { 1 { y++ }\n 2, #3 { y-- }\n else { a = flags } }",
+            "if x?1 == { y++ } else if x?2 == | x?#3 == { y-- } else { a = flags }",
+        ),
+        (
+            "when y { #&<LIMIT { x++ }\n flags { x-- } }",
+            "if y?#&<LIMIT == { x++ } else if y?flags == { x-- }",
+        ),
+        // Arms nest: a `when` in an arm, and a jump out of one.
+        (
+            "when a { 1 { when x { 2 { y++ } } }\n 3 { goto .out } }",
+            "if a?1 == { if x?2 == { y++ } } else if a?3 == { goto .out }",
+        ),
+    ] {
+        assert_eq!(
+            code("unit.kk", &unit(when)),
+            code("unit.kk", &unit(ladder)),
+            "`{when}`"
+        );
+    }
+    for (addition, k65) in [
+        (
+            "when a { #4 { x++ } else { y++ } }",
+            "a?#4 == { x++ } else { y++ }",
+        ),
+        ("when a { 4 { x++ } }", "a?4 == { x++ }"),
+        (
+            "{ x++\n == continue\n y++ } !=",
+            "{ x++\n == goto .t\n y++\n.t: } !=",
+        ),
+    ] {
+        let (codes, lines) = code("unit.k65", &unit(addition));
+        let (k65_codes, k65_lines) = code("unit.k65", &unit(k65));
+        assert_eq!(codes, k65_codes, "`{addition}` in a .k65");
+        assert_eq!(shape(lines), shape(k65_lines), "`{addition}` in a .k65");
+    }
+}

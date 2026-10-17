@@ -1,4 +1,5 @@
-// Sub-plan S fixture: flag chains, and a step in a condition's slot.
+// Sub-plan S fixture: flag chains, a step in a condition's slot, `continue`
+// and `when`.
 // `conditions-native.kk` beside it is the same program with the branches
 // and labels written out, and the two link to the same bytes
 // (`tests/compile.rs`).
@@ -6,6 +7,9 @@
 var mem   = $10
 var flags = $11
 var count = $12
+var limit = $13
+
+const LIMIT = 30
 
 // `|` before a block: every element but the last branches to the body, the
 // last branches past it. `&` before a jump: every element but the last
@@ -63,4 +67,19 @@ func continued @a8 @i8 {
 func wide @a16 @i8 {
     a = mem
     if a?#10 >= & a?#$2000 < { y++ }
+}
+
+// `when` is the ladder over one register: per value one compare and one `==`
+// branch, an arm's values a `|` chain of them, arms that do not fall through
+// and the `else` last. A number or a `const` is a value; a `var` is memory.
+func ladder @a8 @i8 {
+    a = mem
+    when a {
+        4 { x++ }
+        10, 20 { y++ }
+        #LIMIT, LIMIT + 1 { x-- }
+        limit { y-- }
+        else { x = #0 }
+    }
+    when x { 1 { mem++ } }
 }

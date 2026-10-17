@@ -36,11 +36,11 @@
 
 use crate::ast::{
     AstFile, BinaryOp, Block, BranchCondition, BranchConditionKind, CallArgument, ComparisonKind,
-    ConditionChain, ContractOutput, DataBlock, DataEntry, DataEntryKind, DataValue, EvalExpr,
-    EvalExprKind, Expr, ExprKind, FieldDeclaration, FlagTestSpelling, Function, HlaOperand,
-    HlaOperandKind, HlaStatement, Item, ItemKind, LoopCondition, LoopSpelling, NativeOperand,
-    Register, RegisterKind, StackSpelling, Statement, StatementKind, StorageClassKind, UnaryOp,
-    VarDeclaration,
+    ConditionChain, ConditionalBlock, ContractOutput, DataBlock, DataEntry, DataEntryKind,
+    DataValue, EvalExpr, EvalExprKind, Expr, ExprKind, FieldDeclaration, FlagTestSpelling,
+    Function, HlaOperand, HlaOperandKind, HlaStatement, Item, ItemKind, LoopCondition,
+    LoopSpelling, NativeOperand, Register, RegisterKind, StackSpelling, Statement, StatementKind,
+    StorageClassKind, UnaryOp, VarDeclaration,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::Span;
@@ -586,6 +586,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-condition-compare", K816Extension, Rejects),
     row("k816-condition-chain", K816Extension, Rejects),
     row("k816-continue", K816Extension, Rejects),
+    row("k816-when", K816Extension, Rejects),
     row("k816-bare-flag-test", K816Extension, Rejects),
     row("k816-stack-words", K816Extension, Rejects),
     row("k816-dialect", K816Extension, Quiet),
@@ -824,6 +825,14 @@ const REPORTED: &[Reported] = &[
         what: "`continue`",
         instead: Some(
             "K65 has `repeat`, which goes to the top of the loop rather than to its test",
+        ),
+    },
+    Reported {
+        id: "k816-when",
+        what: "`when`",
+        instead: Some(
+            "K65 writes the ladder: a compare and a conditional per value, each nested in the \
+             `else` block of the one before",
         ),
     },
     Reported {
@@ -1164,6 +1173,26 @@ impl StrictWalk<'_> {
                     if let ContractOutput::Register(register) = output {
                         self.register(register);
                     }
+                }
+            }
+            // A `when` arm is the `if` the builder made of it: one mark, at
+            // the keyword, and the compares' operands as any compare's.
+            StatementKind::Conditional(ConditionalBlock {
+                arm: Some(arm),
+                condition,
+                body,
+                otherwise,
+                ..
+            }) => {
+                if !arm.values.is_empty() {
+                    self.mark("k816-when", arm.keyword);
+                }
+                for slot in condition.slots() {
+                    self.block(slot);
+                }
+                self.block(body);
+                if let Some(otherwise) = otherwise {
+                    self.block(otherwise);
                 }
             }
             StatementKind::Conditional(conditional) => {

@@ -32,7 +32,7 @@ why — either in its own `fixture.txt` or in `REFUSALS`.
 
 | | count |
 |---|---|
-| emitted sections | 303 |
+| emitted sections | 305 |
 | of those, declaring an output | 5 |
 | `inline` sections (no exit to seed) | 13 |
 | of those, declaring an output | 7 |

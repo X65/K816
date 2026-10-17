@@ -2538,7 +2538,12 @@ impl Analysis {
             // The condition itself needs no checking beyond what the grammar
             // did: every operator maps to a branch, and the bodies are walked
             // by `check_block`.
-            StatementKind::Conditional(_) | StatementKind::Loop(_) | StatementKind::Nocross(_) => {}
+            StatementKind::Conditional(conditional) => {
+                if let Some(arm) = &conditional.arm {
+                    self.check_when_values(arm);
+                }
+            }
+            StatementKind::Loop(_) | StatementKind::Nocross(_) => {}
             StatementKind::Break => self.check_loop_control(statement, "break"),
             StatementKind::Repeat => self.check_loop_control(statement, "repeat"),
             StatementKind::Continue => self.check_loop_control(statement, "continue"),
@@ -2576,6 +2581,51 @@ impl Analysis {
                 self.check_call_flow(statement, call);
                 self.index_call_arguments(call);
             }
+        }
+    }
+
+    /// A `when` value written twice: the earlier arm's compare matches first,
+    /// so the later one never runs for it (`plans/18-conditions.md`
+    /// decision 2). Two values are the same when both are values, or both
+    /// memory, and fold to the same expression — `4`, `#4` and a `const`
+    /// of 4 are one value. The compares report their own operands'
+    /// problems, so this fold's diagnostics are dropped.
+    fn check_when_values(&mut self, arm: &crate::ast::WhenArm) {
+        let mut seen: Vec<((bool, crate::value::KExpr), Span)> = Vec::new();
+        let mut resolver = self.resolver();
+        let mut duplicates = Vec::new();
+        for operand in &arm.values {
+            let key = match resolver.hla_value(operand) {
+                Some(value) => resolver.fold(value).map(|folded| (true, folded)),
+                None => match &operand.kind {
+                    crate::ast::HlaOperandKind::Memory(address) => {
+                        resolver.fold(&address.value).map(|folded| (false, folded))
+                    }
+                    _ => None,
+                },
+            };
+            let Some(key) = key else { continue };
+            match seen.iter().find(|(earlier, _)| *earlier == key) {
+                Some((_, first)) => duplicates.push((operand.span, *first)),
+                None => seen.push((key, operand.span)),
+            }
+        }
+        drop(resolver);
+        for (span, first) in duplicates {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::WHEN_DUPLICATE,
+                    "a `when` compares with this value twice",
+                    Label::new(span, "this value is an earlier arm's too"),
+                )
+                .with_secondary(Label::new(first, "the earlier arm's"))
+                .with_note(
+                    "the arms are compared in order and the first that matches runs, so \
+                     this compare never matches",
+                )
+                .with_help("delete the value, or merge the two arms")
+                .with_docs("doc/syntax-reference.md#when"),
+            );
         }
     }
 

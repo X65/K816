@@ -534,6 +534,14 @@ impl DiagnosticCode {
     /// `|` and `&` in one chain: `if c | z & n { }`. A chain has one
     /// operator (`plans/18-conditions.md` decision 1).
     pub const MIXED_CHAIN: Self = Self("K816-E0183");
+    /// A `when` whose shape is not a ladder: no value arm, an `else` that
+    /// is not last, or a register that has no compare
+    /// (`plans/18-conditions.md` decision 2).
+    pub const WHEN_SHAPE: Self = Self("K816-E0184");
+    /// Two values of one `when` that fold to the same operand: the later
+    /// arm's compare can never be the one that matches
+    /// (`plans/18-conditions.md` decision 2).
+    pub const WHEN_DUPLICATE: Self = Self("K816-E0185");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -884,6 +892,8 @@ mod tests {
         DiagnosticCode::FLAG_TEST_LETTER,
         DiagnosticCode::FLAG_TEST_MARK,
         DiagnosticCode::MIXED_CHAIN,
+        DiagnosticCode::WHEN_SHAPE,
+        DiagnosticCode::WHEN_DUPLICATE,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

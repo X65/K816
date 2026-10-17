@@ -3263,19 +3263,37 @@ const FIXTURE_EFFECTS: &[Effect] = &[
     ),
     (
         "conditions.kk",
-        &[("jmp     :+", 1), ("jmp     :++", 1), ("jmp     :--", 1)],
-        &[("bra     :++", 1), ("bra     :--", 1)],
-        "the jumps `break` and `continue` lower to, two reaching their target as the `bra` pass 11 swaps in and one — a `continue` to the test right after it — removed as a jump to the next label",
+        &[
+            ("jmp     :+", 1),
+            ("jmp     :++", 2),
+            ("jmp     :++++", 1),
+            ("jmp     :+++++++", 1),
+            ("jmp     :++++++++++", 1),
+            ("jmp     :--", 1),
+        ],
+        &[
+            ("bra     :++", 2),
+            ("bra     :++++", 1),
+            ("bra     :+++++++", 1),
+            ("bra     :++++++++++", 1),
+            ("bra     :--", 1),
+        ],
+        "the jumps `break` and `continue` lower to, two reaching their target as the `bra` pass 11 swaps in and one — a `continue` to the test right after it — removed as a jump to the next label; and the four jumps out of `when` arms past the rest of the ladder, each a `bra`",
     ),
     (
         "conditions-native.kk",
         &[
+            ("jmp     a:@end", 4),
             ("jmp     a:@end2", 1),
             ("jmp     a:@end3", 1),
             ("jmp     a:@top2", 1),
         ],
-        &[("bra     @end2", 1), ("bra     @top2", 1)],
-        "the `goto`s written where `conditions.kk` has `break` and `continue`, treated the same: two become `bra`, one to the next label goes",
+        &[
+            ("bra     @end", 4),
+            ("bra     @end2", 1),
+            ("bra     @top2", 1),
+        ],
+        "the `goto`s written where `conditions.kk` has `break`, `continue` and the jumps out of `when` arms, treated the same: six become `bra`, one to the next label goes",
     ),
     (
         "opt-zero-store-index.k816",

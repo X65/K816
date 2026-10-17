@@ -171,6 +171,15 @@ impl Checker<'_> {
                 self.stack_shorthand(stack, statement.span)
             }
             StatementKind::Hla(hla) if k816 => self.numbered_places(hla, statement.span),
+            // A `when` arm is what the builder made of the `when`: no
+            // spelling in it was written, so neither dialect has one to
+            // refuse, and `when` itself is an addition both accept.
+            StatementKind::Conditional(conditional) if conditional.arm.is_some() => {
+                self.block(&conditional.body);
+                if let Some(otherwise) = &conditional.otherwise {
+                    self.block(otherwise);
+                }
+            }
             StatementKind::Conditional(conditional) => {
                 if k816 {
                     self.chain(&conditional.condition, conditional.keyword.is_some());

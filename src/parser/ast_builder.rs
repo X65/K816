@@ -43,8 +43,8 @@ use crate::ast::{
     PreprocessorKind, Register, RegisterKind, ReservedCall, ReservedConstruct, ReservedKind,
     ReturnKind, ShiftOp, StackOp, StackSpelling, Statement, StatementKind, StepOp, StmtId,
     StorageClass, StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind,
-    TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind,
-    WidthBlock,
+    TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WhenArm, WidthAnnotation,
+    WidthAnnotationKind, WidthBlock,
 };
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::source::{Provenance, SourceFile, Span};
@@ -752,6 +752,7 @@ impl AstBuilder<'_> {
                     self.span(child),
                 )),
                 "if_statement" => statements.extend(self.if_statement(child)),
+                "when_statement" => statements.extend(self.when_statement(child)),
                 "conditional_block" => statements.push(self.conditional_block(child)),
                 "conditional_jump" => statements.push(self.conditional_jump(child)),
                 "postfix_loop" => statements.push(self.postfix_loop(child)),
@@ -1756,6 +1757,7 @@ impl AstBuilder<'_> {
                 keyword: None,
                 compare: None,
                 chained,
+                arm: None,
             }),
             self.span(node),
         )
@@ -1781,6 +1783,177 @@ impl AstBuilder<'_> {
             ),
             None => (Some(self.body_of(clause)), false),
         }
+    }
+
+    /// `when a { 4 { … } 10, 20 { … } else { … } }`: the ladder it stands
+    /// for, `a?4` then `if == { … } else { a?10  if == | a?20 == { … } else
+    /// { … } }` — the statements Q's `if … else if …` builds, so lowering,
+    /// the width model and the optimizer see nothing new
+    /// (`plans/18-conditions.md` decision 2). Each conditional records its
+    /// arm for the tooling and the dialect.
+    fn when_statement(&mut self, node: Node<'_>) -> Vec<Statement> {
+        let span = self.span(node);
+        let keyword = node
+            .child(0)
+            .filter(|child| child.kind() == "when")
+            .map_or(span, |child| self.span(child));
+        let register = self.register(node.child_by_field_name("register"), node);
+        let mut arms: Vec<(Vec<HlaOperand>, Block, Span)> = Vec::new();
+        let mut otherwise: Option<(Block, Span)> = None;
+        let mut refused = false;
+        if let Some(list) = node.child_by_field_name("arms") {
+            let mut cursor = list.walk();
+            for arm in list.children_by_field_name("arm", &mut cursor) {
+                let arm_span = self.span(arm);
+                let body = self.body_of(arm);
+                if let Some(word) = arm.child_by_field_name("else") {
+                    if let Some((_, first)) = &otherwise {
+                        let first = *first;
+                        self.when_shape(
+                            Label::new(self.span(word), "a second `else`"),
+                            Some(Label::new(first, "the first")),
+                            "a `when` has one `else`, its last arm",
+                        );
+                        refused = true;
+                    }
+                    otherwise = Some((body, self.span(word)));
+                    continue;
+                }
+                if let Some((_, word)) = &otherwise {
+                    let word = *word;
+                    self.when_shape(
+                        Label::new(word, "this `else` is not the last arm"),
+                        Some(Label::new(arm_span, "an arm after it")),
+                        "a `when`'s `else` is its last arm",
+                    );
+                    refused = true;
+                }
+                let mut cursor = arm.walk();
+                let values = arm
+                    .children_by_field_name("value", &mut cursor)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|value| self.hla_operand(value))
+                    .collect();
+                arms.push((values, body, arm_span));
+            }
+        }
+        if !matches!(
+            register.kind,
+            RegisterKind::A | RegisterKind::X | RegisterKind::Y
+        ) {
+            self.when_shape(
+                Label::new(register.span, "this register has no compare"),
+                None,
+                "a `when` compares `a`, `x` or `y`",
+            );
+            refused = true;
+        }
+        if arms.is_empty() {
+            self.when_shape(
+                Label::new(keyword, "this `when` compares with nothing"),
+                None,
+                "a `when` needs an arm with a value",
+            );
+            refused = true;
+        }
+        if refused {
+            return vec![Statement::new(StatementKind::Error, span)];
+        }
+        let values: Vec<HlaOperand> = arms
+            .iter()
+            .flat_map(|(values, _, _)| values.iter().cloned())
+            .collect();
+        let count = arms.len();
+        let mut tail = otherwise.map(|(block, _)| block);
+        let mut built = Vec::new();
+        for (index, (arm_values, body, arm_span)) in arms.into_iter().enumerate().rev() {
+            let mut statements = Vec::new();
+            let mut elements = Vec::new();
+            let first = arm_values[0].span;
+            let last = arm_values[arm_values.len() - 1].span;
+            for (position, operand) in arm_values.into_iter().enumerate() {
+                let value = operand.span;
+                let compare = Statement::new(
+                    StatementKind::Hla(HlaStatement::Arithmetic(HlaArithmetic {
+                        register: register.clone(),
+                        op: ArithmeticOp::Compare,
+                        operand,
+                        op_span: register.span,
+                    })),
+                    value,
+                );
+                let end = Span::empty_at(value.file, value.end);
+                let slot = if position == 0 {
+                    statements.push(compare);
+                    None
+                } else {
+                    Some(Block {
+                        statements: vec![compare],
+                        span: value,
+                    })
+                };
+                elements.push(ChainElement {
+                    slot,
+                    condition: BranchCondition {
+                        kind: BranchConditionKind::Comparison(ComparisonKind::Equal),
+                        span: end,
+                    },
+                    assumed: true,
+                    span: if position == 0 { end } else { value },
+                });
+            }
+            let operator = (elements.len() > 1).then_some(ChainOperator::Any);
+            let condition = ConditionChain {
+                elements,
+                operator,
+                span: Span::new(span.file, first.end, last.end),
+            };
+            statements.push(Statement::new(
+                StatementKind::Conditional(ConditionalBlock {
+                    condition,
+                    body,
+                    otherwise: tail.take(),
+                    keyword: None,
+                    compare: Some(first),
+                    chained: false,
+                    arm: Some(WhenArm {
+                        keyword,
+                        register: register.clone(),
+                        span,
+                        values: if index == 0 {
+                            values.clone()
+                        } else {
+                            Vec::new()
+                        },
+                        arms: count,
+                    }),
+                }),
+                Span::new(span.file, first.end, span.end),
+            ));
+            if index == 0 {
+                built = statements;
+            } else {
+                tail = Some(Block {
+                    statements,
+                    span: Span::new(span.file, arm_span.start, span.end),
+                });
+            }
+        }
+        built
+    }
+
+    fn when_shape(&mut self, primary: Label, secondary: Option<Label>, title: &str) {
+        let mut diagnostic = Diagnostic::error(DiagnosticCode::WHEN_SHAPE, title, primary)
+            .with_note(
+                "a `when` is the `if … else if …` ladder over one register: one arm per \
+                 set of values, then an optional `else` for none of them",
+            )
+            .with_docs("doc/syntax-reference.md#when");
+        if let Some(secondary) = secondary {
+            diagnostic = diagnostic.with_secondary(secondary);
+        }
+        self.diagnostics.push(diagnostic);
     }
 
     /// `if COND { … }`, `if a?10 COND { … }`, `if COND goto …`: the
@@ -1818,6 +1991,7 @@ impl AstBuilder<'_> {
                     keyword,
                     compare,
                     chained,
+                    arm: None,
                 }),
                 span,
             ));

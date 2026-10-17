@@ -82,6 +82,7 @@ pub const INDENTING: &[&str] = &[
     "eval_bracket",
     "eval_statement_block",
     "nocross_data_group",
+    "when_arms",
 ];
 
 /// Formats `source`, or `None` when its parse could not be read.

@@ -4,6 +4,9 @@
 var mem   = $10
 var flags = $11
 var count = $12
+var limit = $13
+
+const LIMIT = 30
 
 func either @a8 @i8 {
     a = flags
@@ -88,4 +91,40 @@ func wide @a16 @i8 {
     bcs .end
     iny
 .end:
+}
+
+func ladder @a8 @i8 {
+    a = mem
+    a?4
+    bne .not4
+    x++
+    goto .end
+.not4:
+    a?10
+    beq .tens
+    a?20
+    bne .not20
+.tens:
+    y++
+    goto .end
+.not20:
+    a?#LIMIT
+    beq .limit
+    a?LIMIT + 1
+    bne .notlimit
+.limit:
+    x--
+    goto .end
+.notlimit:
+    a?limit
+    bne .other
+    y--
+    goto .end
+.other:
+    x = #0
+.end:
+    x?1
+    bne .done
+    mem++
+.done:
 }

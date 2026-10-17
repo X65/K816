@@ -18,3 +18,4 @@
 (eval_bracket "]" @end) @indent
 (eval_statement_block "}" @end) @indent
 (nocross_data_group body: (data_body "}" @end)) @indent
+(when_arms "}" @end) @indent

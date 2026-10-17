@@ -916,6 +916,10 @@
           "named": true
         },
         {
+          "type": "when_statement",
+          "named": true
+        },
+        {
           "type": "width_block",
           "named": true
         }
@@ -6841,6 +6845,88 @@
     }
   },
   {
+    "type": "when_arm",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "else": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "else",
+            "named": false
+          }
+        ]
+      },
+      "value": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "address",
+            "named": true
+          },
+          {
+            "type": "immediate",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "when_arms",
+    "named": true,
+    "fields": {
+      "arm": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "when_arm",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "when_statement",
+    "named": true,
+    "fields": {
+      "arms": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "when_arms",
+            "named": true
+          }
+        ]
+      },
+      "register": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "while_condition",
     "named": true,
     "fields": {
@@ -7338,6 +7424,10 @@
   },
   {
     "type": "var",
+    "named": false
+  },
+  {
+    "type": "when",
     "named": false
   },
   {

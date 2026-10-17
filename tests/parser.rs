@@ -3469,3 +3469,81 @@ fn a_chain_keeps_its_later_slots_and_assumes_a_steps_condition() {
     let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
     assert_eq!(codes, vec![DiagnosticCode::MIXED_CHAIN]);
 }
+
+/// `when` is built as the ladder it stands for: the first value's compare
+/// before a conditional whose chain is `==` per value, joined by `|`, and
+/// the next arm inside its `else` (`plans/18-conditions.md` decision 2).
+/// A shape that is not a ladder is `K816-E0184` from the builder.
+#[test]
+fn a_when_is_built_as_its_ladder_and_refuses_what_is_not_one() {
+    use k816::ast::{BranchConditionKind, ChainOperator, ComparisonKind};
+    let source = "func f @a8 @i8 {\n    when x {\n        1 { nop }\n        2, #3 { nop }\n        else { nop }\n    }\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("when.kk", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let text = |span: Span| &source[span.start as usize..span.end as usize];
+    let ItemKind::Func(function) = &result.file.items[0].kind else {
+        panic!("expected a function");
+    };
+    let statements = &function.body.statements;
+    assert_eq!(statements.len(), 2, "{statements:#?}");
+    assert_eq!(text(statements[0].span), "1", "the first compare");
+    let StatementKind::Conditional(first) = &statements[1].kind else {
+        panic!("a conditional: {:?}", statements[1].kind);
+    };
+    let arm = first.arm.as_ref().expect("an arm");
+    assert_eq!(text(arm.keyword), "when");
+    assert_eq!(arm.arms, 2);
+    assert_eq!(
+        arm.values
+            .iter()
+            .map(|value| text(value.span))
+            .collect::<Vec<_>>(),
+        ["1", "2", "#3"],
+        "the first arm lists every value"
+    );
+    assert!(first.keyword.is_none() && !first.chained);
+    assert_eq!(first.condition.elements.len(), 1);
+    assert!(first.condition.elements[0].assumed);
+    assert_eq!(
+        first.condition.elements[0].condition.kind,
+        BranchConditionKind::Comparison(ComparisonKind::Equal)
+    );
+    let otherwise = first.otherwise.as_ref().expect("the next arm");
+    assert_eq!(otherwise.statements.len(), 2);
+    assert_eq!(text(otherwise.statements[0].span), "2");
+    let StatementKind::Conditional(second) = &otherwise.statements[1].kind else {
+        panic!("the second arm");
+    };
+    assert!(second.arm.as_ref().is_some_and(|arm| arm.values.is_empty()));
+    assert_eq!(second.condition.operator, Some(ChainOperator::Any));
+    let slot = second.condition.elements[1]
+        .slot
+        .as_ref()
+        .expect("the second value's compare");
+    assert_eq!(text(slot.span), "#3");
+    let last = second.otherwise.as_ref().expect("the else");
+    assert_eq!(last.statements.len(), 1, "the `else` body itself");
+
+    for (shape, caret) in [
+        ("when a { }", "when"),
+        ("when a { else { nop } }", "when"),
+        ("when a { else { nop } 1 { nop } }", "else"),
+        ("when a { 1 { nop } else { nop } else { nop } }", "else"),
+        ("when s { 1 { nop } }", "s"),
+    ] {
+        let source = format!("func f @a8 @i8 {{\n    {shape}\n}}\n");
+        let mut map = SourceMap::new();
+        let id = map.add_file("shape.kk", &source);
+        let result = parse_source(map.file(id), None);
+        let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, vec![DiagnosticCode::WHEN_SHAPE], "{shape}");
+        let primary = result.diagnostics[0].primary.span;
+        assert_eq!(
+            &source[primary.start as usize..primary.end as usize],
+            caret,
+            "{shape}"
+        );
+    }
+}

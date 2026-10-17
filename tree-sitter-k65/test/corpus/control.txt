@@ -1168,3 +1168,110 @@ func main {
                   value: (number)))
               condition: (branch_condition)))))
       (continue_statement))))
+
+================================================================================
+when, with every value shape
+================================================================================
+
+func main {
+  when a {
+    4 { x++ }
+    10, 20 { y++ }
+    #LIMIT { nop }
+    limit, [2*3], -1 { nop }
+    else { x-- }
+  }
+  when x { 1 { nop } }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (when_statement
+        register: (register)
+        arms: (when_arms
+          arm: (when_arm
+            value: (address
+              value: (number))
+            body: (block
+              (hla_step
+                target: (register))))
+          arm: (when_arm
+            value: (address
+              value: (number))
+            value: (address
+              value: (number))
+            body: (block
+              (hla_step
+                target: (register))))
+          arm: (when_arm
+            value: (immediate
+              value: (identifier))
+            body: (block
+              (native_instruction
+                mnemonic: (mnemonic))))
+          arm: (when_arm
+            value: (address
+              value: (identifier))
+            value: (address
+              value: (eval_bracket
+                (eval_binary
+                  left: (number)
+                  right: (number))))
+            value: (address
+              value: (unary_expression
+                operand: (number)))
+            body: (block
+              (native_instruction
+                mnemonic: (mnemonic))))
+          arm: (when_arm
+            body: (block
+              (hla_step
+                target: (register))))))
+      (when_statement
+        register: (register)
+        arms: (when_arms
+          arm: (when_arm
+            value: (address
+              value: (number))
+            body: (block
+              (native_instruction
+                mnemonic: (mnemonic)))))))))
+
+================================================================================
+when, with else not last and with no arm (parse; the builder refuses them)
+================================================================================
+
+func main {
+  when y {
+    else { nop }
+    2 { nop }
+  }
+  when a { }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (when_statement
+        register: (register)
+        arms: (when_arms
+          arm: (when_arm
+            body: (block
+              (native_instruction
+                mnemonic: (mnemonic))))
+          arm: (when_arm
+            value: (address
+              value: (number))
+            body: (block
+              (native_instruction
+                mnemonic: (mnemonic))))))
+      (when_statement
+        register: (register)
+        arms: (when_arms)))))

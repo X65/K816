@@ -66,7 +66,7 @@
 (break_statement) @keyword.return
 (continue_statement) @keyword.return
 
-["else" "always" "never" "if" "while" "for" "loop"] @keyword.control
+["else" "always" "never" "if" "while" "for" "loop" "when"] @keyword.control
 
 ; A width annotation is a type: it says how wide the register is, which is
 ; the only type the language has.

@@ -20,6 +20,7 @@
 (eval_bracket) @indent
 (eval_statement_block) @indent
 (nocross_data_group) @indent
+(when_arms) @indent
 
 ; The closing brace goes back out to the enclosing level.
 "}" @outdent

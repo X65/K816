@@ -153,6 +153,12 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::LOOP_CONTROL_OUTSIDE_LOOP,
         caret: "continue",
     },
+    // A `when` value written twice: `#4` is the value `4` is.
+    Case {
+        source: "func work @a8 @i8 {\n    when a {\n        4 { nop }\n        #4 { nop }\n    }\n}\n",
+        code: DiagnosticCode::WHEN_DUPLICATE,
+        caret: "#4",
+    },
     // The compare slot of an `if` holds a compare (decision 5).
     Case {
         source: "func work @a8 @i8 {\n    if a+#1 == { x++ }\n}\n",
@@ -643,6 +649,11 @@ const FAMILY: &[Case] = &[
 /// and two of E's come from lowering — or it cannot be reached from source at
 /// all, in which case the entry says why and that claim is the coverage.
 const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
+    // A `when`'s shape is checked as the ladder is built.
+    (
+        "K816-E0184",
+        "tests/parser.rs: a_when_is_built_as_its_ladder_and_refuses_what_is_not_one",
+    ),
     // A mixed chain is refused as the chain is built.
     (
         "K816-E0183",

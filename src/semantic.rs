@@ -2456,7 +2456,7 @@ impl Analysis {
             Diagnostic::error(
                 DiagnosticCode::LOOP_CONTROL_OUTSIDE_LOOP,
                 format!("`{keyword}` is not inside a loop"),
-                Label::new(statement.span, format!("no loop for `{keyword}` to leave")),
+                Label::new(statement.span, "no loop around it"),
             )
             .with_help(
                 "`break`, `repeat` and `continue` bind to the innermost enclosing loop; \

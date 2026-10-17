@@ -568,8 +568,9 @@ impl Checker<'_> {
         );
     }
 
-    /// The statement in an `if`'s or a `while`'s compare slot: one of the
-    /// four compares, whatever the dialect (decision 5).
+    /// The statement in an `if`'s or a `while`'s slot: one of the four
+    /// compares or a step, whatever the dialect (decision 5, and
+    /// `plans/18-conditions.md` decision 3).
     fn compare_slot(&mut self, statement: &Statement, slot: &str) {
         // A step — `x--`, `mem++` — stands there too (decision 3).
         let StatementKind::Hla(HlaStatement::Arithmetic(arithmetic)) = &statement.kind else {
@@ -582,12 +583,13 @@ impl Checker<'_> {
         self.diagnostics.push(
             Diagnostic::error(
                 DiagnosticCode::CONDITION_COMPARE,
-                format!("only a compare can be written in {slot}"),
-                Label::new(statement.span, "this is not a compare"),
+                format!("only a compare or a step can be written in {slot}"),
+                Label::new(statement.span, "this is neither a compare nor a step"),
             )
             .with_note(
                 "the slot takes `a?`, `x?`, `y?` and `a&?`, which set flags and change nothing \
-                 else; anything else there reads as a test of what it computes",
+                 else, and a step such as `x--` or `mem++`; anything else there reads as a test \
+                 of what it computes",
             )
             .with_help(format!(
                 "write `{text}` as a statement of its own, before the condition"

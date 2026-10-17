@@ -1133,3 +1133,44 @@ fn a_problem_inside_an_unroll_is_reported_once() {
         .collect();
     assert_eq!(codes, ["K816-E0101"]);
 }
+
+/// `when`, `continue` and `unroll` are additions a `.k65` accepts, and
+/// `--strict-k65` reports each where it is written, beside the width
+/// annotations it reports anyway (`plans/18-conditions.md` decision 7).
+#[test]
+fn strict_k65_reports_when_continue_and_unroll() {
+    let source = "func work @a8 @i8 {\n    when a { 4 { x++ } }\n    { x++\n == continue\n } !=\n    unroll 2 { y++ }\n}\n";
+    let mut map = SourceMap::new();
+    let file = map.add_file("unit.k65", source);
+    let plain = compile_to_ca65(&map, file, &Options::default());
+    assert_eq!(plain.diagnostics, vec![]);
+    let strict = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            strict_k65: true,
+            ..Default::default()
+        },
+    );
+    let carets: Vec<_> = strict
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let span = diagnostic.primary.span;
+            (
+                diagnostic.code.as_str(),
+                &source[span.start as usize..span.end as usize],
+            )
+        })
+        .collect();
+    assert_eq!(
+        carets,
+        [
+            ("K816-E0160", "@a8"),
+            ("K816-E0160", "@i8"),
+            ("K816-E0160", "when"),
+            ("K816-E0160", "continue"),
+            ("K816-E0160", "unroll")
+        ]
+    );
+}

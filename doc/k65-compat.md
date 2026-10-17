@@ -129,6 +129,16 @@ for k816 and .kk files, not for the .k65 compat", and then, of sub-plan O's
 forms, "withdraw them from .k65 too". Until then a `.k65` source accepted
 both spellings (`plans/16-if-statement.md` decisions 10 and 11).
 
+Sub-plan S's conditions divide the same way (`plans/18-conditions.md`
+decision 7). A chain (`if c | z { }`) and a step in a condition's slot
+(`while x--`) are written after `if` or `while`, which a `.k65` refuses
+already, so they reach one only inside that refusal — and K65 has no
+spelling for either to fix to. `when`, `continue` and `unroll` are
+additions: a `.k65` accepts them with the meaning they have in K816 (a
+`when` value is a compare's operand, so a bare number is a value in either
+dialect, as in `a?4`), and `--strict-k65` reports each (`k816-when`,
+`k816-continue`, `k816-unroll`).
+
 K65 compatibility is kept for bootstrapping and as a baseline, and will
 eventually be dropped (`plans/14-readable-hla.md` decision 11). The
 manifest's `k816-dialect` row is this section.

@@ -3262,6 +3262,22 @@ const FIXTURE_EFFECTS: &[Effect] = &[
         "two zero stores inside width blocks, sized at the block's width; three width changes nothing observes, each with the restore that then sets a width already in effect; and the store the last of those left at eight bits on both axes",
     ),
     (
+        "conditions.kk",
+        &[("jmp     :+", 1), ("jmp     :++", 1), ("jmp     :--", 1)],
+        &[("bra     :++", 1), ("bra     :--", 1)],
+        "the jumps `break` and `continue` lower to, two reaching their target as the `bra` pass 11 swaps in and one — a `continue` to the test right after it — removed as a jump to the next label",
+    ),
+    (
+        "conditions-native.kk",
+        &[
+            ("jmp     a:@end2", 1),
+            ("jmp     a:@end3", 1),
+            ("jmp     a:@top2", 1),
+        ],
+        &[("bra     @end2", 1), ("bra     @top2", 1)],
+        "the `goto`s written where `conditions.kk` has `break` and `continue`, treated the same: two become `bra`, one to the next label goes",
+    ),
+    (
         "opt-zero-store-index.k816",
         &[
             ("ldx     #$00", 1),

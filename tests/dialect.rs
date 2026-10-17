@@ -973,3 +973,46 @@ fn a_later_slot_takes_only_a_compare_or_a_step() {
     let (codes, _) = fixed("unit.kk", &unit("if c | z & n { x++ }"));
     assert!(codes.contains(&"K816-E0183"), "{codes:?}");
 }
+
+/// Sub-plan S: `continue` goes to the loop's test — before the `while`'s
+/// compare or step, or after the body — and is `repeat` in an `always`
+/// loop and `break` in a `never` one (`plans/18-conditions.md` decision 4).
+#[test]
+fn continue_goes_to_the_loops_test() {
+    for (k816, native) in [
+        (
+            "loop { x++\n if c continue\n y++ } while x--",
+            ".t:\n x++\n bcs .c\n y++\n.c:\n x--\n bne .t",
+        ),
+        (
+            "loop { x++\n if c continue\n y++ } while a?#8 <",
+            ".t:\n x++\n bcs .c\n y++\n.c:\n a?#8\n bcc .t",
+        ),
+        (
+            "loop { x++\n if c continue\n y++ } while !=",
+            ".t:\n x++\n bcs .c\n y++\n.c:\n bne .t",
+        ),
+        (
+            "loop { x++\n continue\n y++ } while !=",
+            ".t:\n x++\n goto .c\n y++\n.c:\n bne .t",
+        ),
+        (
+            "loop { x++\n if c continue\n y++ } always",
+            ".t:\n x++\n bcs .c\n y++\n.c:\n goto .t",
+        ),
+        (
+            "loop { x++\n if c continue\n y++ } never",
+            ".t:\n x++\n bcs .c\n y++\n.c:",
+        ),
+        // A `continue` in a nested loop is that loop's.
+        (
+            "loop { x++\n loop { y++\n if c continue\n a++ } while y--\n y-- } while x--",
+            ".t:\n x++\n.u:\n y++\n bcs .c\n a++\n.c:\n y--\n bne .u\n y--\n x--\n bne .t",
+        ),
+    ] {
+        let (codes, lines) = code("unit.kk", &unit(k816));
+        let (native_codes, native_lines) = code("unit.kk", &unit(native));
+        assert_eq!(codes, native_codes, "`{k816}`");
+        assert_eq!(shape(lines), shape(native_lines), "`{k816}` and\n{native}");
+    }
+}

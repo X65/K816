@@ -1013,6 +1013,7 @@ export default grammar({
         $.goto_statement,
         $.break_statement,
         $.repeat_statement,
+        $.continue_statement,
       ),
 
     // `{ ... } !=`, `{ ... } always`, `{ ... } never`, and the `nocross`
@@ -1104,6 +1105,10 @@ export default grammar({
 
     break_statement: _ => 'break',
 
+    // `continue` goes to the loop's test, `repeat` to its top
+    // (`plans/18-conditions.md` decision 4).
+    continue_statement: _ => 'continue',
+
     repeat_statement: _ => 'repeat',
 
     // `nocross { ... }` — advisory on code, asking that the block fit a page.
@@ -1182,6 +1187,7 @@ export default grammar({
         $.goto_statement,
         $.break_statement,
         $.repeat_statement,
+        $.continue_statement,
         $.nocross_block,
         $.data_block,
         $.preprocessor_directive,

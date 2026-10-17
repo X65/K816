@@ -1152,6 +1152,7 @@ impl Analysis {
                 | StatementKind::Goto(_)
                 | StatementKind::Break
                 | StatementKind::Repeat
+                | StatementKind::Continue
                 | StatementKind::Preprocessor(_)
                 | StatementKind::Return(_)
                 | StatementKind::Align(_)
@@ -2453,7 +2454,7 @@ impl Analysis {
                 Label::new(statement.span, format!("no loop for `{keyword}` to leave")),
             )
             .with_help(
-                "`break` and `repeat` bind to the innermost enclosing `{ ... }` loop; \
+                "`break`, `repeat` and `continue` bind to the innermost enclosing loop; \
                  `goto` leaves a function body",
             )
             .with_docs("doc/syntax-reference.md#break-and-repeat"),
@@ -2540,9 +2541,11 @@ impl Analysis {
             StatementKind::Conditional(_) | StatementKind::Loop(_) | StatementKind::Nocross(_) => {}
             StatementKind::Break => self.check_loop_control(statement, "break"),
             StatementKind::Repeat => self.check_loop_control(statement, "repeat"),
+            StatementKind::Continue => self.check_loop_control(statement, "continue"),
             StatementKind::ConditionalJump(jump) => match &jump.jump.kind {
                 StatementKind::Break => self.check_loop_control(&jump.jump, "break"),
                 StatementKind::Repeat => self.check_loop_control(&jump.jump, "repeat"),
+                StatementKind::Continue => self.check_loop_control(&jump.jump, "continue"),
                 StatementKind::Goto(goto) => self.check_goto(goto),
                 // The grammar admits nothing else after a condition; an
                 // `Error` statement is already reported where it was parsed.

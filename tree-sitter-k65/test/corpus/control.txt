@@ -1131,3 +1131,40 @@ func main {
         body: (block
           (hla_step
             target: (register)))))))
+
+================================================================================
+continue, inside a loop and outside one
+================================================================================
+
+func main {
+  loop {
+    if z continue
+    continue
+  } while x?#8 <
+  continue
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (loop_statement
+        body: (block
+          (if_statement
+            condition: (condition_chain
+              element: (chain_element
+                condition: (flag_condition
+                  flag: (identifier))))
+            jump: (continue_statement))
+          (continue_statement))
+        condition: (while_condition
+          condition: (condition_chain
+            element: (chain_element
+              slot: (hla_arithmetic
+                register: (register)
+                operand: (immediate
+                  value: (number)))
+              condition: (branch_condition)))))
+      (continue_statement))))

@@ -145,6 +145,7 @@ fn number_statement(statement: &mut Statement, next: &mut u32) {
         | StatementKind::Goto(_)
         | StatementKind::Break
         | StatementKind::Repeat
+        | StatementKind::Continue
         | StatementKind::Preprocessor(_)
         | StatementKind::Return(_)
         | StatementKind::Align(_)
@@ -761,6 +762,9 @@ impl AstBuilder<'_> {
                 }
                 "repeat_statement" => {
                     statements.push(Statement::new(StatementKind::Repeat, self.span(child)))
+                }
+                "continue_statement" => {
+                    statements.push(Statement::new(StatementKind::Continue, self.span(child)))
                 }
                 "preprocessor_directive" => statements.push(Statement::new(
                     StatementKind::Preprocessor(self.preprocessor_directive(child)),
@@ -1850,6 +1854,7 @@ impl AstBuilder<'_> {
                 "goto_statement" => self.goto_statement(jump),
                 "break_statement" => Statement::new(StatementKind::Break, self.span(jump)),
                 "repeat_statement" => Statement::new(StatementKind::Repeat, self.span(jump)),
+                "continue_statement" => Statement::new(StatementKind::Continue, self.span(jump)),
                 _ => {
                     self.unexpected(jump, "a conditional jump");
                     Statement::new(StatementKind::Error, self.span(jump))

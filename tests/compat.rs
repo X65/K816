@@ -1357,6 +1357,7 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     ("FlagTestSpelling", "Letter", "k816-bare-flag-test"),
     ("ChainOperator", "Any", "k816-condition-chain"),
     ("ChainOperator", "All", "k816-condition-chain"),
+    ("StatementKind", "Continue", "k816-continue"),
     // ---- CallArgument --------------------------------------------------
     ("CallArgument", "Register", "k816-call-contracts"),
     ("CallArgument", "Immediate", "k816-call-contracts"),
@@ -1964,7 +1965,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
 
     assert_eq!(
         marked.len(),
-        36,
+        37,
         "the manifest marks {} rows for the flag; if that is deliberate, move the \
          number here so the count stays a statement someone made",
         marked.len()

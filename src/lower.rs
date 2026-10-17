@@ -771,6 +771,33 @@ struct LoopAnchors {
     head: AnchorId,
     /// Where `break` goes: past the loop's back edge.
     exit: AnchorId,
+    /// Where `continue` goes: the loop's test — before the `while` chain's
+    /// first compare or step, which is the body's last statement, or after
+    /// the body when there is none (`plans/18-conditions.md` decision 4).
+    test: AnchorId,
+}
+
+/// Whether `block` holds a `continue` of its own loop: one not inside a
+/// nested loop, which would be that loop's.
+fn continues(block: &crate::ast::Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::Continue => true,
+            StatementKind::ConditionalJump(jump) => {
+                matches!(jump.jump.kind, StatementKind::Continue)
+                    || jump.condition.slots().any(continues)
+            }
+            StatementKind::Conditional(conditional) => {
+                continues(&conditional.body)
+                    || conditional.otherwise.as_ref().is_some_and(continues)
+                    || conditional.condition.slots().any(continues)
+            }
+            StatementKind::WidthBlock(width) => continues(&width.body),
+            StatementKind::Nocross(body) => continues(body),
+            _ => false,
+        })
 }
 
 /// A checked call, recorded while lowering so the block-local scan can find
@@ -1775,10 +1802,27 @@ impl<'a> Lowering<'a> {
             StatementKind::Loop(loop_statement) => {
                 let head = self.anchor();
                 let exit = self.anchor();
+                let test = self.anchor();
                 let head_at = self.ops.len();
                 self.place(head, span);
-                self.loops.push(LoopAnchors { head, exit });
-                self.block(&loop_statement.body);
+                self.loops.push(LoopAnchors { head, exit, test });
+                // The test anchor is placed only where a `continue` names
+                // it, and before the test's own statement when the `while`
+                // holds one.
+                let continued = continues(&loop_statement.body);
+                let (body, tested) = match loop_statement.body.statements.split_last() {
+                    Some((last, rest)) if loop_statement.test.is_some() => (rest, Some(last)),
+                    _ => (loop_statement.body.statements.as_slice(), None),
+                };
+                for statement in body {
+                    self.statement(statement);
+                }
+                if continued {
+                    self.place(test, span);
+                }
+                if let Some(last) = tested {
+                    self.statement(last);
+                }
                 match &loop_statement.condition {
                     crate::ast::LoopCondition::Branch(chain) => {
                         self.branch_to(chain, hla::BranchSense::Take, head, span);
@@ -1804,12 +1848,20 @@ impl<'a> Lowering<'a> {
                 Some(loop_anchors) => self.jump_to(loop_anchors.head, span, None),
                 None => self.skipped(span, "a `repeat` outside a loop"),
             },
+            StatementKind::Continue => match self.loops.last() {
+                Some(loop_anchors) => self.jump_to(loop_anchors.test, span, None),
+                None => self.skipped(span, "a `continue` outside a loop"),
+            },
             // The conditional forms of the same two, and of `goto`.
             StatementKind::ConditionalJump(jump) => {
                 let anchor = match (&jump.jump.kind, self.loops.last()) {
                     (StatementKind::Break, Some(loop_anchors)) => loop_anchors.exit,
                     (StatementKind::Repeat, Some(loop_anchors)) => loop_anchors.head,
-                    (StatementKind::Break | StatementKind::Repeat, None) => {
+                    (StatementKind::Continue, Some(loop_anchors)) => loop_anchors.test,
+                    (
+                        StatementKind::Break | StatementKind::Repeat | StatementKind::Continue,
+                        None,
+                    ) => {
                         return self.skipped(span, "a conditional jump outside a loop");
                     }
                     (StatementKind::Goto(goto), _) => {

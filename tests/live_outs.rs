@@ -422,6 +422,7 @@ fn count(statement: &Statement, symbols: &SymbolTable, census: &mut Census) {
         | StatementKind::Hla(_)
         | StatementKind::ModeSet(_)
         | StatementKind::Break
+        | StatementKind::Continue
         | StatementKind::Repeat
         | StatementKind::Goto(_)
         | StatementKind::Align(_)

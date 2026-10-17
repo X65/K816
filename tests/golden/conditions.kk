@@ -37,6 +37,28 @@ func counted @a8 @i8 {
     if x-- { x++ }
 }
 
+// `continue` goes to the test, where the `while`'s step runs; `repeat` to the
+// top. In an `always` loop `continue` reaches the back edge, in a `never`
+// loop the end.
+func continued @a8 @i8 {
+    x = #4
+    loop {
+        a = mem
+        if z continue
+        mem++
+    } while x--
+    loop {
+        a = mem
+        if c continue
+        mem++
+        break
+    } always
+    loop {
+        a = mem
+        continue
+    } never
+}
+
 // A later element's immediate is sized at the width in force there.
 func wide @a16 @i8 {
     a = mem

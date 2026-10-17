@@ -812,6 +812,10 @@
           "named": true
         },
         {
+          "type": "continue_statement",
+          "named": true
+        },
+        {
           "type": "data_block",
           "named": true
         },
@@ -1341,6 +1345,10 @@
         "types": [
           {
             "type": "break_statement",
+            "named": true
+          },
+          {
+            "type": "continue_statement",
             "named": true
           },
           {
@@ -5055,6 +5063,10 @@
             "named": true
           },
           {
+            "type": "continue_statement",
+            "named": true
+          },
+          {
             "type": "goto_statement",
             "named": true
           },
@@ -7146,6 +7158,10 @@
   {
     "type": "const",
     "named": false
+  },
+  {
+    "type": "continue_statement",
+    "named": true
   },
   {
     "type": "data",

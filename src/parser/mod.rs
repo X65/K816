@@ -151,6 +151,7 @@ mod tests {
         "goto_statement",
         "break_statement",
         "repeat_statement",
+        "continue_statement",
         "nocross_block",
         "data_block",
         "data_body",

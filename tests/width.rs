@@ -275,6 +275,27 @@ func f @a8 @i8 {
     );
 }
 
+/// A `continue` lands on the loop's test, which begins with the `while`'s
+/// compare, so the compare's immediate is sized for every width that reaches
+/// it. The width model used to land a `continue` after the compare: the body
+/// re-establishes 8 bits at its top, so the compare saw only the
+/// fall-through's 8 bits and `cmp #8` was emitted one byte wide for a path
+/// that runs it at 16. The same loop written with a label and a `goto`
+/// was refused all along.
+#[test]
+fn a_continues_width_reaches_the_compare_it_lands_on() {
+    for (jump, close) in [
+        ("continue", "  } while a?#8 <"),
+        ("goto .t", ".t:\n    a?#8\n  } while <"),
+    ] {
+        let source = format!(
+            "func f @a8 @i8 {{\n  loop {{\n    sep #$20\n    inx\n    if c {{ rep #$20 {jump} }}\n    iny\n{close}\n}}\n"
+        );
+        let (_, _, diagnostics) = analyze(&source);
+        assert_eq!(error_codes(&diagnostics), ["K816-E0104"], "{source}");
+    }
+}
+
 /// Nested loops close two backward edges over the same head, and the inner
 /// one's width has to reach the outer one's.
 #[test]

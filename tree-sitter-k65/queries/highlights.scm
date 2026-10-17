@@ -64,6 +64,7 @@
 
 ; `break` is a statement node rather than a token of its own.
 (break_statement) @keyword.return
+(continue_statement) @keyword.return
 
 ["else" "always" "never" "if" "while" "for" "loop"] @keyword.control
 

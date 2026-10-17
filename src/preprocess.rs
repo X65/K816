@@ -230,6 +230,7 @@ fn statement_has_directive(statement: &Statement) -> bool {
         | StatementKind::Goto(_)
         | StatementKind::Break
         | StatementKind::Repeat
+        | StatementKind::Continue
         | StatementKind::Return(_)
         | StatementKind::Align(_)
         | StatementKind::Address(_)
@@ -627,6 +628,7 @@ impl Preprocess {
             | StatementKind::Goto(_)
             | StatementKind::Break
             | StatementKind::Repeat
+            | StatementKind::Continue
             | StatementKind::Preprocessor(_)
             | StatementKind::Return(_)
             | StatementKind::Align(_)

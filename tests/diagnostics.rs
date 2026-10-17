@@ -147,6 +147,12 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::FLAG_TEST_MARK,
         caret: "c?",
     },
+    // `continue` binds to a loop as `break` and `repeat` do.
+    Case {
+        source: "func work @a8 @i8 {\n    continue\n}\n",
+        code: DiagnosticCode::LOOP_CONTROL_OUTSIDE_LOOP,
+        caret: "continue",
+    },
     // The compare slot of an `if` holds a compare (decision 5).
     Case {
         source: "func work @a8 @i8 {\n    if a+#1 == { x++ }\n}\n",
@@ -692,10 +698,6 @@ const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
     (
         "K816-E0002",
         "tests/parser.rs: missing_brace_gets_a_machine_applicable_fix",
-    ),
-    (
-        "K816-E0128",
-        "tests/parser.rs: control_flow_statements_compile_or_name_their_owner",
     ),
     (
         "K816-W0123",

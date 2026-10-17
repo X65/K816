@@ -585,6 +585,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-if-statement", K816Extension, Rejects),
     row("k816-condition-compare", K816Extension, Rejects),
     row("k816-condition-chain", K816Extension, Rejects),
+    row("k816-continue", K816Extension, Rejects),
     row("k816-bare-flag-test", K816Extension, Rejects),
     row("k816-stack-words", K816Extension, Rejects),
     row("k816-dialect", K816Extension, Quiet),
@@ -816,6 +817,13 @@ const REPORTED: &[Reported] = &[
         instead: Some(
             "K65 writes the compare as a statement of its own, before the condition it sets the \
              flags for",
+        ),
+    },
+    Reported {
+        id: "k816-continue",
+        what: "`continue`",
+        instead: Some(
+            "K65 has `repeat`, which goes to the top of the loop rather than to its test",
         ),
     },
     Reported {
@@ -1171,6 +1179,7 @@ impl StrictWalk<'_> {
                 self.chain(&jump.condition);
                 self.statement(&jump.jump);
             }
+            StatementKind::Continue => self.mark("k816-continue", statement.span),
             StatementKind::Loop(loop_statement) => {
                 if loop_statement.spelling == LoopSpelling::Keyword {
                     self.mark("k816-loop-keyword", statement.span);

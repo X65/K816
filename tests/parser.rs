@@ -409,6 +409,7 @@ fn dump_ast(file: &AstFile) -> String {
                         ),
                         StatementKind::Break => "break".to_owned(),
                         StatementKind::Repeat => "repeat".to_owned(),
+                        StatementKind::Continue => "continue".to_owned(),
                         StatementKind::Nocross(body) => {
                             format!("nocross ({} statements)", body.statements.len())
                         }

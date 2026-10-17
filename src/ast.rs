@@ -353,6 +353,10 @@ pub enum StatementKind {
     Break,
     /// `repeat` on its own.
     Repeat,
+    /// `continue` — jump to the loop's test, where its `while` compare or
+    /// step runs; in an `always` loop the back edge, in a `never` loop the
+    /// end (`plans/18-conditions.md` decision 4).
+    Continue,
     /// `nocross { ... }` — advisory page-fit request on code.
     Nocross(Block),
     /// `data { ... }` inside a function body, emitting bytes inline.
@@ -1646,6 +1650,7 @@ fn visit_statement(statement: &Statement, visit: &mut impl FnMut(&Statement)) {
         | StatementKind::Goto(_)
         | StatementKind::Break
         | StatementKind::Repeat
+        | StatementKind::Continue
         | StatementKind::Preprocessor(_)
         | StatementKind::Return(_)
         | StatementKind::Align(_)

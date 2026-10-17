@@ -565,6 +565,7 @@ pub fn analyze_function(
         blocks: Vec::new(),
         loops: Vec::new(),
         break_fixups: Vec::new(),
+        continue_fixups: Vec::new(),
         diagnostics: Vec::new(),
         needs: WidthNeeds::default(),
         callees: Vec::new(),
@@ -622,6 +623,8 @@ struct Flattener<'a> {
     loops: Vec<usize>,
     /// `break` nodes waiting for their loop's exit node index.
     break_fixups: Vec<(usize, usize)>,
+    /// `continue` nodes awaiting their loop's test node, with the loop depth.
+    continue_fixups: Vec<(usize, usize)>,
     diagnostics: Vec<Diagnostic>,
     needs: WidthNeeds,
     callees: Vec<SymbolId>,
@@ -862,7 +865,11 @@ impl Flattener<'_> {
     }
 
     fn block(&mut self, block: &Block) {
-        let mut statements = block.statements.iter().peekable();
+        self.statements(&block.statements);
+    }
+
+    fn statements(&mut self, statements: &[Statement]) {
+        let mut statements = statements.iter().peekable();
         while let Some(statement) = statements.next() {
             // Decision 6: a width statement in front of a label states the
             // label's entry width. It runs where it is written, on the path
@@ -980,6 +987,19 @@ impl Flattener<'_> {
                 );
                 self.pending_break(node);
             }
+            StatementKind::Continue => {
+                let node = self.push(
+                    id,
+                    span,
+                    Transfer::Identity,
+                    Control {
+                        fall_through: false,
+                        target: Some(Target::Unknown),
+                        returns: false,
+                    },
+                );
+                self.pending_continue(node);
+            }
             StatementKind::Repeat => {
                 let target = self
                     .loops
@@ -1058,7 +1078,20 @@ impl Flattener<'_> {
             StatementKind::Loop(loop_statement) => {
                 let head = self.push(id, span, Transfer::Identity, Control::fall_through());
                 self.loops.push(head);
-                self.block(&loop_statement.body);
+                // A `continue` lands on the test, which is before the
+                // `while` chain's first compare or step — the body's last
+                // statement — so a `continue` arriving at another width
+                // reaches the compare's immediate as the fall-through does.
+                let (body, tested) = match loop_statement.body.statements.split_last() {
+                    Some((last, rest)) if loop_statement.test.is_some() => (rest, Some(last)),
+                    _ => (loop_statement.body.statements.as_slice(), None),
+                };
+                self.statements(body);
+                let test = self.push(id, span, Transfer::Identity, Control::fall_through());
+                self.resolve_continues(test);
+                if let Some(last) = tested {
+                    self.statement(last);
+                }
                 if let LoopCondition::Branch(chain) = &loop_statement.condition {
                     for slot in chain.slots() {
                         self.block(slot);
@@ -1397,6 +1430,26 @@ impl Flattener<'_> {
     fn pending_break(&mut self, node: usize) {
         let depth = self.loops.len();
         self.break_fixups.push((node, depth));
+    }
+
+    /// A `continue`, resolved to its loop's test node once that is pushed.
+    fn pending_continue(&mut self, node: usize) {
+        let depth = self.loops.len();
+        self.continue_fixups.push((node, depth));
+    }
+
+    /// Called before the loop is popped, so its depth is the current one.
+    fn resolve_continues(&mut self, test: usize) {
+        let depth = self.loops.len();
+        let mut kept = Vec::new();
+        for (node, at) in std::mem::take(&mut self.continue_fixups) {
+            if at == depth {
+                self.nodes[node].control.target = Some(Target::Node(test));
+            } else {
+                kept.push((node, at));
+            }
+        }
+        self.continue_fixups = kept;
     }
 
     fn resolve_breaks(&mut self, exit: usize) {

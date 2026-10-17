@@ -58,6 +58,28 @@ func counted @a8 @i8 {
 .end4:
 }
 
+func continued @a8 @i8 {
+    x = #4
+.top1:
+    a = mem
+    beq .test1
+    inc mem
+.test1:
+    dex
+    bne .top1
+.top2:
+    a = mem
+    bcs .test2
+    inc mem
+    goto .end2
+.test2:
+    goto .top2
+.end2:
+    a = mem
+    goto .end3
+.end3:
+}
+
 func wide @a16 @i8 {
     a = mem
     cmp #10

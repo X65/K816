@@ -141,6 +141,7 @@ fn if_hover(context: &Context<'_>) -> Option<Hover> {
                 StatementKind::Repeat => {
                     "goes back to the top of the loop when the condition holds"
                 }
+                StatementKind::Continue => "goes to the loop's test when the condition holds",
                 _ => "jumps when the condition holds",
             },
         ),

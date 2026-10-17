@@ -1101,6 +1101,7 @@ fn called_in_statement(statement: &Statement, names: &mut BTreeSet<String>) {
         | StatementKind::Goto(_)
         | StatementKind::Break
         | StatementKind::Repeat
+        | StatementKind::Continue
         | StatementKind::Align(_)
         | StatementKind::Address(_)
         | StatementKind::Reserved(_)

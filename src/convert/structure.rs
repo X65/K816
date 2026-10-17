@@ -554,6 +554,7 @@ fn nested_blocks(statement: &Statement) -> Vec<&Block> {
             _ => vec![&loop_statement.body],
         },
         StatementKind::Nocross(block) => vec![block],
+        StatementKind::Unroll(unroll) => vec![&unroll.body],
         _ => Vec::new(),
     }
 }

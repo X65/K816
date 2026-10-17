@@ -359,6 +359,8 @@ pub enum StatementKind {
     Continue,
     /// `nocross { ... }` — advisory page-fit request on code.
     Nocross(Block),
+    /// `unroll 4 { ... }` — the block written out N times.
+    Unroll(Unroll),
     /// `data { ... }` inside a function body, emitting bytes inline.
     Data(DataBlock),
     /// `align N` / `align N + M` at the head of a code section.
@@ -550,6 +552,25 @@ pub struct ConditionalBlock {
     /// The `when` arm this conditional was built from, or `None` for one
     /// written as such.
     pub arm: Option<WhenArm>,
+}
+
+/// `unroll 4 { … }`: the block written out N times, with no counter, jump or
+/// register of its own (`plans/18-conditions.md` decision 9).
+///
+/// As parsed, `body` is the block once. The preprocessor folds the count and
+/// replaces `body` with that many copies of it, so every stage after walks
+/// the statements a program that wrote them N times would have — an
+/// `inline` used inside is expanded once per copy, and a width the first
+/// copy leaves is the one the second starts at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unroll {
+    /// The `unroll` keyword.
+    pub keyword: Span,
+    pub count: Expr,
+    pub body: Block,
+    /// How many copies `body` holds: one as parsed, the count once the
+    /// preprocessor has expanded it.
+    pub copies: u32,
 }
 
 /// An arm of `when a { 4 { … } 10, 20 { … } else { … } }`, which the
@@ -1640,6 +1661,7 @@ fn visit_statement(statement: &Statement, visit: &mut impl FnMut(&Statement)) {
     match &statement.kind {
         StatementKind::WidthBlock(width) => visit_statements(&width.body, visit),
         StatementKind::Nocross(body) => visit_statements(body, visit),
+        StatementKind::Unroll(unroll) => visit_statements(&unroll.body, visit),
         StatementKind::Loop(loop_statement) => {
             visit_statements(&loop_statement.body, visit);
             if let LoopCondition::Branch(chain) = &loop_statement.condition {

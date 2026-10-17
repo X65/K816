@@ -211,6 +211,7 @@ fn collect<'a>(block: &'a Block, visit: &mut impl FnMut(&'a Statement)) {
         match &statement.kind {
             StatementKind::WidthBlock(width) => stack.extend(width.body.statements.iter()),
             StatementKind::Nocross(body) => stack.extend(body.statements.iter()),
+            StatementKind::Unroll(unroll) => stack.extend(unroll.body.statements.iter()),
             StatementKind::Loop(loop_statement) => {
                 stack.extend(loop_statement.body.statements.iter());
                 if let crate::ast::LoopCondition::Branch(chain) = &loop_statement.condition {

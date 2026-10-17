@@ -587,6 +587,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-condition-chain", K816Extension, Rejects),
     row("k816-continue", K816Extension, Rejects),
     row("k816-when", K816Extension, Rejects),
+    row("k816-unroll", K816Extension, Rejects),
     row("k816-bare-flag-test", K816Extension, Rejects),
     row("k816-stack-words", K816Extension, Rejects),
     row("k816-dialect", K816Extension, Quiet),
@@ -826,6 +827,11 @@ const REPORTED: &[Reported] = &[
         instead: Some(
             "K65 has `repeat`, which goes to the top of the loop rather than to its test",
         ),
+    },
+    Reported {
+        id: "k816-unroll",
+        what: "`unroll`",
+        instead: Some("K65 writes the block out as many times as it is wanted"),
     },
     Reported {
         id: "k816-when",
@@ -1225,6 +1231,11 @@ impl StrictWalk<'_> {
             // construct (`instr-far-goto`), landed in G7.
             StatementKind::Goto(goto) => self.expr(&goto.target),
             StatementKind::Nocross(block) => self.block(block),
+            StatementKind::Unroll(unroll) => {
+                self.mark("k816-unroll", unroll.keyword);
+                self.expr(&unroll.count);
+                self.block(&unroll.body);
+            }
             StatementKind::Data(block) => self.data_block(block),
             StatementKind::Align(align) => {
                 self.expr(&align.boundary);

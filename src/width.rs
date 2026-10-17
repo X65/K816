@@ -921,6 +921,12 @@ impl Flattener<'_> {
                 self.push(id, span, Transfer::Identity, Control::fall_through());
                 self.block(body);
             }
+            // The copies, one after another: the width the first leaves is
+            // the one the second starts at.
+            StatementKind::Unroll(unroll) => {
+                self.push(id, span, Transfer::Identity, Control::fall_through());
+                self.block(&unroll.body);
+            }
             StatementKind::Call(call) => {
                 let callee = self.lookup_callee(&call.target.text);
                 self.call(id, span, callee, true);

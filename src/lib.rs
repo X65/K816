@@ -366,6 +366,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
     let (mut program, lower_diagnostics) =
         lower::lower_unit(model.program(&parse.file), &model, source.name());
     diagnostics.extend(lower_diagnostics);
+    diagnostic::drop_repeats(&mut diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return CompileResult {
             assembly: None,
@@ -468,6 +469,7 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
     let (mut program, lower_diagnostics) =
         lower::lower_unit(model.program(&parse.file), &model, source.name());
     diagnostics.extend(lower_diagnostics);
+    diagnostic::drop_repeats(&mut diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return IrResult {
             ir: None,

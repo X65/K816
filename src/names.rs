@@ -231,6 +231,7 @@ fn statement_names(statement: &Statement, visit: &mut impl FnMut(&Name, NameRole
         StatementKind::Goto(goto) => expr_names(&goto.target, visit),
         StatementKind::Break | StatementKind::Repeat | StatementKind::Continue => {}
         StatementKind::Nocross(body) => block_names(body, visit),
+        StatementKind::Unroll(unroll) => block_names(&unroll.body, visit),
         StatementKind::Data(data) => data_names(data, visit),
         StatementKind::Align(align) => align_names(align, visit),
         StatementKind::Address(address) => expr_names(address, visit),

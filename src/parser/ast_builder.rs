@@ -43,7 +43,7 @@ use crate::ast::{
     PreprocessorKind, Register, RegisterKind, ReservedCall, ReservedConstruct, ReservedKind,
     ReturnKind, ShiftOp, StackOp, StackSpelling, Statement, StatementKind, StepOp, StmtId,
     StorageClass, StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind,
-    TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WhenArm, WidthAnnotation,
+    TypedViewExpr, UnaryExpr, UnaryOp, Unroll, VarDeclaration, WhenArm, WidthAnnotation,
     WidthAnnotationKind, WidthBlock,
 };
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
@@ -112,6 +112,7 @@ fn number_statement(statement: &mut Statement, next: &mut u32) {
     match &mut statement.kind {
         StatementKind::WidthBlock(width) => number_block(&mut width.body, next),
         StatementKind::Nocross(body) => number_block(body, next),
+        StatementKind::Unroll(unroll) => number_block(&mut unroll.body, next),
         StatementKind::Loop(loop_statement) => {
             number_block(&mut loop_statement.body, next);
             if let LoopCondition::Branch(chain) = &mut loop_statement.condition {
@@ -779,6 +780,18 @@ impl AstBuilder<'_> {
                     StatementKind::Nocross(self.body_of(child)),
                     self.span(child),
                 )),
+                "unroll_statement" => {
+                    let span = self.span(child);
+                    statements.push(Statement::new(
+                        StatementKind::Unroll(Unroll {
+                            keyword: child.child(0).map_or(span, |word| self.span(word)),
+                            count: self.expr(child.child_by_field_name("count"), child),
+                            body: self.body_of(child),
+                            copies: 1,
+                        }),
+                        span,
+                    ))
+                }
                 "bare_call" => statements.push(self.bare_call(child)),
                 "hla_illegal" => statements.push(self.hla_illegal(child)),
                 "hla_stack_flag" => statements.push(self.hla_stack_flag(child)),

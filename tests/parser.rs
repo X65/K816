@@ -413,6 +413,11 @@ fn dump_ast(file: &AstFile) -> String {
                         StatementKind::Nocross(body) => {
                             format!("nocross ({} statements)", body.statements.len())
                         }
+                        StatementKind::Unroll(unroll) => format!(
+                            "unroll {} ({} statements)",
+                            dump_expr(&unroll.count.kind),
+                            unroll.body.statements.len()
+                        ),
                         StatementKind::Data(data) => {
                             format!("data ({} entries)", data.entries.len())
                         }

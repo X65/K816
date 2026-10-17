@@ -916,6 +916,10 @@
           "named": true
         },
         {
+          "type": "unroll_statement",
+          "named": true
+        },
+        {
           "type": "when_statement",
           "named": true
         },
@@ -6577,6 +6581,84 @@
     "fields": {}
   },
   {
+    "type": "unroll_statement",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "count": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "var_declaration",
     "named": true,
     "fields": {
@@ -7421,6 +7503,10 @@
   {
     "type": "string",
     "named": true
+  },
+  {
+    "type": "unroll",
+    "named": false
   },
   {
     "type": "var",

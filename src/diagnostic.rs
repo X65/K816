@@ -542,6 +542,12 @@ impl DiagnosticCode {
     /// arm's compare can never be the one that matches
     /// (`plans/18-conditions.md` decision 2).
     pub const WHEN_DUPLICATE: Self = Self("K816-E0185");
+    /// An `unroll` count that is not a compile-time number of at least one
+    /// (`plans/18-conditions.md` decision 9).
+    pub const UNROLL_COUNT: Self = Self("K816-E0186");
+    /// A label inside an `unroll` block, which every copy would define
+    /// again (`plans/18-conditions.md` decision 9).
+    pub const UNROLL_LABEL: Self = Self("K816-E0187");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -797,6 +803,22 @@ impl Diagnostic {
     }
 }
 
+/// Removes every diagnostic equal to one before it, keeping the first.
+///
+/// The copies an `unroll` writes share their spans, so a problem inside its
+/// block is found once per copy and would be reported as many times
+/// (`plans/18-conditions.md` decision 9). Two equal diagnostics say nothing
+/// one does not.
+pub fn drop_repeats(diagnostics: &mut Vec<Diagnostic>) {
+    let mut kept: Vec<Diagnostic> = Vec::with_capacity(diagnostics.len());
+    for diagnostic in diagnostics.drain(..) {
+        if !kept.contains(&diagnostic) {
+            kept.push(diagnostic);
+        }
+    }
+    *diagnostics = kept;
+}
+
 /// True when any diagnostic in `diagnostics` is an error.
 pub fn has_errors(diagnostics: &[Diagnostic]) -> bool {
     diagnostics.iter().any(Diagnostic::is_error)
@@ -894,6 +916,8 @@ mod tests {
         DiagnosticCode::MIXED_CHAIN,
         DiagnosticCode::WHEN_SHAPE,
         DiagnosticCode::WHEN_DUPLICATE,
+        DiagnosticCode::UNROLL_COUNT,
+        DiagnosticCode::UNROLL_LABEL,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

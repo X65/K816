@@ -206,6 +206,8 @@ fn statement_has_directive(statement: &Statement) -> bool {
         StatementKind::Preprocessor(_) => true,
         StatementKind::WidthBlock(width) => block_has_directive(&width.body),
         StatementKind::Nocross(body) => block_has_directive(body),
+        // Not a directive, but expanded by this pass all the same.
+        StatementKind::Unroll(_) => true,
         StatementKind::Loop(statement) => {
             block_has_directive(&statement.body) || chain_has_directive(&statement.condition)
         }
@@ -585,6 +587,7 @@ impl Preprocess {
                 StatementKind::WidthBlock(width)
             }
             StatementKind::Nocross(body) => StatementKind::Nocross(self.block(body)),
+            StatementKind::Unroll(unroll) => StatementKind::Unroll(self.unroll(unroll)),
             StatementKind::Loop(statement) => {
                 let mut statement = statement.clone();
                 statement.body = self.block(&statement.body);
@@ -638,6 +641,99 @@ impl Preprocess {
                 self.brackets_of_statement(statement);
                 statement.kind.clone()
             }
+        }
+    }
+
+    /// `unroll N { … }`: the block, its own directives decided and any
+    /// `unroll` inside it expanded first, written out N times
+    /// (`plans/18-conditions.md` decision 9). The count is folded here
+    /// because nothing after this pass sees the single copy; it reads what a
+    /// condition reads — a number, a `const` above it, a bracket.
+    ///
+    /// A count that does not fold, or folds below one, leaves the one copy
+    /// so the body is still analyzed; the program is refused either way.
+    fn unroll(&mut self, unroll: &crate::ast::Unroll) -> crate::ast::Unroll {
+        let mut sites = Vec::new();
+        eval::sites_of_expr(&unroll.count, &mut sites);
+        self.run(sites);
+        let mut resolver = Resolver::new(&self.symbols, &self.outcome);
+        let count = resolver.constant(&unroll.count, "`unroll` counts");
+        self.diagnostics.extend(resolver.take_diagnostics());
+        let body = self.block(&unroll.body);
+        let copies = match count {
+            Some(0) => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::UNROLL_COUNT,
+                        "an `unroll` writes its block at least once",
+                        Label::new(unroll.count.span, "this count is 0"),
+                    )
+                    .with_help("leave the block out with `#if` instead")
+                    .with_docs("doc/syntax-reference.md#unroll"),
+                );
+                1
+            }
+            // More copies than a bank has bytes cannot be placed, and a
+            // negative count folds to one of these.
+            Some(count) if count > 0x1_0000 => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::UNROLL_COUNT,
+                        "an `unroll` writes more copies than a bank holds bytes",
+                        Label::new(unroll.count.span, format!("this count folds to ${count:X}")),
+                    )
+                    .with_note("a count above $10000 cannot fit in a 64 KiB bank; a negative count folds to one")
+                    .with_help("use a loop")
+                    .with_docs("doc/syntax-reference.md#unroll"),
+                );
+                1
+            }
+            Some(count) => count,
+            None => 1,
+        };
+        let mut labels = Vec::new();
+        crate::ast::visit_statements(&body, &mut |statement| match &statement.kind {
+            StatementKind::Label(label) => labels.push(label.name.span),
+            StatementKind::Data(data) => {
+                labels.extend(data.name.iter().map(|name| name.span));
+                for entry in crate::ast::flat_data_entries(&data.entries) {
+                    if let DataEntryKind::Label(name) = &entry.kind {
+                        labels.push(name.span);
+                    }
+                }
+            }
+            _ => {}
+        });
+        // One copy, so the refusal is not followed by every copy's
+        // duplicate definition.
+        let copies = if labels.is_empty() { copies } else { 1 };
+        for label in labels {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::UNROLL_LABEL,
+                    "a label inside an `unroll` would be defined once per copy",
+                    Label::new(label, "this label"),
+                )
+                .with_secondary(Label::new(unroll.keyword, "the block written out here"))
+                .with_note(
+                    "a jump out of the block, and `break`, `repeat` and `continue` to a loop \
+                     around it, work in every copy; a branch inside it is spelled with `if` or \
+                     a loop, whose labels are each copy's own",
+                )
+                .with_docs("doc/syntax-reference.md#unroll"),
+            );
+        }
+        let statements = (0..copies)
+            .flat_map(|_| body.statements.iter().cloned())
+            .collect();
+        crate::ast::Unroll {
+            keyword: unroll.keyword,
+            count: unroll.count.clone(),
+            body: Block {
+                statements,
+                span: body.span,
+            },
+            copies,
         }
     }
 
@@ -1421,6 +1517,7 @@ mod tests {
                 + match &statement.kind {
                     StatementKind::WidthBlock(width) => block(&width.body),
                     StatementKind::Nocross(body) => block(body),
+                    StatementKind::Unroll(unroll) => block(&unroll.body),
                     StatementKind::Loop(loop_statement) => {
                         block(&loop_statement.body)
                             + match &loop_statement.condition {

@@ -74,6 +74,7 @@ fn collect(block: &k816::ast::Block, out: &mut Vec<StmtId>) {
         match &statement.kind {
             StatementKind::WidthBlock(width) => collect(&width.body, out),
             StatementKind::Nocross(body) => collect(body, out),
+            StatementKind::Unroll(unroll) => collect(&unroll.body, out),
             StatementKind::Loop(loop_statement) => collect(&loop_statement.body, out),
             StatementKind::Conditional(conditional) => {
                 collect(&conditional.body, out);

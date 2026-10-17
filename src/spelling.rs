@@ -247,6 +247,7 @@ impl Checker<'_> {
             }
             StatementKind::WidthBlock(width) => self.block(&width.body),
             StatementKind::Nocross(block) => self.block(block),
+            StatementKind::Unroll(unroll) => self.block(&unroll.body),
             StatementKind::Data(data) => self.data(data),
             _ => {}
         }

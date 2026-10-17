@@ -32,15 +32,15 @@ why — either in its own `fixture.txt` or in `REFUSALS`.
 
 | | count |
 |---|---|
-| emitted sections | 305 |
+| emitted sections | 307 |
 | of those, declaring an output | 5 |
-| `inline` sections (no exit to seed) | 13 |
+| `inline` sections (no exit to seed) | 15 |
 | of those, declaring an output | 7 |
 | call sites: `call foo` (the escape hatch) | 37 |
 | call sites: stating a flow (`add a, x -> a, y`) | 3 |
 | call sites: a bare name | 6 |
 | call sites: a hand-written `jsr`/`jsl` | 15 |
-| `inline` uses (expansions, not calls) | 24 |
+| `inline` uses (expansions, not calls) | 28 |
 
 **The second row is the one the argument rests on.** Most of the corpus
 declares no output at all — an `inline` is not one of them, having no exit to

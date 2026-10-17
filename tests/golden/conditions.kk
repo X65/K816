@@ -1,5 +1,5 @@
-// Sub-plan S fixture: flag chains, a step in a condition's slot, `continue`
-// and `when`.
+// Sub-plan S fixture: flag chains, a step in a condition's slot, `continue`,
+// `when` and `unroll`.
 // `conditions-native.kk` beside it is the same program with the branches
 // and labels written out, and the two link to the same bytes
 // (`tests/compile.rs`).
@@ -82,4 +82,13 @@ func ladder @a8 @i8 {
         else { x = #0 }
     }
     when x { 1 { mem++ } }
+}
+
+// `unroll` writes its block out N times: no counter, no jump, no register.
+// An `inline` used inside is expanded once per copy.
+inline bump { mem++ }
+
+func unrolled @a8 @i8 {
+    unroll 2 { bump }
+    unroll [LIMIT / 10] { y++ }
 }

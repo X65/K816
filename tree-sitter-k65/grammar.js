@@ -1132,6 +1132,12 @@ export default grammar({
 
     when_address: $ => field('value', $._expression),
 
+    // `unroll 4 { … }` — the block written out four times, nothing else
+    // (`plans/18-conditions.md` decision 9). The count is a compile-time
+    // number: a literal, a `const` above, an evaluator bracket.
+    unroll_statement: $ =>
+      seq('unroll', field('count', $._expression), field('body', $.block)),
+
     // `nocross { ... }` — advisory on code, asking that the block fit a page.
     nocross_block: $ => seq('nocross', field('body', $.block)),
 
@@ -1210,6 +1216,7 @@ export default grammar({
         $.repeat_statement,
         $.continue_statement,
         $.when_statement,
+        $.unroll_statement,
         $.nocross_block,
         $.data_block,
         $.preprocessor_directive,

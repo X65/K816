@@ -3242,6 +3242,31 @@
         "name": "_expression"
       }
     },
+    "unroll_statement": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "unroll"
+        },
+        {
+          "type": "FIELD",
+          "name": "count",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_expression"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "body",
+          "content": {
+            "type": "SYMBOL",
+            "name": "block"
+          }
+        }
+      ]
+    },
     "nocross_block": {
       "type": "SEQ",
       "members": [
@@ -3579,6 +3604,10 @@
         {
           "type": "SYMBOL",
           "name": "when_statement"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "unroll_statement"
         },
         {
           "type": "SYMBOL",

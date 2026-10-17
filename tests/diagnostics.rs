@@ -153,6 +153,24 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::LOOP_CONTROL_OUTSIDE_LOOP,
         caret: "continue",
     },
+    // An `unroll` writes its block at least once, and no more copies than
+    // a bank holds.
+    Case {
+        source: "func work @a8 @i8 {\n    unroll 0 { nop }\n}\n",
+        code: DiagnosticCode::UNROLL_COUNT,
+        caret: "0",
+    },
+    Case {
+        source: "func work @a8 @i8 {\n    unroll $10001 { nop }\n}\n",
+        code: DiagnosticCode::UNROLL_COUNT,
+        caret: "$10001",
+    },
+    // A label in an `unroll` would be defined once per copy.
+    Case {
+        source: "func work @a8 @i8 {\n    unroll 2 {\n.again:\n        nop\n    }\n}\n",
+        code: DiagnosticCode::UNROLL_LABEL,
+        caret: ".again",
+    },
     // A `when` value written twice: `#4` is the value `4` is.
     Case {
         source: "func work @a8 @i8 {\n    when a {\n        4 { nop }\n        #4 { nop }\n    }\n}\n",

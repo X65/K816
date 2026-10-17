@@ -1067,3 +1067,69 @@ fn a_when_compiles_to_the_ladder_it_stands_for() {
         assert_eq!(shape(lines), shape(k65_lines), "`{addition}` in a .k65");
     }
 }
+
+/// `unroll N { … }` compiles to the bytes of its block written N times
+/// (`plans/18-conditions.md` decision 9): an `if` and a loop inside get
+/// labels of their own per copy, an `inline` use is expanded per copy — one
+/// whose body holds a loop too — a width the first copy leaves is the one
+/// the second starts at, unrolls nest, and the count may be a `const` above
+/// or a bracket. A jump out of the block works in every copy.
+#[test]
+fn an_unroll_compiles_to_its_block_written_out() {
+    let header = "var mem = $10\nconst COUNT = 3\ninline inc_y { y++ }\ninline spin @a8 @i8 {\n    x = #2\n    loop { mem++ } while x--\n}\n";
+    let function = |body: &str| format!("{header}func work @a8 @i8 {{\n    {body}\n.out:\n}}\n");
+    for (unrolled, written) in [
+        ("unroll 3 { mem++ }", "mem++\n mem++\n mem++"),
+        ("unroll 2 { if z { y++ } }", "if z { y++ }\n if z { y++ }"),
+        (
+            "unroll 2 { loop { mem++ } while x-- }",
+            "loop { mem++ } while x--\n loop { mem++ } while x--",
+        ),
+        ("unroll 3 { inc_y }", "inc_y\n inc_y\n inc_y"),
+        ("unroll 2 { spin }", "spin\n spin"),
+        // The first copy's `lda #1` is two bytes, the second's three.
+        (
+            "unroll 2 { lda #1\n rep #$20 }",
+            "lda #1\n rep #$20\n lda #1\n rep #$20",
+        ),
+        ("unroll 2 { unroll 3 { mem++ } }", &"mem++\n ".repeat(6)),
+        ("unroll COUNT { mem++ }", "mem++\n mem++\n mem++"),
+        ("unroll [COUNT - 1] { mem++ }", "mem++\n mem++"),
+        (
+            "unroll 2 { a = mem\n if z goto .out }",
+            "a = mem\n if z goto .out\n a = mem\n if z goto .out",
+        ),
+        (
+            "loop { unroll 2 { a = mem\n if z break\n mem++ } } while y--",
+            "loop { a = mem\n if z break\n mem++\n a = mem\n if z break\n mem++ } while y--",
+        ),
+    ] {
+        let (codes, lines) = code("unit.kk", &function(unrolled));
+        let (written_codes, written_lines) = code("unit.kk", &function(written));
+        assert_eq!(codes, written_codes, "`{unrolled}`");
+        assert_eq!(shape(lines), shape(written_lines), "`{unrolled}`");
+    }
+    // An addition: a `.k65` accepts it.
+    assert_eq!(
+        code("unit.k65", &unit("unroll 2 { x++ }")),
+        code("unit.k65", &unit("x++\n x++")),
+    );
+}
+
+/// A problem inside an `unroll` is reported once, not once per copy: the
+/// copies share their spans, and the diagnostics they produce are equal.
+#[test]
+fn a_problem_inside_an_unroll_is_reported_once() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "unit.kk",
+        "func work @a8 @i8 {\n    unroll 3 { lda nothing }\n}\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let codes: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(codes, ["K816-E0101"]);
+}

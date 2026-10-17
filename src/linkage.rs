@@ -1093,6 +1093,7 @@ fn called_in_statement(statement: &Statement, names: &mut BTreeSet<String>) {
             }
         }
         StatementKind::Nocross(block) => called_in_block(block, names),
+        StatementKind::Unroll(unroll) => called_in_block(&unroll.body, names),
         StatementKind::Data(data) => called_in_data(&data.entries, names),
         StatementKind::Label(_)
         | StatementKind::Native(_)

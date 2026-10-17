@@ -796,6 +796,7 @@ fn continues(block: &crate::ast::Block) -> bool {
             }
             StatementKind::WidthBlock(width) => continues(&width.body),
             StatementKind::Nocross(body) => continues(body),
+            StatementKind::Unroll(unroll) => continues(&unroll.body),
             _ => false,
         })
 }
@@ -1871,6 +1872,8 @@ impl<'a> Lowering<'a> {
                 };
                 self.branch_to(&jump.condition, hla::BranchSense::Take, anchor, span);
             }
+            // The copies the preprocessor wrote, as if the source had.
+            StatementKind::Unroll(unroll) => self.block(&unroll.body),
             // `nocross` on code is advisory: the body is ordinary code, and
             // the guard is a link-time assertion about where it lands.
             StatementKind::Nocross(body) => {

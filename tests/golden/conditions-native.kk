@@ -128,3 +128,13 @@ func ladder @a8 @i8 {
     mem++
 .done:
 }
+
+inline bump { mem++ }
+
+func unrolled @a8 @i8 {
+    bump
+    bump
+    y++
+    y++
+    y++
+}

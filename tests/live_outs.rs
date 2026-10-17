@@ -417,6 +417,7 @@ fn count(statement: &Statement, symbols: &SymbolTable, census: &mut Census) {
         StatementKind::ConditionalJump(jump) => count(&jump.jump, symbols, census),
         StatementKind::Loop(loop_statement) => block(&loop_statement.body, symbols, census),
         StatementKind::Nocross(body) => block(body, symbols, census),
+        StatementKind::Unroll(unroll) => block(&unroll.body, symbols, census),
         StatementKind::Data(data) => data_block(data, symbols, census),
         StatementKind::Label(_)
         | StatementKind::Hla(_)

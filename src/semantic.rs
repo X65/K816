@@ -636,7 +636,9 @@ fn analyze(
     // resolved and every declaration this unit makes is in it by now.
     analysis.settle_pending_references();
     analysis.model.preprocessed = preprocessed;
-    (analysis.model, analysis.diagnostics)
+    let mut diagnostics = analysis.diagnostics;
+    crate::diagnostic::drop_repeats(&mut diagnostics);
+    (analysis.model, diagnostics)
 }
 
 struct Analysis {
@@ -1037,6 +1039,7 @@ impl Analysis {
                 }
                 StatementKind::WidthBlock(width) => self.check_inline_label_values(&width.body),
                 StatementKind::Nocross(body) => self.check_inline_label_values(body),
+                StatementKind::Unroll(unroll) => self.check_inline_label_values(&unroll.body),
                 StatementKind::Loop(loop_statement) => {
                     self.check_inline_label_values(&loop_statement.body);
                     if let crate::ast::LoopCondition::Branch(chain) = &loop_statement.condition {
@@ -1133,6 +1136,7 @@ impl Analysis {
                     self.declare_labels_in(owner, &width.body, kind)
                 }
                 StatementKind::Nocross(body) => self.declare_labels_in(owner, body, kind),
+                StatementKind::Unroll(unroll) => self.declare_labels_in(owner, &unroll.body, kind),
                 StatementKind::Loop(loop_statement) => {
                     self.declare_labels_in(owner, &loop_statement.body, kind);
                 }
@@ -2381,6 +2385,7 @@ impl Analysis {
                     self.loops -= 1;
                 }
                 StatementKind::Nocross(body) => self.check_block(scope, body),
+                StatementKind::Unroll(unroll) => self.check_block(scope, &unroll.body),
                 // A `code { }` subblock of an inline data block is ordinary
                 // code of the enclosing function: the solver flattened it
                 // into the same graph, so it is checked in the same scope.
@@ -2544,6 +2549,15 @@ impl Analysis {
                 }
             }
             StatementKind::Loop(_) | StatementKind::Nocross(_) => {}
+            // The preprocessor folded the count and reported what it could
+            // not fold; the names in it are indexed for the editor, silently,
+            // as a call's immediate arguments are.
+            StatementKind::Unroll(unroll) => {
+                let mut resolver = self.resolver();
+                resolver.index_names(&unroll.count);
+                let resolved = resolver.finish();
+                self.absorb(resolved);
+            }
             StatementKind::Break => self.check_loop_control(statement, "break"),
             StatementKind::Repeat => self.check_loop_control(statement, "repeat"),
             StatementKind::Continue => self.check_loop_control(statement, "continue"),
@@ -4376,6 +4390,7 @@ fn returns_through_rti(block: &crate::ast::Block) -> bool {
             }
             StatementKind::Loop(loop_statement) => returns_through_rti(&loop_statement.body),
             StatementKind::Nocross(body) => returns_through_rti(body),
+            StatementKind::Unroll(unroll) => returns_through_rti(&unroll.body),
             _ => false,
         })
 }

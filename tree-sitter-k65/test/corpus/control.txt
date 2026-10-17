@@ -1275,3 +1275,52 @@ func main {
       (when_statement
         register: (register)
         arms: (when_arms)))))
+
+================================================================================
+unroll, with a number, a const, a bracket and an expression, nested
+================================================================================
+
+const COUNT = 3
+func main {
+  unroll 3 { inx }
+  unroll COUNT {
+    unroll [2*2] { a = mem }
+  }
+  unroll COUNT+1 { nop }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (number)))
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (unroll_statement
+        count: (number)
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic))))
+      (unroll_statement
+        count: (identifier)
+        body: (block
+          (unroll_statement
+            count: (eval_bracket
+              (eval_binary
+                left: (number)
+                right: (number)))
+            body: (block
+              (hla_assignment
+                operand: (register)
+                operand: (address
+                  value: (identifier)))))))
+      (unroll_statement
+        count: (binary_expression
+          left: (identifier)
+          right: (number))
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic)))))))

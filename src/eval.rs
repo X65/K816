@@ -1671,6 +1671,10 @@ pub fn sites_of_statement<'a>(statement: &'a crate::ast::Statement, out: &mut Ve
             }
             StatementKind::WidthBlock(width) => sites_of_block(&width.body, out),
             StatementKind::Nocross(body) => sites_of_block(body, out),
+            StatementKind::Unroll(unroll) => {
+                sites_of_expr(&unroll.count, out);
+                sites_of_block(&unroll.body, out);
+            }
             StatementKind::Loop(loop_statement) => {
                 sites_of_block(&loop_statement.body, out);
                 if let crate::ast::LoopCondition::Branch(chain) = &loop_statement.condition {

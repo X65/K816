@@ -449,7 +449,7 @@ fn a_branch_to_an_unnamed_label_is_not_a_label_named_for_the_mnemonic() {
     );
     // The two unnamed labels were named, and the names are then raised away:
     // the loop and the skip they were read as are the program's own.
-    for line in ["loop {", "} while !=", "!= {"] {
+    for line in ["loop {", "} while x--", "!= {"] {
         has(&text, line);
     }
     assert!(!text.contains("beq:"), "{text}");
@@ -980,7 +980,7 @@ fn a_label_a_branch_returns_to_is_a_loop() {
         ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n@next:  inc total\n        dex\n        bne @next\n        rts\n",
     );
     has(&text, "loop {");
-    has(&text, "} while !=");
+    has(&text, "} while x--");
     assert!(!text.contains(".next"), "{text}");
 }
 
@@ -1020,7 +1020,7 @@ fn a_branch_out_of_a_loop_is_a_break_and_one_back_to_its_top_a_repeat() {
         "raise-break",
         ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n@top:   lda total\n        beq @out\n        lsr total\n        bcs @top\n        dex\n        bne @top\n@out:   rts\n",
     );
-    for line in ["loop {", "if == break", "if c repeat", "} while !="] {
+    for line in ["loop {", "if == break", "if c repeat", "} while x--"] {
         has(&text, line);
     }
     assert!(!text.contains(".top") && !text.contains(".out"), "{text}");
@@ -1109,7 +1109,8 @@ fn a_raise_that_would_change_the_program_keeps_its_labels() {
 
 /// A comment after a raised branch keeps the space before it. A mnemonic's
 /// span runs to its comment, spaces included, and the first draft replaced
-/// the spaces with the branch: `} while !=// again`.
+/// the spaces with the branch: `} while !=// again` (since sub-plan S the
+/// `dex` before it is in the `while`).
 #[test]
 fn a_raised_branch_keeps_the_space_before_its_comment() {
     let (text, _) = faithful(
@@ -1118,13 +1119,13 @@ fn a_raised_branch_keeps_the_space_before_its_comment() {
     );
     let line = text
         .lines()
-        .find(|line| line.contains("} while !="))
+        .find(|line| line.contains("} while x--"))
         .unwrap_or_else(|| panic!("no loop in\n{text}"));
     assert!(
-        line.contains("!= ") && line.ends_with("// again"),
+        line.contains("x-- ") && line.ends_with("// again"),
         "{line:?}"
     );
-    assert!(!line.contains("!=//"), "{line:?}");
+    assert!(!line.contains("x--//"), "{line:?}");
 }
 
 /// A skipping branch's comment and the label's own are said once, together,
@@ -1165,7 +1166,7 @@ fn a_break_is_raised_when_the_exit_is_also_reached_from_outside() {
         "raise-shared-exit",
         ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n        lda total\n        beq @out\n@top:   lda total\n        beq @out\n        dex\n        bne @top\n@out:   rts\n",
     );
-    for line in ["!= {", "loop {", "== break", "} while !="] {
+    for line in ["!= {", "loop {", "== break", "} while x--"] {
         has(&text, line);
     }
     assert!(!text.contains(".out") && !text.contains(".top"), "{text}");
@@ -1255,15 +1256,16 @@ fn a_loops_exits_and_test_fold_their_compares() {
 
 /// An `else` whose whole body is one `if` is `} else if`. Each level of
 /// the nested choice has its own exit label, as assembly written for it
-/// does.
+/// does. (A second `==` on the same register would make the ladder a
+/// `when`, so the second arm tests `<`.)
 #[test]
 fn an_else_holding_only_an_if_is_an_else_if() {
     let (text, _) = faithful(
         "if-chain",
-        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        cmp #1\n        bne @two\n        ldx #10\n        bra @done\n@two:   cmp #2\n        bne @three\n        ldx #20\n        bra @inner\n@three: ldx #30\n@inner:\n@done:  stx total\n        rts\n",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        cmp #1\n        bne @two\n        ldx #10\n        bra @done\n@two:   cmp #2\n        bcs @three\n        ldx #20\n        bra @inner\n@three: ldx #30\n@inner:\n@done:  stx total\n        rts\n",
     );
     has(&text, "if a?#1 == {");
-    has(&text, "} else if a?#2 == {");
+    has(&text, "} else if a?#2 < {");
     has(&text, "} else {");
 }
 
@@ -1278,4 +1280,57 @@ fn a_compare_a_label_separates_from_its_branch_is_not_folded() {
     );
     has(&text, "cmp #10");
     assert!(!text.contains("a?#10"), "{text}");
+}
+
+/// A step before a loop's closing branch goes in the `while`, and `!=`
+/// after it is assumed: `dex`/`bne` is `} while x--`, `dey`/`bpl` is
+/// `} while y-- >=0`, and a memory step is the place's (`plans/18-conditions.md`
+/// decision 8). A step with a comment, or on a number, stays a statement.
+#[test]
+fn a_step_before_a_loops_closing_branch_is_its_while() {
+    let (text, _) = faithful(
+        "raise-step",
+        ".zeropage\ntotal:  .res 1\ncount:  .res 1\n.code\n.a8\n.i8\nfirst:  ldx #8\n@one:   inc total\n        dex\n        bne @one\n        ldy #8\n@two:   inc total\n        dey\n        bpl @two\n@three: inc total\n        dec count\n        bne @three\n@four:  inc total\n        dex             ; one fewer\n        bne @four\n        rts\n",
+    );
+    for line in [
+        "} while x--\n",
+        "} while y-- >=0",
+        "} while count--\n",
+        "// one fewer",
+        "} while !=",
+    ] {
+        has(&text, line);
+    }
+    assert!(!text.contains(".one") && !text.contains(".three"), "{text}");
+}
+
+/// Two branches in a row to the label a run ends at are an `&` chain of
+/// their inverted conditions, a compare between them folded into its own
+/// element: the run goes when both fall through.
+#[test]
+fn adjacent_branches_to_one_label_are_an_and_chain() {
+    let (text, _) = faithful(
+        "raise-and",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  lda total\n        bcs @skip\n        bne @skip\n        inc total\n@skip:  cmp #10\n        bcc @out\n        cmp #20\n        bcs @out\n        inc total\n@out:   rts\n",
+    );
+    has(&text, "if !c & == {");
+    has(&text, "if a?#10 >= & a?#20 < {");
+    assert!(!text.contains(".skip") && !text.contains(".out"), "{text}");
+}
+
+/// An `else if` ladder comparing one register for equality is a `when`;
+/// one that changes register stays a ladder. (Each arm jumps to a label of
+/// its own: the `else` raise needs that, and a ladder sharing one exit label
+/// is not raised at all.)
+#[test]
+fn an_equality_ladder_on_one_register_is_a_when() {
+    let (text, _) = faithful(
+        "raise-when",
+        ".zeropage\ntotal:  .res 1\n.code\n.a8\n.i8\nfirst:  cmp #4\n        bne @n1\n        inc total\n        bra @d1\n@n1:    cmp #10\n        bne @n2\n        dec total\n        bra @d2\n@n2:    stz total\n@d2:\n@d1:    cpx #1\n        bne @n3\n        inc total\n        bra @d3\n@n3:    cpy #2\n        bne @d4\n        dec total\n@d4:\n@d3:    rts\n",
+    );
+    for line in ["when a {", "#4 {", "#10 {", "else {"] {
+        has(&text, line);
+    }
+    has(&text, "if x?#1 == {");
+    has(&text, "} else if y?#2 == {");
 }

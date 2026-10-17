@@ -390,7 +390,7 @@ fn exit_word(
     (
         from,
         branch.span.end,
-        format!("if {compare}{condition} {word}"),
+        format!("if {} {word}", slotted(&compare, condition)),
     )
 }
 
@@ -408,11 +408,45 @@ fn folded(statements: &[Statement], index: usize, text: &str) -> Option<(u32, St
 }
 
 /// [`folded`], given the statement before the branch.
+///
+/// A step folds as a compare does — `dex` before `bne` is `while x--`, the
+/// slot's step (`plans/18-conditions.md` decision 8) — under the same
+/// conditions, its operand a name: `dec $10` stays a statement.
 fn fold(compare: Option<&Statement>, text: &str) -> Option<(u32, String)> {
     let compare = compare?;
     let StatementKind::Native(native) = &compare.kind else {
         return None;
     };
+    let written = &text[compare.span.start as usize..compare.span.end as usize];
+    let operand = written.get(native.mnemonic.text.len()..)?.trim();
+    let (comment, _) = trailing_comment(text, compare.span);
+    if comment.is_some() {
+        return None;
+    }
+    let step = match native.mnemonic.text.to_ascii_lowercase().as_str() {
+        "dex" => Some("x--".to_owned()),
+        "dey" => Some("y--".to_owned()),
+        "inx" => Some("x++".to_owned()),
+        "iny" => Some("y++".to_owned()),
+        "dec" | "inc" => {
+            let operator = if native.mnemonic.text.eq_ignore_ascii_case("dec") {
+                "--"
+            } else {
+                "++"
+            };
+            match operand {
+                "" | "a" | "A" => Some(format!("a{operator}")),
+                _ if operand.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic()) => {
+                    Some(format!("{operand}{operator}"))
+                }
+                _ => return None,
+            }
+        }
+        _ => None,
+    };
+    if let Some(step) = step {
+        return Some((compare.span.start, format!("{step} ")));
+    }
     let register = match native.mnemonic.text.to_ascii_lowercase().as_str() {
         "cmp" => "a?",
         "cpx" => "x?",
@@ -420,16 +454,20 @@ fn fold(compare: Option<&Statement>, text: &str) -> Option<(u32, String)> {
         "bit" => "a&?",
         _ => return None,
     };
-    let written = &text[compare.span.start as usize..compare.span.end as usize];
-    let operand = written.get(native.mnemonic.text.len()..)?.trim();
     if !operand.starts_with(|c: char| c == '#' || c == '_' || c.is_ascii_alphabetic()) {
         return None;
     }
-    let (comment, _) = trailing_comment(text, compare.span);
-    if comment.is_some() {
-        return None;
-    }
     Some((compare.span.start, format!("{register}{operand} ")))
+}
+
+/// A slot and the condition after it, as an `if` or a `while` writes them:
+/// after a step `!=` is assumed, so `x-- !=` is `x--`.
+fn slotted(slot: &str, condition: &str) -> String {
+    if condition == "!=" && (slot.ends_with("-- ") || slot.ends_with("++ ")) {
+        slot.trim_end().to_owned()
+    } else {
+        format!("{slot}{condition}")
+    }
 }
 
 /// The branch taken exactly when `mnemonic` is not.
@@ -535,6 +573,13 @@ fn in_block(
             if let Some(candidate) = a_block(function, statements, index, &jump, labels, text) {
                 found.push(candidate);
             }
+            if let Some(candidate) = a_conjunction(function, statements, index, &jump, labels, text)
+            {
+                found.push(candidate);
+            }
+        }
+        if let Some(candidate) = a_when(function, statements, index, text) {
+            found.push(candidate);
         }
     }
 }
@@ -661,10 +706,13 @@ fn a_loop(
             statements[close].span.end,
             if closing.conditional {
                 format!(
-                    "}} while {compare}{}",
-                    taken(
-                        &closing.mnemonic,
-                        compares(close.checked_sub(1).map(|at| &statements[at]))
+                    "}} while {}",
+                    slotted(
+                        &compare,
+                        taken(
+                            &closing.mnemonic,
+                            compares(close.checked_sub(1).map(|at| &statements[at]))
+                        )
                     )
                 )
             } else {
@@ -779,7 +827,11 @@ fn a_block(
         labels: 1,
         order: (2, region.1 - region.0),
         edits: vec![
-            (from, opened, format!("if {compare}{condition} {{")),
+            (
+                from,
+                opened,
+                format!("if {} {{", slotted(&compare, condition)),
+            ),
             (label.start, closed_at, closing),
         ],
     })
@@ -877,6 +929,203 @@ fn a_chain(function: &str, statement: &Statement, text: &str) -> Option<Candidat
     })
 }
 
+/// Two or more conditional branches in a row to the label a run ends at,
+/// each optionally after a compare or step of its own: `if C1 & C2 { … }`,
+/// the run going when every branch falls through — each condition the
+/// inverse of its branch's (`plans/18-conditions.md` decision 8). A comment
+/// on any of them would have nowhere to go, so there must be none.
+fn a_conjunction(
+    function: &str,
+    statements: &[Statement],
+    index: usize,
+    branch: &Jump<'_>,
+    labels: &Labels,
+    text: &str,
+) -> Option<Candidate> {
+    // Each element: the branch's index, and the slot folded before it.
+    let mut elements = vec![(index, folded(statements, index, text))];
+    let mut at = index + 1;
+    loop {
+        let (next, slot) = match statements.get(at).and_then(jump) {
+            Some(_) => (at, None),
+            None => match (fold(statements.get(at), text), statements.get(at + 1)) {
+                (Some(slot), Some(_)) => (at + 1, Some(slot)),
+                _ => break,
+            },
+        };
+        match jump(&statements[next]) {
+            Some(next_jump) if next_jump.conditional && next_jump.target == branch.target => {
+                elements.push((next, slot));
+                at = next + 1;
+            }
+            _ => break,
+        }
+    }
+    if elements.len() < 2 || labels.uses(branch.target).len() != elements.len() {
+        return None;
+    }
+    let last = elements.last().expect("two elements").0;
+    let close = statements.iter().enumerate().skip(last + 1).find_map(|(at, statement)| {
+        matches!(&statement.kind, StatementKind::Label(label) if label.name.text == branch.target)
+            .then_some(at)
+    })?;
+    let region = (statements[index].span.start, statements[close].span.end);
+    if !closed(&statements[last + 1..close], region, labels) {
+        return None;
+    }
+    let (label_comment, _) = trailing_comment(text, statements[close].span);
+    if label_comment.is_some()
+        || elements
+            .iter()
+            .any(|&(at, _)| trailing_comment(text, statements[at].span).0.is_some())
+    {
+        return None;
+    }
+    let mut conditions = Vec::new();
+    for &(at, ref slot) in &elements {
+        let mnemonic = jump(&statements[at])?.mnemonic;
+        let condition = taken(
+            inverse(&mnemonic),
+            compares(at.checked_sub(1).map(|before| &statements[before])),
+        );
+        conditions.push(match slot {
+            Some((_, slot)) => slotted(slot, condition),
+            None => condition.to_owned(),
+        });
+    }
+    let from = elements[0]
+        .1
+        .as_ref()
+        .map_or(statements[index].span.start, |(start, _)| *start);
+    Some(Candidate {
+        key: format!("{function} conjunction {}", branch.target),
+        labels: 1,
+        order: (2, region.1 - region.0),
+        edits: vec![
+            (
+                from,
+                statements[last].span.end,
+                format!("if {} {{", conditions.join(" & ")),
+            ),
+            (
+                statements[close].span.start,
+                statements[close].span.end,
+                "}".to_owned(),
+            ),
+        ],
+    })
+}
+
+/// An `if … else if …` chain whose every condition compares one register
+/// for equality, with nothing in each `else` but the next arm:
+/// `when a { 4 { … } 10 { … } else { … } }` (`plans/18-conditions.md`
+/// decision 8). Read off the raised chain, after the `else if`s are, and only
+/// where no comment stands between the arms.
+fn a_when(function: &str, statements: &[Statement], index: usize, text: &str) -> Option<Candidate> {
+    use crate::ast::{BranchConditionKind, ComparisonKind, HlaOperandKind};
+    // The compare a raised arm's `if` holds, as the register and the value.
+    let arm = |compare: &Statement, conditional: &crate::ast::ConditionalBlock| {
+        let StatementKind::Hla(HlaStatement::Arithmetic(arithmetic)) = &compare.kind else {
+            return None;
+        };
+        let element = match conditional.condition.elements.as_slice() {
+            [element] => element,
+            _ => return None,
+        };
+        let equal =
+            element.condition.kind == BranchConditionKind::Comparison(ComparisonKind::Equal);
+        let value = match &arithmetic.operand.kind {
+            HlaOperandKind::Immediate(_) => true,
+            HlaOperandKind::Memory(address) => {
+                address.index.is_none()
+                    && address.encoding.is_none()
+                    && address.offset_marker.is_none()
+            }
+            _ => false,
+        };
+        (arithmetic.op == ArithmeticOp::Compare
+            && conditional.compare == Some(compare.span)
+            && conditional.keyword.is_some()
+            && equal
+            && !element.assumed
+            && value)
+            .then(|| {
+                let operand = arithmetic.operand.span;
+                (
+                    arithmetic.register.kind,
+                    text[operand.start as usize..operand.end as usize].to_owned(),
+                )
+            })
+    };
+    let StatementKind::Conditional(head) = &statements.get(index)?.kind else {
+        return None;
+    };
+    let (register, first) = arm(statements.get(index.checked_sub(1)?)?, head)?;
+    let keyword = head.keyword?;
+    let mut edits = vec![(
+        keyword.start,
+        head.body.span.start + 1,
+        format!(
+            "when {} {{\n{first} {{",
+            match register {
+                crate::ast::RegisterKind::X => "x",
+                crate::ast::RegisterKind::Y => "y",
+                _ => "a",
+            }
+        ),
+    )];
+    let between = |start: u32, end: u32| text.get(start as usize..end as usize);
+    let mut current = head;
+    let mut arms = 1;
+    while let Some(otherwise) = &current.otherwise {
+        let body_end = current.body.span.end;
+        if current.chained {
+            let [compare, next] = otherwise.statements.as_slice() else {
+                return None;
+            };
+            let StatementKind::Conditional(inner) = &next.kind else {
+                return None;
+            };
+            let (inner_register, value) = arm(compare, inner)?;
+            // Another register's ladder would compile to other compares and
+            // be refused by the measurement; asking here saves the compile.
+            if inner_register != register
+                || between(body_end, inner.body.span.start)?.contains("//")
+            {
+                return None;
+            }
+            edits.push((
+                body_end - 1,
+                inner.body.span.start + 1,
+                format!("}}\n{value} {{"),
+            ));
+            current = inner;
+            arms += 1;
+        } else {
+            if between(body_end, otherwise.span.start)?.contains("//") {
+                return None;
+            }
+            edits.push((
+                body_end - 1,
+                otherwise.span.start + 1,
+                "}\nelse {".to_owned(),
+            ));
+            break;
+        }
+    }
+    if arms < 2 {
+        return None;
+    }
+    let end = statements[index].span.end;
+    edits.push((end, end, "\n}".to_owned()));
+    Some(Candidate {
+        key: format!("{function} when {}", keyword.start),
+        labels: 0,
+        order: (4, end - keyword.start),
+        edits,
+    })
+}
+
 /// A conditional branch at `index` over a run that ends in a jump over a
 /// second run, to the label that begins the second: `COND { … } else { … }`.
 /// The branch is the `else`'s way in and the jump the `then`'s way out, so
@@ -937,7 +1186,11 @@ fn a_choice(
         labels: 2,
         order: (1, region.1 - region.0),
         edits: vec![
-            (from, opened, format!("if {compare}{condition} {{")),
+            (
+                from,
+                opened,
+                format!("if {} {{", slotted(&compare, condition)),
+            ),
             (statements[over].span.start, jumped, middle),
             (statements[otherwise].span.start, labelled, String::new()),
             (

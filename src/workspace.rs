@@ -314,19 +314,29 @@ impl Workspace {
             .values()
             .any(|file| !reached.contains(file) && !self.is_document(*file));
         if !stale {
-            for file in reached {
-                self.imported
-                    .insert(self.map.file(file).path().to_path_buf(), file);
-            }
+            self.record_imported(reached);
             return;
         }
         // Dropping one file means rebuilding, because a `FileId` is a
         // position in the map. Only the documents survive, and the loader
         // runs again over exactly what they now import.
         self.rebuild();
-        for file in crate::load_imports(&mut self.map, &mut |path| std::fs::read_to_string(path)) {
-            self.imported
-                .insert(self.map.file(file).path().to_path_buf(), file);
+        let reached = crate::load_imports(&mut self.map, &mut |path| std::fs::read_to_string(path));
+        self.record_imported(reached);
+    }
+
+    /// Records the files the import walk reached as imported — every one but
+    /// an open document. An import cycle reaches the document it started
+    /// from, and an imported file is re-read from disk before each analysis:
+    /// recorded, the document's unsaved text was replaced by its saved copy
+    /// while its syntax tree kept the edit, and the next parse read the
+    /// tree's offsets against the wrong text.
+    fn record_imported(&mut self, reached: impl IntoIterator<Item = FileId>) {
+        for file in reached {
+            if !self.is_document(file) {
+                self.imported
+                    .insert(self.map.file(file).path().to_path_buf(), file);
+            }
         }
     }
 

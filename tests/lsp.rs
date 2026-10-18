@@ -3675,3 +3675,52 @@ fn a_hover_on_when_continue_and_unroll_says_what_each_does() {
     assert!(hover("continue").contains("goes to the loop's test"));
     assert!(hover("unroll").contains("writes its block 3 times"));
 }
+
+/// An open document that a file it imports imports back is still the
+/// editor's text. The import walk reached it through the cycle and recorded it
+/// as an imported file, so every later analysis re-read it from disk over the
+/// unsaved buffer — while its syntax tree kept the edit. The next parse then
+/// read the tree's offsets against the saved text, and a multibyte character
+/// past the edit made the server panic slicing inside it (a real unit with a
+/// `†` in a comment, after typing at its top).
+#[test]
+fn an_open_document_in_an_import_cycle_keeps_its_edits() {
+    use k816::lsp::convert::range_to_span;
+    use k816::parser::SourceEdit;
+
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("lsp-import-cycle");
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    let main = dir.join("main.kk");
+    let saved = "import \"other.kk\"\n\nfunc main @a8 @i8 {\n    nop // the end †\n}\n";
+    std::fs::write(&main, saved).expect("write main");
+    std::fs::write(
+        dir.join("other.kk"),
+        "import \"main.kk\"\n\nfunc other @a8 @i8 {\n    nop\n}\n",
+    )
+    .expect("write other");
+    let name = format!("file://{}", main.display());
+    let mut workspace = Workspace::new();
+    workspace.update(name.as_str(), saved);
+    workspace.analyze();
+
+    // Typed at the top of the file, as an editor sends it.
+    let file = workspace.file(&name).expect("open");
+    let at = lsp_types::Position::new(0, 0);
+    let span = range_to_span(workspace.map().file(file), lsp_types::Range::new(at, at));
+    workspace.apply_edit(&name, &SourceEdit::new(span, "// typed\n"));
+    let analysis = workspace.analyze();
+    let file = workspace.file(&name).expect("open");
+    assert_eq!(
+        workspace.map().file(file).text(),
+        format!("// typed\n{saved}"),
+        "the buffer, not the saved file"
+    );
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    // And the next edit parses against a tree that matches the text.
+    workspace.apply_edit(&name, &SourceEdit::new(Span::new(file, 0, 0), "\n"));
+    workspace.analyze();
+}

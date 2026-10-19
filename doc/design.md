@@ -616,7 +616,7 @@ The emitted assembly should:
 * use ca65 imports, exports, segments, relocations, and expressions
 * avoid resolving addresses that belong to ld65
 
-With debug annotations enabled, ca65/ld65 generate the debug database consumed by `cc65-dbg`.
+With debug annotations enabled, ca65/ld65 generate the debug database consumed by `cc65-dbg`. A variable's field layout, which K816 otherwise folds to numbers, reaches that database as a ca65 `.scope` beside the variable's label: one equate per field with the address of element 0's field, nested scopes for nested fields. The scopes emit no bytes, are never exported, and stay out of the `-Ln` label file (`doc/syntax-reference.md`, "Layouts in the debug database").
 
 Integration with the cc65 toolchain should happen in two stages:
 

@@ -505,3 +505,36 @@ fn a_debug_file_without_symbols_names_the_flag_to_add() {
         "{stderr}"
     );
 }
+
+/// `--layouts` reads nothing back from a K816 unit.
+///
+/// A K816 variable's fields reach the database as a `.scope` of equates, and
+/// an `abstract var` leaves nothing there at all — never a `.struct`, which is
+/// what this writer turns into an `abstract var`. Were a K816 unit to emit
+/// one, every unit linked with it would be handed its own declaration back
+/// under its own name, once per declaring unit.
+#[test]
+fn a_k816_units_layouts_are_not_read_back() {
+    let dir = work_dir("bind-k816-layouts");
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    // Both before either compiles: each unit imports the other.
+    let units: Vec<PathBuf> = ["layout-unit-a.k816", "layout-unit-b.k816"]
+        .iter()
+        .map(|unit| {
+            let source = dir.join(unit);
+            std::fs::copy(golden.join(unit), &source).expect("copy a layout fixture");
+            source
+        })
+        .collect();
+    let objects: Vec<PathBuf> = units
+        .iter()
+        .map(|unit| assemble(&dir, &compile(unit), true))
+        .collect();
+    let dbg = link(&dir, &objects, "layouts");
+
+    let layouts = bind(&["--layouts", dbg.to_str().unwrap()], false);
+    assert!(
+        declarations(&layouts).is_empty(),
+        "a K816 layout was read back:\n{layouts}"
+    );
+}

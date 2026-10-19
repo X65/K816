@@ -48,7 +48,9 @@ use crate::op::{
 };
 use crate::semantic::SemanticModel;
 use crate::source::{FileId, SourceMap, Span};
-use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
+use crate::symbol::{
+    AddressSize, FieldShape, LabelScope, Layout, SymbolId, SymbolKind, SymbolTable,
+};
 use crate::value::{KExpr, UnaryOp, Value};
 
 /// The ca65 spelling chosen for every symbol, decided once per unit.
@@ -247,6 +249,12 @@ pub fn emit(
         out.push_str(&equates);
     }
 
+    let layouts = layout_scopes(map, &model.symbols);
+    if !layouts.is_empty() {
+        out.push('\n');
+        out.push_str(&layouts);
+    }
+
     // Linkage is derived from the symbol tables where a body exists, and
     // declared where one does not. Both directions carry the symbol's
     // address size: ca65 validates addressing modes against an imported
@@ -394,6 +402,182 @@ pub fn emit(
     out
 }
 
+/// The member every layout scope defines for one element's size, spelled
+/// so that no field is likely to want the name — one that does is mangled
+/// ([`member_names`]) rather than redefining it.
+const SIZEOF_MEMBER: &str = "__sizeof";
+
+/// Every field layout this unit's variables declare, as the ca65 scopes that
+/// carry it into ld65's debug database.
+///
+/// K816 folds every field access to a number, so without these a layout
+/// leaves no trace in the object: a debugger reading the `.dbg` could name
+/// `TASKS` but not `TASKS.state`. A variable with a field list therefore
+/// keeps its label and gains a `.scope` of the same name, with one equate
+/// per field — the address of element 0's field, as `::NAME + offset` — a
+/// nested `.scope` per nested field, and a [`SIZEOF_MEMBER`] holding one
+/// element's size. cc65-dbg walks scopes as an expandable tree, so
+/// `TASKS::message::from` is a thing it can show and evaluate.
+///
+/// Equates, not `:=` labels, because ld65 writes every debug *label* into the
+/// `-Ln` label file under its bare name: `from` at `TASKS`'s own address,
+/// where the emulator's loader keeps the last label it reads and the
+/// variable's name would be lost. An equate stays out of the label file, so
+/// that file is what it was before layouts were described.
+///
+/// Only the declaring unit writes a scope: an importer has the layout too,
+/// but a second copy would describe the same fields under another module.
+/// An `abstract var` writes nothing. It has no address, so there is no
+/// value to equate, and the `.struct` ca65 offers for a layout without
+/// storage is exactly what `k816 bind --layouts` turns back into an
+/// `abstract var`, so a K816 unit emitting one would hand its own
+/// declaration back to every unit linked with it.
+fn layout_scopes(map: &SourceMap, symbols: &SymbolTable) -> String {
+    let mut out = String::new();
+    for (_, symbol) in symbols.iter() {
+        if symbol.imported || !symbol.is_unit_level() {
+            continue;
+        }
+        let SymbolKind::Var {
+            layout: Some(layout),
+            ..
+        } = symbol.kind
+        else {
+            continue;
+        };
+        out.push_str(&annotated(
+            &format!("        .scope  {}", symbol.name),
+            &line_comment(map, symbol.declaration),
+        ));
+        scope_members(
+            symbols,
+            symbols.layout(layout),
+            &mut vec![symbol.name.clone()],
+            0,
+            &mut out,
+        );
+        out.push_str("        .endscope\n");
+    }
+    out
+}
+
+/// The ca65 spelling of each of `layout`'s fields, in field order.
+///
+/// ca65's scanner turns a lone `a`, `x`, `y` or `s` into a register token
+/// wherever it stands — after `::` as much as at the start of a line — so a
+/// field by one of those names cannot be a member of anything. It takes a
+/// `__` suffix, lengthened with `_` until no sibling has the spelling, the
+/// way [`Names`] lengthens a qualified local label. A field named
+/// [`SIZEOF_MEMBER`] is mangled the same way, since every scope defines that
+/// member itself.
+///
+/// A field named `f` or `z` keeps its name. ca65 reads those letters as an
+/// address-size prefix only when a colon follows at once, and
+/// [`scoped_name`] never writes one there.
+///
+/// A field named after an instruction needs nothing: a member is written by
+/// its scoped name, `::TABLE::inc`, and a line that starts with the
+/// namespace token is a symbol definition to ca65 however it continues
+/// (`src/ca65/main.c`, `OneLine`). A bare `inc = …` would be read as the
+/// instruction.
+fn member_names(layout: &Layout) -> Vec<String> {
+    let mut taken: Vec<String> = layout.fields.iter().map(|f| f.name.clone()).collect();
+    layout
+        .fields
+        .iter()
+        .map(|field| {
+            let register = matches!(
+                field.name.to_ascii_lowercase().as_str(),
+                "a" | "x" | "y" | "s"
+            );
+            if !register && field.name != SIZEOF_MEMBER {
+                return field.name.clone();
+            }
+            let mut name = format!("{}__", field.name);
+            while taken.contains(&name) {
+                name.push('_');
+            }
+            taken.push(name.clone());
+            name
+        })
+        .collect()
+}
+
+/// The members of one layout scope: its size, each field's address, and a
+/// nested scope per nested field.
+///
+/// `path` is the scope's own name from the root, `["TABLE", "pair"]`, and
+/// every member is defined through it, `::TABLE::pair::lo` ([`scoped_name`]).
+/// Resolving a scope by a bare name searches outward from the current scope,
+/// so a field named like its own parent (`.p[ .p[ … ] .w ]`) could capture
+/// its sibling's definition; a path from the root names exactly one scope.
+/// The base is the variable's own global label, the path's first segment,
+/// written with `::` so a member sharing its name cannot capture it, and
+/// every offset is from that base — `::TABLE::pair::hi` is an address, not an
+/// offset into `pair`.
+fn scope_members(
+    symbols: &SymbolTable,
+    layout: &Layout,
+    path: &mut Vec<String>,
+    offset: u32,
+    out: &mut String,
+) {
+    let indent = " ".repeat(8 + 4 * path.len());
+    let base = scoped_name(&path[..1]);
+    let member = |path: &mut Vec<String>, name: &str| {
+        path.push(name.to_owned());
+        let spelled = scoped_name(path);
+        path.pop();
+        spelled
+    };
+    let names = member_names(layout);
+    let size = member(path, SIZEOF_MEMBER);
+    let members: Vec<String> = names.iter().map(|name| member(path, name)).collect();
+    let width = members
+        .iter()
+        .chain(std::iter::once(&size))
+        .map(String::len)
+        .max()
+        .unwrap_or(0);
+    out.push_str(&format!("{indent}{size:<width$} = {}\n", layout.size));
+    for ((field, name), spelled) in layout.fields.iter().zip(names).zip(members) {
+        let at = offset + field.offset;
+        let address = if at == 0 {
+            base.clone()
+        } else {
+            format!("{base} + ${at:04X}")
+        };
+        out.push_str(&format!("{indent}{spelled:<width$} = {address}\n"));
+        if let FieldShape::Nested(nested) = field.shape {
+            out.push_str(&format!("{indent}.scope  {name}\n"));
+            path.push(name);
+            scope_members(symbols, symbols.layout(nested), path, at, out);
+            path.pop();
+            out.push_str(&format!("{indent}.endscope\n"));
+        }
+    }
+}
+
+/// The ca65 spelling of a symbol by its scope path from the root:
+/// `::TABLE::pair::lo`.
+///
+/// A segment ca65 would lex, with the `::` that follows it, as an
+/// address-size prefix ([`is_address_size_prefix`]) is separated from that
+/// `::` by a space: `::f::lo` is `::`, the far prefix `f:`, a stray `:` and
+/// `lo`, where `::f ::lo` is the symbol. ca65 reads scoped names token by
+/// token, so the space changes nothing else.
+fn scoped_name(path: &[String]) -> String {
+    let mut out = String::new();
+    for (i, segment) in path.iter().enumerate() {
+        if i > 0 && is_address_size_prefix(&path[i - 1]) {
+            out.push(' ');
+        }
+        out.push_str("::");
+        out.push_str(segment);
+    }
+    out
+}
+
 /// Emits a run of operations, tracking the width state across it.
 fn emit_ops(unit: &Unit<'_>, ops: &[KOp], out: &mut String) {
     {
@@ -473,11 +657,19 @@ fn dbg_line(map: &SourceMap, span: crate::source::Span) -> String {
 /// instruction's name by `K816-E0173`, for which ca65 has no spelling at
 /// all.) The space before `:=` is load-bearing — `f:=*` lexes as `f:` again.
 fn label_definition(name: &str) -> String {
-    if matches!(name.to_ascii_lowercase().as_str(), "a" | "f" | "z") {
+    if is_address_size_prefix(name) {
         format!("{name} := *")
     } else {
         format!("{name}:")
     }
+}
+
+/// Whether ca65 lexes `name`, followed immediately by a colon, as an
+/// address-size prefix — `a:`, `f:` or `z:`, in either case — rather than as
+/// the identifier (`src/ca65/scanner.c`, `NextRawTok`). Every place that
+/// writes a name before `:` or `::` asks this, so the rule is kept once.
+fn is_address_size_prefix(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "a" | "f" | "z")
 }
 
 /// Emits a non-instruction operation: a label or one of the directives.

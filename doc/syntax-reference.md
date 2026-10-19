@@ -193,6 +193,15 @@ The declaration must use a symbolic field list. Declaration-level default field 
 
 Both directions are `K816-E0136`, because they are one complaint from where the author sits — this declares a layout, and a layout has no bytes. The declaration is still recorded when it is refused, so a use of the name reports what is wrong with the *use* rather than reporting the name as undeclared. **A layout crosses a direct `import`**, an `abstract var`'s and a `var`'s alike, because offsets are arithmetic settled where they were written — the same kind of compile-time fact a `const`'s value is. A `var` crosses as a name and an address size, which is what ca65 and ld65 need of it, and its field list travels beside it, so `RIA.op`, `TASKS.state,x`, `&&TASKS[1]` and `TASKS:sizeof` mean in an importing unit what they mean where the variable is declared; the base stays a symbol ld65 resolves, and the offset is a number added to it. An `abstract var` is still not a *definition*: it emits nothing, ld65 never sees it, and two units may declare the same layout without that being a duplicate, with a unit's own declaration winning its own name.
 
+#### Layouts in the debug database
+
+K816 folds every field access to a number, so a variable's fields would otherwise leave no trace for a debugger. The unit that declares a `var` with a field list therefore writes a ca65 `.scope` of the variable's name beside its label, which emits no bytes and reaches only ld65's debug database (`--dbgfile`):
+
+* Each field is an equate holding the *address* of element 0's field, `::TABLE + offset`, so ld65 records linked values (`TASKS::state`, `RIA::op`). A nested field is a nested `.scope` (`CGIA::plane0::regs`), and every scope has a `__sizeof` member with one element's size. A field that repeats (`.w :word [4]`) is the address of its first element, and nothing in the database gives its count. A debugger that walks scopes, as cc65-dbg does, shows the variable as a tree it can expand and evaluate by name.
+* The members are equates rather than labels, so the `-Ln` label file is unchanged: ld65 writes every debug label there under its bare name, and a field at offset 0 would displace the variable's own name in an emulator that keeps the last label it reads for an address.
+* ca65 reads `a`, `x`, `y` and `s` as registers wherever they stand, so a field by one of those names — or one named `__sizeof` — is published with a `__` suffix, lengthened past any sibling that already has that spelling. A field named after an instruction keeps its name, and so does one named `f` or `z`, which ca65 would read as an address-size prefix only with a colon straight after it.
+* Only the declaring unit describes a `var`; an importer has its fields but writes no second copy. An `abstract var` writes nothing: it has no address to equate, and a `.struct` in the database is what `k816 bind --layouts` reads back as an `abstract var`.
+
 ### Two orthogonal axes: data width vs. address encoding
 
 K65 separates two unrelated concerns into different syntax slots:

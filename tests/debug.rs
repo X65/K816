@@ -46,7 +46,7 @@ use common::{run_ok, toolchain, work_dir};
 #[path = "common/corpus.rs"]
 mod corpus;
 
-use corpus::{Program, compile_units, programs, stated_units, stem};
+use corpus::{Program, compile_units, programs, root, stated_units, stem};
 
 // ---------------------------------------------------------------------------
 // The database
@@ -135,6 +135,8 @@ struct Built {
     /// The names every unit's assembly exports, which is what property (c)
     /// requires an addressed symbol for.
     exports: BTreeSet<String>,
+    /// ld65's `-Ln` label file for the same link: what the emulator loads.
+    labels: String,
 }
 
 /// Every corpus program that compiles, built once with its database.
@@ -178,6 +180,7 @@ fn build(program: &Program) -> Option<Built> {
     }
 
     let database = directory.join("out.dbg");
+    let labels = directory.join("out.lbl");
     let mut command = Command::new(toolchain().join("cl65"));
     command
         .arg("-g")
@@ -185,6 +188,8 @@ fn build(program: &Program) -> Option<Built> {
         .args(["-C".as_ref(), program.config.as_os_str()])
         .arg("-Wl")
         .arg(format!("--dbgfile,{}", database.display()))
+        .arg("-Wl")
+        .arg(format!("-Ln,{}", labels.display()))
         .args(["-o".as_ref(), directory.join("out.bin").as_os_str()]);
     for source in &program.extra {
         command.arg(source);
@@ -204,6 +209,7 @@ fn build(program: &Program) -> Option<Built> {
             &std::fs::read_to_string(&database).expect("read the debug database"),
         ),
         exports,
+        labels: std::fs::read_to_string(&labels).expect("read the label file"),
     })
 }
 
@@ -637,9 +643,11 @@ fn build_mutated(test: &str, program: &Program, mutate: impl Fn(&str) -> String)
     }
 
     let database = directory.join("out.dbg");
+    let labels = directory.join("out.lbl");
     let mut link = Command::new(toolchain().join("ld65"));
     link.args(["-C".as_ref(), program.config.as_os_str()])
         .args(["--dbgfile".as_ref(), database.as_os_str()])
+        .args(["-Ln".as_ref(), labels.as_os_str()])
         .args(["-o".as_ref(), directory.join("out.bin").as_os_str()]);
     for object in &objects {
         link.arg(object);
@@ -652,6 +660,7 @@ fn build_mutated(test: &str, program: &Program, mutate: impl Fn(&str) -> String)
             &std::fs::read_to_string(&database).expect("read the debug database"),
         ),
         exports,
+        labels: std::fs::read_to_string(&labels).expect("read the label file"),
     }
 }
 
@@ -834,4 +843,254 @@ fn the_k816_modules_debug_data_does_not_depend_on_the_debug_flag() {
         1,
         "without -g, only the module that asked for debug info has a scope"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (e) A variable's fields are in the database
+// ---------------------------------------------------------------------------
+
+/// Builds one unit written for a test, through the manual recipe.
+fn build_source(test: &str, source: &str) -> Built {
+    let directory = work_dir(&format!("debug-layouts/{test}"));
+    let unit = directory.join(format!("{test}.k816"));
+    std::fs::write(&unit, source).expect("write the unit");
+    let program = Program {
+        name: format!("{test}.k816"),
+        units: vec![unit],
+        config: root().join("tests/driver.cfg"),
+        extra: Vec::new(),
+    };
+    build_mutated(&format!("layouts/{test}"), &program, str::to_owned)
+}
+
+impl Database {
+    /// The id of the scope `path` names from a K816 module's own scope:
+    /// `[]` is the module, `["TABLE", "pair"]` a nested layout scope.
+    fn scope(&self, path: &[&str]) -> u64 {
+        let modules = k816_modules(self);
+        let mut id = self
+            .of("scope")
+            .iter()
+            .find(|scope| {
+                scope.get("name").is_some_and(String::is_empty)
+                    && number(scope, "mod").is_some_and(|module| modules.contains(&module))
+            })
+            .and_then(|scope| number(scope, "id"))
+            .expect("the K816 module's scope");
+        for name in path {
+            id = self
+                .of("scope")
+                .iter()
+                .find(|scope| {
+                    scope.get("name").map(String::as_str) == Some(*name)
+                        && number(scope, "parent") == Some(id)
+                })
+                .and_then(|scope| number(scope, "id"))
+                .unwrap_or_else(|| panic!("no scope {path:?}"));
+        }
+        id
+    }
+
+    /// The symbols defined directly in the scope `path` names: name to
+    /// `(type, val)`.
+    fn members(&self, path: &[&str]) -> BTreeMap<String, (String, u64)> {
+        let scope = self.scope(path);
+        self.of("sym")
+            .iter()
+            .filter(|symbol| number(symbol, "scope") == Some(scope))
+            .filter(|symbol| symbol.get("type").map(String::as_str) != Some("imp"))
+            .map(|symbol| {
+                (
+                    symbol["name"].clone(),
+                    (
+                        symbol["type"].clone(),
+                        number(symbol, "val").expect("a defined symbol has a value"),
+                    ),
+                )
+            })
+            .collect()
+    }
+}
+
+/// The names ld65 wrote to the label file.
+fn label_names(labels: &str) -> BTreeSet<&str> {
+    labels
+        .lines()
+        .filter_map(|line| line.strip_prefix("al "))
+        .filter_map(|rest| rest.split_once(" ."))
+        .map(|(_, name)| name)
+        .collect()
+}
+
+const LAYOUTS: &str = "\
+abstract var MSG[
+    .from :byte
+    .data :far
+]
+var TABLE[
+    .y        :word
+    .__sizeof :byte
+    .inc      :byte
+    .s        :byte
+    .pair[
+        .lo :byte
+        .hi :byte
+    ]
+] * 4
+var REGS[
+    .ctl  :byte
+    .data :word
+] = $FF00
+func main @a8 @i8 {
+    a = TABLE[1].pair.hi
+    a = MSG.data:offsetof
+    a = REGS.ctl
+    return
+}
+";
+
+/// What a debugger reads: a `.scope` per variable with a field list, whose
+/// members are the linked addresses of element 0's fields, nested scopes
+/// for nested fields, and a `__sizeof` per scope.
+///
+/// The directives alone prove nothing about the database — ca65 drops what
+/// it does not record — so this links the program and reads the `.dbg`
+/// back. `TABLE` is wherever ld65 put it; the fields are checked against
+/// that, not against a number.
+#[test]
+fn a_variables_fields_reach_the_database_as_a_scope_tree() {
+    let built = build_source("scope-tree", LAYOUTS);
+    let db = &built.database;
+
+    let table = db.members(&[])["TABLE"].1;
+    let fields = db.members(&["TABLE"]);
+    assert_eq!(fields["__sizeof"], ("equ".to_owned(), 7));
+    assert_eq!(fields["y__"], ("equ".to_owned(), table));
+    assert_eq!(fields["__sizeof__"], ("equ".to_owned(), table + 2));
+    assert_eq!(fields["inc"], ("equ".to_owned(), table + 3));
+    assert_eq!(fields["s__"], ("equ".to_owned(), table + 4));
+    assert_eq!(fields["pair"], ("equ".to_owned(), table + 5));
+    assert_eq!(fields.len(), 6, "{fields:?}");
+
+    let pair = db.members(&["TABLE", "pair"]);
+    assert_eq!(pair["__sizeof"], ("equ".to_owned(), 2));
+    assert_eq!(pair["lo"], ("equ".to_owned(), table + 5));
+    assert_eq!(pair["hi"], ("equ".to_owned(), table + 6));
+    assert_eq!(pair.len(), 3, "{pair:?}");
+
+    let regs = db.members(&["REGS"]);
+    assert_eq!(regs["ctl"], ("equ".to_owned(), 0xFF00));
+    assert_eq!(regs["data"], ("equ".to_owned(), 0xFF01));
+
+    // An abstract layout has no scope: nothing in the database is named
+    // after it.
+    assert!(
+        !db.of("scope")
+            .iter()
+            .any(|scope| scope.get("name").map(String::as_str) == Some("MSG")),
+        "an abstract layout reached the database"
+    );
+}
+
+/// The label file is what it was before layouts were described.
+///
+/// ld65 writes every debug *label* into `-Ln` under its bare name, and the
+/// emulator keeps the last label it reads for an address — so a field
+/// defined with `:=` would put `y__` where `TABLE` is. The members are
+/// equates, which the label file never lists.
+#[test]
+fn a_variables_fields_stay_out_of_the_label_file() {
+    let built = build_source("label-file", LAYOUTS);
+    let names = label_names(&built.labels);
+    assert!(
+        names.contains("TABLE") && names.contains("REGS"),
+        "{names:?}"
+    );
+    for field in [
+        "y", "y__", "__sizeof", "inc", "s", "s__", "pair", "lo", "hi", "ctl", "data",
+    ] {
+        assert!(
+            !names.contains(field),
+            "field `{field}` reached the label file:\n{}",
+            built.labels
+        );
+    }
+}
+
+/// `a`, `x`, `y` and `s` are register tokens to ca65 wherever they stand, so
+/// a field by one of those names is a member with a `__` suffix, lengthened
+/// past a sibling that already has that spelling.
+#[test]
+fn a_field_named_after_a_register_is_a_mangled_member() {
+    let built = build_source(
+        "register-fields",
+        "var R[\n    .a   :byte\n    .a__ :byte\n    .x   :byte\n    .Y   :byte\n    .s   :byte\n]\nfunc main @a8 @i8 {\n    a = R.s\n    return\n}\n",
+    );
+    let base = built.database.members(&[])["R"].1;
+    let fields = built.database.members(&["R"]);
+    assert_eq!(fields["a___"].1, base);
+    assert_eq!(fields["a__"].1, base + 1);
+    assert_eq!(fields["x__"].1, base + 2);
+    assert_eq!(fields["Y__"].1, base + 3);
+    assert_eq!(fields["s__"].1, base + 4);
+}
+
+/// A field named after an instruction keeps its name: a member is defined
+/// through its scoped path, `::T::inc`, and a line opening with the
+/// namespace token is a definition to ca65 whatever follows. Written bare,
+/// `inc = …` is the instruction and the unit does not assemble.
+#[test]
+fn a_field_named_after_a_mnemonic_keeps_its_name() {
+    let built = build_source(
+        "mnemonic-fields",
+        "var T[\n    .inc :byte\n    .bit :byte\n    .and :byte\n    .rep :byte\n    .lda :byte\n]\nfunc main @a8 @i8 {\n    a = T.rep\n    return\n}\n",
+    );
+    let base = built.database.members(&[])["T"].1;
+    let fields = built.database.members(&["T"]);
+    for (offset, name) in ["inc", "bit", "and", "rep", "lda"].into_iter().enumerate() {
+        assert_eq!(fields[name].1, base + offset as u64, "{name}");
+    }
+}
+
+/// A nested field named like its parent lands in its own scope.
+///
+/// ca65 resolves a bare scope name outward from the current scope, so
+/// inside the outer `p`, `p::w` would find the *inner* `p` first. Members
+/// are defined from the root, `::T::p::w`, which names exactly one scope.
+#[test]
+fn a_nested_field_named_like_its_parent_lands_in_its_own_scope() {
+    let built = build_source(
+        "nested-same-name",
+        "var T[\n    .p[\n        .p[\n            .v :byte\n        ]\n        .w :byte\n    ]\n]\nfunc main @a8 @i8 {\n    a = T.p.w\n    return\n}\n",
+    );
+    let base = built.database.members(&[])["T"].1;
+    let outer = built.database.members(&["T", "p"]);
+    assert_eq!(outer["p"].1, base);
+    assert_eq!(outer["w"].1, base + 1);
+    assert!(!outer.contains_key("v"), "{outer:?}");
+    let inner = built.database.members(&["T", "p", "p"]);
+    assert_eq!(inner["v"].1, base);
+    assert!(!inner.contains_key("w"), "{inner:?}");
+}
+
+/// A variable or field named `f` or `z` keeps its name.
+///
+/// ca65 lexes those letters, with a colon straight after, as an address-size
+/// prefix, so `::f::x` is `f:` and then garbage: the unit compiled and ca65
+/// refused every member line with "Expected an identifier but found 'f:'".
+/// The path puts a space before the `::` that follows such a segment.
+#[test]
+fn a_variable_or_field_named_like_an_address_size_prefix_keeps_its_name() {
+    let built = build_source(
+        "prefix-names",
+        "var f[\n    .x :byte\n    .f[\n        .lo :byte\n    ]\n    .z[\n        .lo :byte\n    ]\n    .Z :byte\n]\nfunc main @a8 @i8 {\n    a = f.f.lo\n    return\n}\n",
+    );
+    let db = &built.database;
+    let base = db.members(&[])["f"].1;
+    let fields = db.members(&["f"]);
+    assert_eq!(fields["f"].1, base + 1);
+    assert_eq!(fields["z"].1, base + 2);
+    assert_eq!(fields["Z"].1, base + 3);
+    assert_eq!(db.members(&["f", "f"])["lo"].1, base + 1);
+    assert_eq!(db.members(&["f", "z"])["lo"].1, base + 2);
 }

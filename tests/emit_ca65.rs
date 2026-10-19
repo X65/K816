@@ -1400,3 +1400,140 @@ func main @a8 @i8 {
         "{assembly}"
     );
 }
+
+/// A program declaring every kind of layout: an abstract one, a linker-placed
+/// table whose fields include every name ca65 cannot take as a member (the
+/// register letters and the size member's own spelling), one named after an
+/// instruction, and a nested field, and a pinned register block.
+const LAYOUTS: &str = "\
+abstract var MSG[
+    .from :byte
+    .data :far
+]
+var TABLE[
+    .y        :word
+    .__sizeof :byte
+    .inc      :byte
+    .s        :byte
+    .pair[
+        .lo :byte
+        .hi :byte
+    ]
+] * 4
+var REGS[
+    .ctl  :byte
+    .data :word
+] = $FF00
+func main @a8 @i8 {
+    a = TABLE[1].pair.hi
+    a = MSG.data:offsetof
+    a = REGS.ctl
+    return
+}
+";
+
+/// A variable's fields reach ca65 as a `.scope` beside its label: one equate
+/// per field with the address of element 0's field, a nested `.scope` per
+/// nested field, and a `__sizeof` with one element's size.
+///
+/// K816 folds every field access to a number, so this is the only trace a
+/// layout leaves for a debugger reading ld65's database. Every member is
+/// defined through its path from the root, `::TABLE::inc`: a line opening
+/// with the namespace token is a definition to ca65 whatever follows, where
+/// a bare `inc = …` is the instruction. `a`, `x`, `y` and `s` are register
+/// tokens wherever they stand, so those fields take a `__` suffix, and so
+/// does a field that would redefine the scope's own `__sizeof`.
+#[test]
+fn layouts_are_emitted_as_ca65_scopes() {
+    let assembly = emit("layouts.k816", LAYOUTS);
+    let expected = "        .scope  TABLE                   ; layouts.k816:5: var TABLE[
+            ::TABLE::__sizeof   = 7
+            ::TABLE::y__        = ::TABLE
+            ::TABLE::__sizeof__ = ::TABLE + $0002
+            ::TABLE::inc        = ::TABLE + $0003
+            ::TABLE::s__        = ::TABLE + $0004
+            ::TABLE::pair       = ::TABLE + $0005
+            .scope  pair
+                ::TABLE::pair::__sizeof = 2
+                ::TABLE::pair::lo       = ::TABLE + $0005
+                ::TABLE::pair::hi       = ::TABLE + $0006
+            .endscope
+        .endscope
+        .scope  REGS                    ; layouts.k816:15: var REGS[
+            ::REGS::__sizeof = 3
+            ::REGS::ctl      = ::REGS
+            ::REGS::data     = ::REGS + $0001
+        .endscope
+";
+    assert!(
+        assembly.contains(expected),
+        "the layout scopes differ:\n{assembly}"
+    );
+}
+
+/// An `abstract var` leaves nothing in the assembly.
+///
+/// It has no address, so there is no value to equate. ca65's `.struct` could
+/// carry its offsets, but a `.struct` in the database is what
+/// `k816 bind --layouts` turns back into an `abstract var`, so a K816 unit
+/// emitting one would hand its own declaration back to every unit linked
+/// with it, under the same name.
+#[test]
+fn an_abstract_var_leaves_no_trace_in_the_assembly() {
+    let assembly = emit("layouts.k816", LAYOUTS);
+    assert!(
+        !assembly.contains(".struct"),
+        "an abstract layout was emitted:\n{assembly}"
+    );
+    // The name may appear in a `; source` annotation, never in the code.
+    let in_code = assembly
+        .lines()
+        .map(|line| line.split(';').next().unwrap_or(""))
+        .any(|code| code.contains("MSG"));
+    assert!(!in_code, "`MSG` reached the assembly:\n{assembly}");
+}
+
+/// Only the unit that declares a variable describes its fields.
+///
+/// The importer has the layout too — it crosses as data so `TABLE[3].hi`
+/// folds there — but a second `.scope TABLE` would write the same fields into
+/// the database twice, once under each module. The abstract layout both
+/// units declare is described by neither.
+#[test]
+fn an_imported_variable_layout_is_not_emitted_again() {
+    let mut map = SourceMap::new();
+    let b = map.add_file(
+        "layout-unit-b.k816",
+        include_str!("golden/layout-unit-b.k816"),
+    );
+    let a = map.add_file(
+        "layout-unit-a.k816",
+        include_str!("golden/layout-unit-a.k816"),
+    );
+    let options = Options {
+        optimize: false,
+        ..Default::default()
+    };
+    let importer = compile_to_ca65(&map, b, &options)
+        .assembly
+        .expect("unit B compiles");
+    let definer = compile_to_ca65(&map, a, &options)
+        .assembly
+        .expect("unit A compiles");
+
+    assert!(
+        definer.contains(".scope  TABLE"),
+        "the declaring unit describes its variable:\n{definer}"
+    );
+    assert!(
+        !importer.contains(".scope  TABLE"),
+        "the importer described a variable it does not define:\n{importer}"
+    );
+    for assembly in [&importer, &definer] {
+        let in_code = assembly
+            .lines()
+            .map(|line| line.split(';').next().unwrap_or(""))
+            .any(|code| code.contains("HANDLER"));
+        assert!(!in_code, "an abstract layout was described:\n{assembly}");
+    }
+}

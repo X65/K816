@@ -575,11 +575,10 @@ fn completion_item(candidate: completion::Candidate, range: lsp_types::Range) ->
         Kind::Field => CompletionItemKind::FIELD,
         Kind::Annotation => CompletionItemKind::TYPE_PARAMETER,
     };
-    let new_text = candidate.insert.unwrap_or_else(|| candidate.label.clone());
     CompletionItem {
         text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
             range,
-            new_text,
+            new_text: candidate.label.clone(),
         })),
         label: candidate.label,
         kind: Some(kind),

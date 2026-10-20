@@ -2459,8 +2459,9 @@ fn applying_a_rename_leaves_the_program_saying_the_same_things() {
 // H6 — completion
 // ---------------------------------------------------------------------------
 
-/// The candidates at an offset of `source`, as `(label, inserted text)`.
-fn candidates(source: &str, offset: u32, trigger: Option<char>) -> Vec<(String, String)> {
+/// The candidates' labels at an offset of `source`, which are what accepting
+/// one inserts.
+fn candidates(source: &str, offset: u32, trigger: Option<char>) -> Vec<String> {
     let mut workspace = Workspace::new();
     let uri = "file:///completion.k816";
     workspace.update(uri, source);
@@ -2469,10 +2470,7 @@ fn candidates(source: &str, offset: u32, trigger: Option<char>) -> Vec<(String, 
     k816::lsp::completion::complete(&analysis, file, offset, trigger)
         .items
         .into_iter()
-        .map(|candidate| {
-            let inserted = candidate.insert.unwrap_or_else(|| candidate.label.clone());
-            (candidate.label, inserted)
-        })
+        .map(|candidate| candidate.label)
         .collect()
 }
 
@@ -2511,7 +2509,7 @@ fn a_statement_position_offers_what_may_stand_there() {
 
     let offset = after(SOURCE, ".again:\n    ");
     let found = candidates(SOURCE, offset, None);
-    let labels: Vec<&str> = found.iter().map(|(label, _)| label.as_str()).collect();
+    let labels: Vec<&str> = found.iter().map(String::as_str).collect();
 
     // Every mnemonic the ISA table has, and no fewer.
     for mnemonic in k816::isa::Mnemonic::ALL {
@@ -2549,8 +2547,7 @@ fn a_statement_position_offers_what_may_stand_there() {
 /// An empty document offers the item keywords, and nothing else.
 #[test]
 fn an_empty_document_offers_the_item_keywords() {
-    let found = candidates("", 0, None);
-    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    let labels = candidates("", 0, None);
     let expected: Vec<String> = k816::lsp::completion::ITEM_KEYWORDS
         .iter()
         .map(|keyword| (*keyword).to_owned())
@@ -2567,8 +2564,7 @@ fn a_field_step_offers_exactly_that_layouts_fields() {
         \x20   a = PAIR.\n\
         }\n";
 
-    let found = candidates(SOURCE, after(SOURCE, "a = PAIR."), Some('.'));
-    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    let labels = candidates(SOURCE, after(SOURCE, "a = PAIR."), Some('.'));
     assert_eq!(
         labels,
         [".lo", ".hi"],
@@ -2593,8 +2589,7 @@ fn a_bare_dot_offers_the_enclosing_functions_local_labels() {
 
     // The needle has to be unique: `other`'s `!= goto .elsewhere` contains
     // `goto .` too.
-    let found = candidates(SOURCE, after(SOURCE, "\n    goto ."), Some('.'));
-    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    let labels = candidates(SOURCE, after(SOURCE, "\n    goto ."), Some('.'));
     assert_eq!(labels, [".again"]);
 }
 
@@ -2602,8 +2597,7 @@ fn a_bare_dot_offers_the_enclosing_functions_local_labels() {
 #[test]
 fn an_annotation_position_offers_exactly_the_four_annotations() {
     let source = "func work @";
-    let found = candidates(source, after(source, "@"), Some('@'));
-    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    let labels = candidates(source, after(source, "@"), Some('@'));
     assert_eq!(labels, ["@a8", "@a16", "@i8", "@i16"]);
 }
 
@@ -2623,19 +2617,17 @@ fn an_immediate_is_offered_only_where_the_isa_admits_one() {
 
     let loading = candidates(SOURCE, after(SOURCE, "lda LIM"), None);
     assert!(
-        loading.contains(&("LIMIT".to_owned(), "#LIMIT".to_owned())),
+        loading.iter().any(|label| label == "#LIMIT"),
         "`lda` should offer `#LIMIT`: {loading:?}"
     );
 
     let storing = candidates(SOURCE, after(SOURCE, "sta LIM"), None);
     assert!(
-        storing.iter().any(|(label, _)| label == "LIMIT"),
+        storing.iter().any(|label| label == "LIMIT"),
         "`sta` should still offer the name: {storing:?}"
     );
     assert!(
-        !storing
-            .iter()
-            .any(|(_, inserted)| inserted.starts_with('#')),
+        !storing.iter().any(|label| label.starts_with('#')),
         "`sta` has no immediate form, so nothing may be offered with a `#`: {storing:?}"
     );
 
@@ -2643,13 +2635,34 @@ fn an_immediate_is_offered_only_where_the_isa_admits_one() {
     // candidates are the values, each with the marker they follow.
     let immediate = candidates(SOURCE, after(SOURCE, "lda LIM"), Some('#'));
     assert!(
-        immediate
-            .iter()
-            .all(|(_, inserted)| inserted.starts_with('#')),
+        immediate.iter().all(|label| label.starts_with('#')),
         "{immediate:?}"
     );
-    assert!(immediate.iter().any(|(label, _)| label == "LIMIT"));
-    assert!(immediate.iter().any(|(label, _)| label == "SCREEN"));
+    assert!(immediate.iter().any(|label| label == "#LIMIT"));
+    assert!(immediate.iter().any(|label| label == "#SCREEN"));
+}
+
+/// An operand that admits an immediate offers each name twice, and the two
+/// rows must not look alike.
+///
+/// Regression: the immediate was labelled `shell_tokens` and only *inserted*
+/// `#shell_tokens`, so `lda shell_t` showed two identical `shell_tokens — a
+/// variable` rows and the user learned which was which by accepting one.
+#[test]
+fn an_operand_does_not_offer_two_candidates_that_look_alike() {
+    const SOURCE: &str = "var SCREEN = $0400\n\
+        const LIMIT = 8\n\
+        func work @a8 @i8 {\n\
+        \x20   lda SCR\n\
+        }\n";
+
+    let found = candidates(SOURCE, after(SOURCE, "lda SCR"), None);
+    assert!(found.iter().any(|label| label == "SCREEN"), "{found:?}");
+    assert!(found.iter().any(|label| label == "#SCREEN"), "{found:?}");
+    let mut seen = std::collections::HashSet::new();
+    for label in &found {
+        assert!(seen.insert(label), "`{label}` is offered twice: {found:?}");
+    }
 }
 
 /// After `:` — the data widths and the two metadata queries.
@@ -2662,8 +2675,7 @@ fn a_colon_offers_the_widths_and_the_metadata_queries() {
         func work @a8 @i8 {\n\
         \x20   a = PAIR:\n\
         }\n";
-    let found = candidates(SOURCE, after(SOURCE, "PAIR:"), Some(':'));
-    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    let labels = candidates(SOURCE, after(SOURCE, "PAIR:"), Some(':'));
     assert_eq!(
         labels,
         [":byte", ":word", ":far", ":sizeof", ":offsetof"],
@@ -3082,14 +3094,10 @@ fn accepting_a_completion_does_not_double_the_punctuation() {
             .iter()
             .find(|candidate| candidate.label == label)
             .unwrap_or_else(|| panic!("`{label}` was not offered"));
-        let new_text = candidate
-            .insert
-            .clone()
-            .unwrap_or_else(|| candidate.label.clone());
         let mut edited = source.to_owned();
         edited.replace_range(
             found.replace.start as usize..found.replace.end as usize,
-            &new_text,
+            &candidate.label,
         );
         edited
     };
@@ -3111,7 +3119,7 @@ fn accepting_a_completion_does_not_double_the_punctuation() {
     // An immediate: the `#` is part of what is inserted *and* part of what is
     // replaced.
     const IMM: &str = "const LIMIT = 8\nfunc w @a8 @i8 {\n    lda #\n}\n";
-    let edited = apply(IMM, after(IMM, "lda #"), Some('#'), "LIMIT");
+    let edited = apply(IMM, after(IMM, "lda #"), Some('#'), "#LIMIT");
     assert!(edited.contains("lda #LIMIT"), "{edited}");
     assert!(!edited.contains("##"), "the marker was doubled: {edited}");
 

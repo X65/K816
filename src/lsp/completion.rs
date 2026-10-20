@@ -86,14 +86,11 @@ pub struct Completions {
 /// One thing that would resolve here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
-    /// What the editor shows and, unless `insert` says otherwise, inserts.
+    /// What the editor shows and what accepting the candidate inserts.
     pub label: String,
     pub kind: Kind,
     /// A short suffix the editor shows beside the label.
     pub detail: Option<String>,
-    /// What to insert, when the spelling differs from the label — a `#`
-    /// before a constant in an immediate position.
-    pub insert: Option<String>,
 }
 
 impl Candidate {
@@ -102,17 +99,11 @@ impl Candidate {
             label: label.into(),
             kind,
             detail: None,
-            insert: None,
         }
     }
 
     fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
-        self
-    }
-
-    fn inserting(mut self, insert: impl Into<String>) -> Self {
-        self.insert = Some(insert.into());
         self
     }
 }
@@ -433,6 +424,10 @@ fn local_labels(context: &Context<'_>) -> Vec<Candidate> {
 }
 
 /// What may follow a `#`: a value, which is a `const` or an address to load.
+///
+/// Labelled with their `#`. An operand position offers these beside the bare
+/// names, and a label without its `#` shows the user two identical rows that
+/// insert different text.
 fn immediates(context: &Context<'_>) -> Vec<Candidate> {
     context
         .unit
@@ -455,9 +450,7 @@ fn immediates(context: &Context<'_>) -> Vec<Candidate> {
                 SymbolKind::Label { .. } | SymbolKind::DataLabel { .. } => Kind::Label,
                 _ => Kind::Variable,
             };
-            Candidate::new(symbol.name.clone(), kind)
-                .with_detail(symbol.kind.describe())
-                .inserting(format!("#{}", symbol.name))
+            Candidate::new(format!("#{}", symbol.name), kind).with_detail(symbol.kind.describe())
         })
         .collect()
 }

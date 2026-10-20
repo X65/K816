@@ -1771,6 +1771,10 @@ impl<'a> Resolver<'a> {
                 Some(id)
             }
             None => {
+                if let Some(declaration) = self.symbols.unanswered(name) {
+                    self.report(unanswered_before_analysis(name, span, declaration));
+                    return None;
+                }
                 // `c` and `d` reach here as ordinary identifiers, because
                 // that is what they are now — but an author who wrote `c = s`
                 // meant the register the letter used to name, and telling
@@ -3180,8 +3184,36 @@ fn unpreprocessed(span: Span) -> Diagnostic {
     )
 }
 
+/// A name the preprocessor left without a value, read where it decides
+/// something.
+///
+/// The name *is* declared, and analysis will fold it; what this pass could
+/// not fold is something it reads — a section's bytes, which are assembled
+/// after every `#if` and `unroll` is decided. "Not declared" would be false,
+/// and a guessed value would be a miscompile.
+pub fn unanswered_before_analysis(name: &str, span: Span, declaration: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::NOT_CONSTANT,
+        format!("`{name}` has no value where `#if` and `unroll` are decided"),
+        Label::new(span, "read here"),
+    )
+    .with_secondary(Label::new(declaration, "declared here"))
+    .with_note(
+        "directives and `unroll` counts are decided before any section is assembled, and \
+         this value is folded from something that is not known until then",
+    )
+    .with_help("fold it from a `const`, a layout or an evaluator name instead")
+    .with_docs("doc/syntax-reference.md#conditions")
+}
+
 pub fn eval_diagnostic(error: eval::Error) -> Option<Diagnostic> {
     let diagnostic = match error {
+        eval::Error::Resolved(diagnostic) => *diagnostic,
+        eval::Error::Unanswered {
+            span,
+            name,
+            declaration,
+        } => unanswered_before_analysis(&name, span, declaration),
         eval::Error::Name { span, name } => Diagnostic::error(
             DiagnosticCode::UNDECLARED_SYMBOL,
             format!("`{name}` has no compile-time value"),

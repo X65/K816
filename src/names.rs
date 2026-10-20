@@ -314,6 +314,26 @@ fn expr_names(expr: &Expr, visit: &mut impl FnMut(&Name, NameRole)) {
     }
 }
 
+/// The base of `[ T.f:offsetof ]`: the K65 layer's path, in the evaluator's
+/// nodes — `T` resolves through the symbol table and `.f` through its
+/// layout, exactly as in `T.f:offsetof` outside a bracket.
+fn metadata_path_names(path: &EvalExpr, visit: &mut impl FnMut(&Name, NameRole)) {
+    match &path.kind {
+        EvalExprKind::Symbol(name) => visit(name, NameRole::Symbol),
+        EvalExprKind::Member { base, field } => {
+            metadata_path_names(base, visit);
+            visit(field, NameRole::Field);
+        }
+        EvalExprKind::Subscript { base, indices } => {
+            metadata_path_names(base, visit);
+            for index in indices {
+                eval_names(index, visit);
+            }
+        }
+        _ => eval_names(path, visit),
+    }
+}
+
 fn eval_names(expr: &EvalExpr, visit: &mut impl FnMut(&Name, NameRole)) {
     match &expr.kind {
         EvalExprKind::Number { .. }
@@ -361,6 +381,7 @@ fn eval_names(expr: &EvalExpr, visit: &mut impl FnMut(&Name, NameRole)) {
             eval_names(base, visit);
             visit(field, NameRole::Evaluator);
         }
+        EvalExprKind::Metadata { base, .. } => metadata_path_names(base, visit),
         EvalExprKind::MethodCall {
             base,
             method,

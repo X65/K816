@@ -76,6 +76,7 @@
 (width_annotation) @type
 (type_suffix) @type
 ["byte" "word" "sizeof" "offsetof"] @type
+(metadata_suffix) @type
 
 ; ---------------------------------------------------------------------------
 ; The machine

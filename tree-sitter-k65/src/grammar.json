@@ -6293,6 +6293,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "eval_metadata_query"
+        },
+        {
+          "type": "SYMBOL",
           "name": "eval_method_call"
         },
         {
@@ -6359,6 +6363,10 @@
         {
           "type": "SYMBOL",
           "name": "eval_member"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "eval_metadata_query"
         },
         {
           "type": "SYMBOL",
@@ -6632,6 +6640,56 @@
               "type": "SYMBOL",
               "name": "field_name"
             }
+          }
+        ]
+      }
+    },
+    "eval_metadata_query": {
+      "type": "PREC_LEFT",
+      "value": 15,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "base",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_eval_expression"
+            }
+          },
+          {
+            "type": "FIELD",
+            "name": "query",
+            "content": {
+              "type": "SYMBOL",
+              "name": "metadata_suffix"
+            }
+          }
+        ]
+      }
+    },
+    "metadata_suffix": {
+      "type": "IMMEDIATE_TOKEN",
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": ":"
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "sizeof"
+              },
+              {
+                "type": "STRING",
+                "value": "offsetof"
+              }
+            ]
           }
         ]
       }

@@ -1915,6 +1915,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -1986,6 +1990,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -2066,6 +2074,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -2229,6 +2241,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -2329,6 +2345,10 @@
           "named": true
         },
         {
+          "type": "eval_metadata_query",
+          "named": true
+        },
+        {
           "type": "eval_method_call",
           "named": true
         },
@@ -2409,6 +2429,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -2506,6 +2530,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -2588,6 +2616,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -2663,6 +2695,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -2754,6 +2790,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -2834,6 +2874,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -2892,6 +2936,100 @@
     }
   },
   {
+    "type": "eval_metadata_query",
+    "named": true,
+    "fields": {
+      "base": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_assignment",
+            "named": true
+          },
+          {
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_list",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "reserved_eval_call",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "query": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "metadata_suffix",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "eval_method_call",
     "named": true,
     "fields": {
@@ -2917,6 +3055,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -2991,6 +3133,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -3084,6 +3230,10 @@
           "named": true
         },
         {
+          "type": "eval_metadata_query",
+          "named": true
+        },
+        {
           "type": "eval_method_call",
           "named": true
         },
@@ -3164,6 +3314,10 @@
         },
         {
           "type": "eval_member",
+          "named": true
+        },
+        {
+          "type": "eval_metadata_query",
           "named": true
         },
         {
@@ -3254,6 +3408,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -3321,6 +3479,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -3404,6 +3566,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -3478,6 +3644,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -3549,6 +3719,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -3633,6 +3807,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -3750,6 +3928,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -3829,6 +4011,10 @@
           },
           {
             "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_metadata_query",
             "named": true
           },
           {
@@ -5969,6 +6155,10 @@
             "named": true
           },
           {
+            "type": "eval_metadata_query",
+            "named": true
+          },
+          {
             "type": "eval_method_call",
             "named": true
           },
@@ -7435,6 +7625,10 @@
   {
     "type": "loop",
     "named": false
+  },
+  {
+    "type": "metadata_suffix",
+    "named": true
   },
   {
     "type": "mnemonic",

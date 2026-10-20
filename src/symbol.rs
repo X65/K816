@@ -574,6 +574,12 @@ pub struct SymbolTable {
     /// has missed. The kind is the importer's own: a layout it names has
     /// already been interned in this table's arena.
     foreign: HashMap<String, (SymbolKind, Span)>,
+    /// Names declared in the source that this table holds no value for,
+    /// because the pass that built it could not fold one truthfully — the
+    /// preprocessor's, for a `const` folded from a section's bytes. Where
+    /// each was declared, so a read of one says *that* rather than "not
+    /// declared".
+    unanswered: HashMap<String, Span>,
 }
 
 impl SymbolTable {
@@ -723,6 +729,17 @@ impl SymbolTable {
     /// before [`Self::declare_imported`] runs.
     pub fn record_foreign_fact(&mut self, name: &str, kind: SymbolKind, declaration: Span) {
         self.foreign.insert(name.to_owned(), (kind, declaration));
+    }
+
+    /// Records that `name` is declared at `declaration` and has no value in
+    /// this table (`Self::unanswered`).
+    pub fn record_unanswered(&mut self, name: &str, declaration: Span) {
+        self.unanswered.insert(name.to_owned(), declaration);
+    }
+
+    /// Where `name` was declared, when this table holds no value for it.
+    pub fn unanswered(&self, name: &str) -> Option<Span> {
+        self.unanswered.get(name).copied()
     }
 
     /// What a foreign name is, when another unit this one sees declares it

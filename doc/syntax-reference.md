@@ -373,6 +373,17 @@ Both suffixes bind tightly (at atom level), so they work in arithmetic:
 lda #TASKS:sizeof + 1       // (TASKS:sizeof) + 1
 ```
 
+And inside an evaluator bracket, where an index may be an evaluator expression:
+
+```k65
+const TABLE_BYTES = [ TASKS:sizeof * 8 ]
+#if [ TASKS.signals:offsetof != 3 ]
+#error "the signals byte moved"
+#endif
+```
+
+There the suffix is written against what it asks about, with no space before the colon: `[ c ? a + T : x ]` is the evaluator's ternary, and `[ T:sizeof ]` is a query.
+
 Each needs something that can answer it, and `K816-E0115` is what says so when there is none. `:sizeof` needs a variable or a field — a `const` is a value with no size, and a function is a place with no size. `:offsetof` needs a *field*, because an offset is a field's distance from the base of its variable: `counter:offsetof` is not zero, it is a question about nothing.
 
 A metadata query is an integer from the moment it folds, so it reads on the value side of an assignment exactly as a `const` does — `a = TASKS:sizeof` loads the number and does not read memory at the address `4`.
@@ -648,6 +659,10 @@ import "defs.k65"
 const NAME_PTR = FRAME + 1      // $06 — folded here, not linked
 var   buffer   = FRAME + $100   // an address is a compile-time value too
 ```
+
+**An `import` makes available what typing the imported declarations would.** That is the rule every case above follows, and it holds in every place a value is read — a `#if` condition, an `unroll` count and an evaluator bracket as much as an immediate. An imported `evalfunc` is callable in this unit's brackets, a name an imported unit's bracket assigned is a `const` here, and a value reaches through a chain of imports one hop at a time: `const NEXT = BASE + 1` in a unit that imports `BASE` is a value in every unit that imports *it*. A `const` is exported, so one name is one program-wide `const` and a second unit defining it is `K816-E0102`; an `abstract var` and an `evalfunc` emit nothing, so a unit may declare one an import also declares, and its own wins. What does not cross is the import itself: `main` still sees only what it imports directly.
+
+An `import` inside a `#if` region whose condition reads an imported value is decided with that value — `#if [ BOARD == 2 ]` around `import "board2.k816"` reads `BOARD` from the unit imported above it, and the branch it does not take is not a file the build reads.
 
 An `extern const` is not this case. It names a value *no* unit of this program defines, so ld65 is the one that knows it and every compile-time position refuses it (`K816-E0167`) — see "Extern declarations".
 
@@ -4417,6 +4432,19 @@ const FEATURE = 1
 #if FEATURE             // a `const`
 #if TIER                // a name a bracket assigned
 ```
+
+A `const` folded from a [metadata query](#metadata-query-suffixes) is the layout's own number, in a condition and an `unroll` count exactly as in an immediate, so a guard against a layout changing size checks the layout:
+
+```k65
+abstract var TCB[ .sp :word .state :byte .stack :byte [61] ]
+const TCB_SIZE = TCB:sizeof
+
+#if [ TCB_SIZE != 64 ]
+#error "a TCB is no longer 64 bytes"
+#endif
+```
+
+What an `import` brings is read here too — an imported `const`, layout, `evalfunc` or section reads in a condition exactly as it would if its declaration were written above it (see "Imports"). What a condition cannot read is this unit's own section bytes, which are assembled after every region is decided, and so neither can a `const` or a layout folded from them: reading one in a condition or an `unroll` count is `K816-E0108`, which says the name has no value *there*, and analysis still folds it everywhere else. It is never a guessed value.
 
 The condition is true when its value, taken through the [integer boundary rule](#compile-time-evaluator), is not zero. So `#if [0.6]` is true and `#if [0.4]` is false.
 

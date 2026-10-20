@@ -399,3 +399,77 @@ const FLAG = 0
       (eval_assignment
         target: (identifier)
         value: (number)))))
+
+================================================================================
+A metadata query inside an evaluator bracket
+================================================================================
+
+const A = [ T:sizeof * 4 ]
+const B = [ T.m.y:offsetof ]
+#if [ T:sizeof == 64 ]
+#endif
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (eval_bracket
+        (eval_binary
+          left: (eval_metadata_query
+            base: (identifier)
+            query: (metadata_suffix))
+          right: (number)))))
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (eval_bracket
+        (eval_metadata_query
+          base: (eval_member
+            base: (eval_member
+              base: (identifier)
+              field: (field_name))
+            field: (field_name))
+          query: (metadata_suffix)))))
+  (preprocessor_directive
+    directive: (directive_name)
+    condition: (eval_bracket
+      (eval_binary
+        left: (eval_metadata_query
+          base: (identifier)
+          query: (metadata_suffix))
+        right: (number))))
+  (preprocessor_directive
+    directive: (directive_name)))
+
+================================================================================
+A ternary's colon is not a metadata query
+================================================================================
+
+const B = [ c ? a + T : x ]
+const C = [ c ? T:sizeof : 1 ]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (eval_bracket
+        (eval_ternary
+          condition: (identifier)
+          consequence: (eval_binary
+            left: (identifier)
+            right: (identifier))
+          alternative: (identifier)))))
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (eval_bracket
+        (eval_ternary
+          condition: (identifier)
+          consequence: (eval_metadata_query
+            base: (identifier)
+            query: (metadata_suffix))
+          alternative: (number))))))

@@ -25,17 +25,19 @@
 //!
 //! K816 does not choose addresses — ld65 does, and
 //! `plans/feature-manifest.md` §3 says so. What is decided here is *size*,
-//! which is a property of the declaration and of nothing else, and which two
-//! passes need: `semantic.rs` to check an access against the extent it
-//! declares, and `lower.rs` to emit the reservation.
+//! which is a property of the declaration and of nothing else, and which
+//! three passes need: `preprocess.rs` to answer `T:sizeof` in an `#if` or an
+//! `unroll` count, `semantic.rs` to check an access against the extent it
+//! declares, and `lower.rs` to emit the reservation. The first two compute it
+//! with the one [`var_shape`], so a layout query has one answer per unit.
 //!
 //! The direct page is the one place a size becomes a *limit*. It is 256
 //! bytes and no linker configuration makes it bigger, so a unit asking for
 //! more is wrong at the declaration rather than at the link — that is
 //! sub-plan E's decision 13, and [`DirectPage`] is the accounting it needs.
 
-use crate::ast::TypeWidthKind;
-use crate::source::Span;
+use crate::ast::{Expr, FieldDeclaration, TypeWidthKind, VarDeclaration};
+use crate::source::{Provenance, Span};
 use crate::symbol::{DataWidth, Field, FieldShape, Layout, LayoutId, Layouts};
 
 /// The bytes the direct page has, which is what makes its pool a pool.
@@ -180,6 +182,154 @@ impl Packing {
             fields: self.fields,
             size: self.size,
         }
+    }
+}
+
+/// What shaping a declaration asks of the pass that declares it.
+///
+/// Two passes shape every `var`. The preprocessor needs `T:sizeof` to decide
+/// an `#if` and to count an `unroll`, and analysis declares the symbol for
+/// real; one name has one value in a unit only if both compute the shape the
+/// same way, so the computation is [`var_shape`] and [`build_layout`], once,
+/// and what differs between the passes — how a count folds and who hears a
+/// complaint — is what this trait carries.
+pub trait Shaper {
+    fn layouts(&self) -> &Layouts;
+    fn intern(&mut self, layout: Layout) -> LayoutId;
+    /// `expr` folded to a number, or `None` with the failure reported however
+    /// the pass reports.
+    fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32>;
+    /// An element count of zero, which the shape carries on without.
+    fn zero_count(&mut self, span: Span);
+    /// A field name repeated in one list; the repeat is left out.
+    fn duplicate_field(&mut self, field: &FieldDeclaration, previous: Span);
+}
+
+/// What a `var` with storage declares, apart from where it lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VarShape {
+    /// The datum width, and `None` both for an untyped declaration and for
+    /// one with fields, whose suffix is a default field width instead.
+    pub width: Option<DataWidth>,
+    pub layout: Option<LayoutId>,
+    pub allocation: Allocation,
+    /// The `* count`, checked.
+    pub repeat: Option<u32>,
+}
+
+/// Shapes one `var` with storage: its extent, its count and its fields.
+///
+/// An extent or count that does not fold has been reported, and the shape
+/// goes on without the multiplier — one bad count should not turn every use
+/// of the name into an undeclared-symbol error too.
+pub fn var_shape(shaper: &mut impl Shaper, var: &VarDeclaration) -> VarShape {
+    let extent = var
+        .size
+        .as_ref()
+        .and_then(|expr| shaper.constant(expr, "array extents"));
+    let count = var
+        .count
+        .as_ref()
+        .and_then(|expr| shaper.constant(expr, "allocation counts"));
+    // The raw span is deliberately *not* checked for zero. `var X[0]` is a
+    // K65 declaration — the original accepts it, reserves nothing, and
+    // carries the allocator on (`tests/compat/k65/zero-element-span`) — so
+    // refusing it would be a narrowing decision 0 does not allow where
+    // compatibility is this cheap. The forms below have no K65 spelling and
+    // keep the rule.
+    let repeat = checked_count(shaper, count, var.count.as_ref());
+    let declared = var.width.map(|width| data_width(width.kind));
+    // On a declaration with fields the `:byte` suffix is the *default field
+    // width* and not a datum width of its own: the datum is the whole layout,
+    // and a struct has no register to disagree with
+    // (`doc/symbolic-subscripts.md`, "Default field width on the symbol").
+    // One suffix, two meanings, decided by whether a field list follows.
+    let (width, layout) = if var.fields.is_empty() {
+        (declared, None)
+    } else {
+        (None, Some(build_layout(shaper, &var.fields, declared)))
+    };
+    let datum = datum_size(width, layout, shaper.layouts());
+    VarShape {
+        width,
+        layout,
+        allocation: allocation(datum, extent, repeat),
+        repeat,
+    }
+}
+
+/// Computes and interns the layout a field list declares.
+///
+/// `default` is the width fields take when they name none — the
+/// declaration's own `:byte` suffix, which on a declaration that has fields
+/// means *default field width*. It carries into nested lists, and a nested
+/// field's own suffix replaces it for its sub-list, so
+/// `var v:word[ .a .b:byte[ .c .d ] ]` gives `.a` a word and `.c` a byte.
+///
+/// Nested layouts are interned before the field that names them, which is
+/// what keeps a [`FieldShape::Nested`] identifier resolvable.
+pub fn build_layout(
+    shaper: &mut impl Shaper,
+    fields: &[FieldDeclaration],
+    default: Option<DataWidth>,
+) -> LayoutId {
+    let mut packing = Packing::default();
+    for field in fields {
+        if field.name.provenance == Provenance::Synthetic {
+            continue; // Recovery invented the name; the syntax error stands.
+        }
+        let declared = field.width.map(|width| width.kind);
+        let shape = if field.fields.is_empty() {
+            FieldShape::Scalar(field_width(declared, default))
+        } else {
+            let nested = declared.map(data_width).or(default);
+            FieldShape::Nested(build_layout(shaper, &field.fields, nested))
+        };
+        // A field's bracket is a count and not a span: an indexed field
+        // element is `field_base + index * element_width`
+        // (`doc/symbolic-subscripts.md`, "Semantics"), where a declaration's
+        // `[N]` is a raw span the bracket steps in bytes.
+        let count = field
+            .size
+            .as_ref()
+            .and_then(|expr| shaper.constant(expr, "field element counts"));
+        let count = checked_count(shaper, count, field.size.as_ref()).unwrap_or(1);
+
+        let name = field.name.text.trim_start_matches('.');
+        if let Some(previous) = packing.declared(name).map(|field| field.declaration) {
+            shaper.duplicate_field(field, previous);
+            continue;
+        }
+        packing.push(
+            name,
+            shape,
+            count,
+            field.span,
+            field.name.span,
+            shaper.layouts(),
+        );
+    }
+    shaper.intern(packing.finish())
+}
+
+/// Rejects an element count of zero, and passes every other answer on.
+///
+/// A count of zero describes storage with no elements: nothing is reserved,
+/// and every index into it is out of range the moment it is written. The
+/// declaration carries on without the multiplier, for the same reason a
+/// count that did not fold does.
+///
+/// Asked of the `* count` allocation form and of a field's `[N]`, and **not**
+/// of a declaration's raw span: `var X[0]` is a K65 declaration and the
+/// original accepts it, where neither of these two has a K65 spelling to be
+/// compatible with (`postmortem.md` §G.3.2).
+fn checked_count(shaper: &mut impl Shaper, count: Option<u32>, expr: Option<&Expr>) -> Option<u32> {
+    match (count, expr) {
+        (Some(0), Some(expr)) => {
+            shaper.zero_count(expr.span);
+            None
+        }
+        _ => count,
     }
 }
 

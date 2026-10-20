@@ -957,3 +957,25 @@ fn an_unresolved_evalfunc_call_is_reported_at_the_definition() {
         "the report should land on `up`'s body, not on the `up(1)` below it"
     );
 }
+
+/// An `evalfunc` that takes a library name and count is refused, and its
+/// note is one sentence — it read as two joined by a run of spaces once, the
+/// indentation of a string continuation that had lost its `\`.
+#[test]
+fn an_evalfunc_taking_a_library_name_is_refused_in_one_sentence() {
+    let mut map = SourceMap::new();
+    let file = map.add_file("doc.k816", "evalfunc sin(q) [ q ]\n");
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let report = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_str() == "K816-E0102")
+        .unwrap_or_else(|| panic!("the refusal: {:#?}", result.diagnostics));
+    assert_eq!(
+        report.notes,
+        [
+            "the argument count is part of an evaluator function's identity, so a library \
+          name is free at every other count"
+        ]
+    );
+}

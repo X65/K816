@@ -199,10 +199,18 @@ pub struct CompileResult {
 /// amends it). The CLI reads the filesystem; the editor reads the filesystem
 /// but lets an open buffer win; a test reads a map it built itself.
 ///
-/// The loop is parse, preprocess, collect — no semantic analysis, because
-/// nothing here needs a symbol. Preprocessing is not an optimisation: it is
-/// what makes an `import` inside `#if 0` not a file this build depends on,
-/// and the pass is file-local, so it can run before any unit set is known.
+/// The loop is parse, preprocess, collect. Preprocessing is not an
+/// optimisation: it is what makes an `import` inside `#if 0` not a file this
+/// build depends on.
+///
+/// A unit is preprocessed alone first, and a condition that reads a value an
+/// import brings cannot be decided alone — so for a unit whose regions were
+/// not all decided, only its imports outside every region are followed
+/// then. Its regions are decided by [`linkage::Linkage::resolve`] over the
+/// files read so far, which preprocesses with the workspace's values, and
+/// the imports the regions it took name are read next; until a round reads
+/// nothing new. An `import` makes available what typing the imported
+/// declarations would, and that includes deciding a region that imports.
 ///
 /// A file it cannot read is added as nothing at all. `Linkage` then finds an
 /// `import` edge that reaches no unit and reports `K816-E0166`, which is what
@@ -213,46 +221,123 @@ pub fn load_imports(
 ) -> Vec<FileId> {
     let mut pending: Vec<FileId> = map.files().map(source::SourceFile::id).collect();
     let mut reached = Vec::new();
-    while let Some(file) = pending.pop() {
-        let parse = parser::parse_source(map.file(file), None);
-        let applied = preprocess::apply(&parse.file);
-        // Two resolutions of the same edge, and both are wanted. The
-        // *identity* is taken from the importer's identity, which is
-        // canonical wherever the file is on disk, so two spellings of one
-        // path are one unit — and it is the same arithmetic `Linkage` does,
-        // so an edge that reaches a unit here reaches the same one there.
-        // The *name* is taken from the importer's name, so a file reached
-        // from `main.k816` is called `hw.k816` rather than by an absolute
-        // path nobody wrote: it is what a diagnostic points at, what a
-        // dependency file lists, and what a `.dbg` record names.
-        let identity = map.file(file).path().to_path_buf();
-        let displayed = PathBuf::from(map.file(file).name());
-        let wanted: Vec<(PathBuf, PathBuf)> = applied
-            .program
-            .items
-            .iter()
-            .filter_map(|item| match &item.kind {
-                ast::ItemKind::Import(import) => Some((
-                    imports::resolve(&identity, &import.file.path),
-                    imports::resolve(&displayed, &import.file.path),
-                )),
-                _ => None,
-            })
-            .collect();
-        for (path, name) in wanted {
-            if let Some(found) = map.locate(&imports::identity(&path)) {
-                if !reached.contains(&found) {
-                    reached.push(found);
-                }
-                continue;
+    let mut unreadable: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut undecided = false;
+    loop {
+        while let Some(file) = pending.pop() {
+            let parse = parser::parse_source(map.file(file), None);
+            let applied = preprocess::apply(&parse.file, None);
+            let imports: Vec<String> = if applied.diagnostics.is_empty() {
+                imports_in(&applied.program.items)
+            } else {
+                undecided = true;
+                unconditional_imports(&parse.file.items)
+            };
+            for written in imports {
+                want(
+                    map,
+                    read,
+                    file,
+                    &written,
+                    &mut reached,
+                    &mut pending,
+                    &mut unreadable,
+                );
             }
-            let Ok(text) = read(&path) else { continue };
-            let id = map.add_imported_file(name.to_string_lossy(), &path, text);
-            reached.push(id);
-            pending.push(id);
+        }
+        if !undecided {
+            break;
+        }
+        let linkage = linkage::Linkage::resolve(map, abi::EntryEnvironment::default());
+        let edges: Vec<(FileId, String)> = linkage
+            .import_edges()
+            .map(|(file, written, _)| (file, written.to_owned()))
+            .collect();
+        for (file, written) in edges {
+            want(
+                map,
+                read,
+                file,
+                &written,
+                &mut reached,
+                &mut pending,
+                &mut unreadable,
+            );
+        }
+        if pending.is_empty() {
+            break;
         }
     }
     reached
+}
+
+/// The paths the `import` items of a preprocessed program name.
+fn imports_in(items: &[ast::Item]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ast::ItemKind::Import(import) => Some(import.file.path.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The paths the `import` items outside every `#if` region name — the ones
+/// a program imports whatever its conditions say.
+fn unconditional_imports(items: &[ast::Item]) -> Vec<String> {
+    let mut depth = 0usize;
+    let mut found = Vec::new();
+    for item in items {
+        match &item.kind {
+            ast::ItemKind::Preprocessor(directive) => match directive.kind {
+                ast::PreprocessorKind::If => depth += 1,
+                ast::PreprocessorKind::EndIf => depth = depth.saturating_sub(1),
+                _ => {}
+            },
+            ast::ItemKind::Import(import) if depth == 0 => found.push(import.file.path.clone()),
+            _ => {}
+        }
+    }
+    found
+}
+
+/// Follows one `import` that `file` wrote: records the unit it reaches, and
+/// reads the file into `map` when it is not there yet.
+fn want(
+    map: &mut SourceMap,
+    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+    file: FileId,
+    written: &str,
+    reached: &mut Vec<FileId>,
+    pending: &mut Vec<FileId>,
+    unreadable: &mut std::collections::BTreeSet<PathBuf>,
+) {
+    // Two resolutions of the same edge, and both are wanted. The *identity*
+    // is taken from the importer's identity, which is canonical wherever the
+    // file is on disk, so two spellings of one path are one unit — and it is
+    // the same arithmetic `Linkage` does, so an edge that reaches a unit here
+    // reaches the same one there. The *name* is taken from the importer's
+    // name, so a file reached from `main.k816` is called `hw.k816` rather
+    // than by an absolute path nobody wrote: it is what a diagnostic points
+    // at, what a dependency file lists, and what a `.dbg` record names.
+    let path = imports::resolve(map.file(file).path(), written);
+    let name = imports::resolve(Path::new(map.file(file).name()), written);
+    if let Some(found) = map.locate(&imports::identity(&path)) {
+        if !reached.contains(&found) {
+            reached.push(found);
+        }
+        return;
+    }
+    if unreadable.contains(&path) {
+        return;
+    }
+    let Ok(text) = read(&path) else {
+        unreadable.insert(path);
+        return;
+    };
+    let id = map.add_imported_file(name.to_string_lossy(), &path, text);
+    reached.push(id);
+    pending.push(id);
 }
 
 /// Reads `path` into `map` and parses it.

@@ -1219,6 +1219,20 @@ pub enum EvalExprKind {
     },
     /// A call to one of the reserved evaluator functions.
     ReservedCall(ReservedCall),
+    /// `T:sizeof`, `T.f:offsetof`, `T[2].f:offsetof` — the K65 layer's
+    /// metadata query, written inside a bracket.
+    ///
+    /// `base` is kept in the evaluator's own shapes — a name, `.field`
+    /// members, one-index subscripts — because an index may be an evaluator
+    /// expression, which has a value only once the evaluation reaches it.
+    /// The interpreter evaluates the indices and asks the resolver the same
+    /// question `T:sizeof` asks outside a bracket, so the two cannot answer
+    /// differently.
+    Metadata {
+        base: Box<EvalExpr>,
+        query: MetadataQueryKind,
+        query_span: Span,
+    },
     Error,
 }
 

@@ -283,7 +283,12 @@ fn a_file_with_a_parse_error_is_left_alone() {
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(!output.status.success(), "{stderr}");
     assert!(stderr.contains("not formatted"), "{stderr}");
-    assert!(stderr.contains("would be guessing"), "{stderr}");
+    // One sentence, not two joined by the indentation of a broken string
+    // continuation, which is what it read as once.
+    assert!(
+        stderr.contains("formatting a program the grammar could not read would be guessing"),
+        "{stderr}"
+    );
     // And it wrote nothing.
     assert_eq!(
         std::fs::read_to_string(&path).expect("read it back"),

@@ -542,7 +542,8 @@ fn fmt(prog_name: &str, args: &[String]) -> ExitCode {
             render::render_tool_error(
                 prog_name,
                 &format!(
-                    "{}: not formatted — its parse has an error, and formatting a program                      the grammar could not read would be guessing",
+                    "{}: not formatted — its parse has an error, and formatting a program \
+                     the grammar could not read would be guessing",
                     input.display()
                 ),
                 command.message_format,

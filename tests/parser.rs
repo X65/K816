@@ -739,6 +739,14 @@ fn dump_eval(kind: &EvalExprKind) -> String {
                 call.arguments.iter().map(|a| dump_eval(&a.kind)).collect();
             format!("reserved:{:?}({})", call.name, arguments.join(" "))
         }
+        EvalExprKind::Metadata { base, query, .. } => format!(
+            "({}:{})",
+            dump_eval(&base.kind),
+            match query {
+                MetadataQueryKind::SizeOf => "sizeof",
+                MetadataQueryKind::OffsetOf => "offsetof",
+            }
+        ),
         EvalExprKind::Error => "<error>".to_owned(),
     }
 }
@@ -1326,6 +1334,17 @@ fn evaluator_brackets_are_expression_atoms() {
     assert_eq!(parse_expr("[LV_SIZE]"), "[LV_SIZE]");
     assert_eq!(parse_expr("[FLAG_A | FLAG_B]"), "[(| FLAG_A FLAG_B)]");
     assert_eq!(parse_expr("BASE + [SIZE]"), "(+ BASE [SIZE])");
+}
+
+/// A metadata query inside a bracket is the evaluator's node, with its path
+/// in the evaluator's shapes and each field keeping its `.`; a ternary's `:`
+/// with space before it is still the ternary's.
+#[test]
+fn a_metadata_query_inside_a_bracket_is_an_evaluator_node() {
+    assert_eq!(parse_expr("[T:sizeof * 4]"), "[(* (T:sizeof) 4)]");
+    assert_eq!(parse_expr("[T.m.y:offsetof]"), "[(((T..m)..y):offsetof)]");
+    assert_eq!(parse_expr("[T[2].b:offsetof]"), "[(((T[2])..b):offsetof)]");
+    assert_eq!(parse_expr("[c ? a + T : x]"), "[(?: c (+ a T) x)]");
 }
 
 #[test]

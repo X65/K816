@@ -523,7 +523,8 @@ fn answer(
 /// protocol's way of saying "apply this one on a bare Quick Fix".
 #[expect(
     clippy::mutable_key_type,
-    reason = "`WorkspaceEdit.changes` is keyed by `Uri`, whose interior state               clippy reads as mutable; the protocol chooses the type"
+    reason = "`WorkspaceEdit.changes` is keyed by `Uri`, whose interior state \
+              clippy reads as mutable; the protocol chooses the type"
 )]
 fn code_action(
     map: &crate::source::SourceMap,

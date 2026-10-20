@@ -434,6 +434,13 @@ pub struct UserFunction {
 #[derive(Clone, Debug, Default)]
 pub struct Functions {
     defined: BTreeMap<(String, usize), UserFunction>,
+    /// The `evalfunc`s the units this one imports declare.
+    ///
+    /// Asked only after `defined` has missed, so a local declaration of the
+    /// same name and count wins it, as a local `const` wins its name — an
+    /// `import` makes available what typing the declarations here would,
+    /// and a declaration typed here would come first.
+    foreign: BTreeMap<(String, usize), UserFunction>,
 }
 
 impl Functions {
@@ -456,8 +463,15 @@ impl Functions {
         builtin_arities(name).contains(&arity)
     }
 
+    /// Records an `evalfunc` another unit declares, under its name and count.
+    pub fn record_foreign(&mut self, name: &str, function: UserFunction) {
+        self.foreign
+            .insert((name.to_owned(), function.parameters.len()), function);
+    }
+
     fn lookup(&self, name: &str, arity: usize) -> Option<&UserFunction> {
-        self.defined.get(&(name.to_owned(), arity))
+        let key = (name.to_owned(), arity);
+        self.defined.get(&key).or_else(|| self.foreign.get(&key))
     }
 
     /// True when this name and count resolve to something callable.
@@ -511,6 +525,13 @@ pub struct Note {
 pub enum Error {
     /// A name nothing in scope gives a value.
     Name { span: Span, name: String },
+    /// A name that is declared and that the table this evaluation runs
+    /// against holds no value for (`SymbolTable::unanswered`).
+    Unanswered {
+        span: Span,
+        name: String,
+        declaration: Span,
+    },
     /// A name that exists and is not an evaluator value — a `var`, an
     /// `inline`, a code label.
     NotAValue {
@@ -565,6 +586,10 @@ pub enum Error {
     /// spelling analysis does not walk: `x.size` is `size(x)`, and only the
     /// parenthesised spelling is a `reserved_eval_call` node.
     Refused { span: Span, name: &'static str },
+    /// A question the resolver answered with a diagnostic — a metadata query
+    /// inside a bracket, which is the resolver's question and reports in its
+    /// words.
+    Resolved(Box<crate::diagnostic::Diagnostic>),
     /// A construct that has *already* reported itself, so the caller has
     /// nothing to add — the four reserved evaluator functions written as
     /// calls, and a node the parser already called a syntax error.
@@ -658,6 +683,89 @@ impl<'a> Interpreter<'a> {
     /// node says nothing, because it is not where the loop is. The report is
     /// re-spanned to the evaluation as a whole, which is the thing that did
     /// not finish.
+    /// `[ T:sizeof ]` and `[ T.f:offsetof ]`: the question `T:sizeof` asks
+    /// outside a bracket, asked of the same resolver, so a layout has one
+    /// size wherever it is read.
+    ///
+    /// An index is an evaluator expression and is evaluated first; the path
+    /// the resolver walks is then the K65 layer's own.
+    fn metadata(
+        &mut self,
+        span: Span,
+        base: &EvalExpr,
+        query: crate::ast::MetadataQueryKind,
+        query_span: Span,
+    ) -> Result<Value, Error> {
+        let path = self.metadata_path(base)?;
+        let question = Expr {
+            kind: ExprKind::Metadata(crate::ast::MetadataQuery {
+                base: Box::new(path),
+                query,
+                query_span,
+            }),
+            span,
+        };
+        // A path of names and numbers reads no bracket, so the resolver needs
+        // no outcome to look one up in.
+        let outcome = Outcome::default();
+        let mut resolver = crate::resolve::Resolver::new(self.symbols, &outcome);
+        let value = resolver.constant(&question, "metadata queries");
+        let mut diagnostics = resolver.take_diagnostics();
+        match value {
+            Some(value) => Ok(Value::Number(f64::from(value))),
+            None if diagnostics.is_empty() => Err(Error::Reported),
+            None => Err(Error::Resolved(Box::new(diagnostics.remove(0)))),
+        }
+    }
+
+    /// The K65 path a query's base spells: a name, `.field` steps, and
+    /// subscripts whose index this evaluation folds to a number. Anything
+    /// else is a value, which names no variable and which the resolver says
+    /// has no size.
+    fn metadata_path(&mut self, path: &EvalExpr) -> Result<Expr, Error> {
+        let kind = match &path.kind {
+            EvalExprKind::Symbol(name) => {
+                if let Some(symbol) = self.symbols.lookup(&name.text) {
+                    self.resolutions.push(Resolution::Symbol {
+                        span: name.span,
+                        symbol,
+                    });
+                }
+                ExprKind::Symbol(name.clone())
+            }
+            EvalExprKind::Member { base, field } => ExprKind::Field(crate::ast::FieldAccess {
+                base: Box::new(self.metadata_path(base)?),
+                field: field.clone(),
+            }),
+            EvalExprKind::Subscript { base, indices } if indices.len() == 1 => {
+                let base = self.metadata_path(base)?;
+                let index = self.run(&indices[0])?;
+                let Some(number) = index.number() else {
+                    return Err(Error::NotANumber {
+                        span: indices[0].span,
+                        found: index.describe(),
+                        needed: "an element index",
+                    });
+                };
+                ExprKind::Subscript(crate::ast::SubscriptExpr {
+                    base: Box::new(base),
+                    index: Box::new(Expr {
+                        kind: ExprKind::Number(to_integer(number) as u32),
+                        span: indices[0].span,
+                    }),
+                })
+            }
+            _ => {
+                let value = self.run(path)?;
+                ExprKind::Number(value.number().map_or(0, |number| to_integer(number) as u32))
+            }
+        };
+        Ok(Expr {
+            kind,
+            span: path.span,
+        })
+    }
+
     pub fn evaluate(&mut self, expr: &EvalExpr) -> Result<Value, Error> {
         match self.run(expr) {
             Err(Error::Budget { .. }) => Err(Error::Budget { span: expr.span }),
@@ -791,6 +899,11 @@ impl<'a> Interpreter<'a> {
                 self.index(expr.span, &base, &values)
             }
             EvalExprKind::ReservedCall(call) => self.reserved(expr.span, call),
+            EvalExprKind::Metadata {
+                base,
+                query,
+                query_span,
+            } => self.metadata(expr.span, base, *query, *query_span),
             // A syntax error was already reported for this node.
             EvalExprKind::Error => Err(Error::Reported),
         }
@@ -855,6 +968,13 @@ impl<'a> Interpreter<'a> {
                     name: name.text.clone(),
                 });
                 return Ok(Value::Section(name.text.clone()));
+            }
+            if let Some(declaration) = self.symbols.unanswered(&name.text) {
+                return Err(Error::Unanswered {
+                    span: name.span,
+                    name: name.text.clone(),
+                    declaration,
+                });
             }
             return Err(Error::Name {
                 span: name.span,
@@ -1385,6 +1505,20 @@ pub enum Site<'a> {
 /// its definition does not resolve, and the complaint lands on the definition
 /// that used it rather than on the call site that ran. K816 reports the same
 /// thing in the same place, which is what this is for.
+fn metadata_calls_in(path: &EvalExpr, out: &mut Vec<(Name, usize)>) {
+    match &path.kind {
+        EvalExprKind::Symbol(_) => {}
+        EvalExprKind::Member { base, .. } => metadata_calls_in(base, out),
+        EvalExprKind::Subscript { base, indices } => {
+            metadata_calls_in(base, out);
+            for index in indices {
+                calls_in(index, out);
+            }
+        }
+        _ => calls_in(path, out),
+    }
+}
+
 pub fn calls_in(expr: &EvalExpr, out: &mut Vec<(Name, usize)>) {
     match &expr.kind {
         EvalExprKind::Call { name, arguments } => {
@@ -1399,6 +1533,8 @@ pub fn calls_in(expr: &EvalExpr, out: &mut Vec<(Name, usize)>) {
             out.push((field.clone(), 1));
             calls_in(base, out);
         }
+        // A query's members are fields, not calls; only an index can call.
+        EvalExprKind::Metadata { base, .. } => metadata_calls_in(base, out),
         EvalExprKind::MethodCall {
             base,
             method,
@@ -1491,7 +1627,9 @@ pub fn is_recovered(expr: &EvalExpr) -> bool {
         EvalExprKind::Subscript { base, indices } => {
             is_recovered(base) || indices.iter().any(is_recovered)
         }
-        EvalExprKind::Member { base, .. } => is_recovered(base),
+        EvalExprKind::Member { base, .. } | EvalExprKind::Metadata { base, .. } => {
+            is_recovered(base)
+        }
         EvalExprKind::MethodCall {
             base, arguments, ..
         } => is_recovered(base) || arguments.iter().any(is_recovered),
@@ -1849,15 +1987,12 @@ impl Outcome {
         self.sections.record(section, bytes);
     }
 
-    /// Seeds what another unit of the workspace defines, before this unit is
-    /// walked — a foreign section has to be readable from the first bracket,
-    /// and `declare_imports` runs after every bracket has already run.
-    pub fn record_foreign_section(&mut self, section: &str, bytes: SectionBytes) {
-        self.sections.record_foreign(section, bytes);
-    }
-
-    pub fn record_foreign_const(&mut self, name: &str, value: f64) {
-        self.sections.record_foreign_const(name, value);
+    /// For seeding what another unit of the workspace defines, before this
+    /// unit is walked — a foreign section has to be readable from the first
+    /// bracket, and `declare_imports` runs after every bracket has already
+    /// run (`Linkage::seed_sections`).
+    pub fn sections_mut(&mut self) -> &mut SectionTable {
+        &mut self.sections
     }
 
     pub fn functions(&self) -> &Functions {

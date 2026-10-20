@@ -1474,6 +1474,7 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     ("EvalExprKind", "If", "evalinstr-statements"),
     ("EvalExprKind", "While", "evalinstr-statements"),
     ("EvalExprKind", "ReservedCall", "evelem-call"),
+    ("EvalExprKind", "Metadata", "k816-metadata-query"),
     ("EvalExprKind", "Error", "n/a"),
     // ---- PreprocessorKind ----------------------------------------------
     ("PreprocessorKind", "If", "ppif-directives"),

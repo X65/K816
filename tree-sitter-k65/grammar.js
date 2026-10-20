@@ -62,7 +62,8 @@
  *     `else`, `while`, blocks) with `evalfunc`, `pi`, two-dimensional
  *     indexing and method calls, the `evaluator [ ]` data entry, the five
  *     illegal-opcode HLA forms, and the fix that makes a bare call followed
- *     by a statement two statements.
+ *     by a statement two statements;
+ *   - a metadata query inside an evaluator bracket, `[ T:sizeof * 4 ]`.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -1875,6 +1876,7 @@ export default grammar({
         $.eval_assignment,
         $.eval_subscript,
         $.eval_member,
+        $.eval_metadata_query,
         $.eval_method_call,
         $.eval_pi,
       ),
@@ -1895,6 +1897,7 @@ export default grammar({
         $.eval_assignment,
         $.eval_subscript,
         $.eval_member,
+        $.eval_metadata_query,
         $.eval_method_call,
         $.eval_pi,
         $.eval_list,
@@ -1963,6 +1966,23 @@ export default grammar({
         EVAL_PREC.suffix,
         seq(field('base', $._eval_expression), field('field', $.field_name)),
       ),
+
+    // `T:sizeof` and `T.f:offsetof` inside a bracket: the K65 layer's
+    // metadata query, so `[ T:sizeof * 4 ]` is arithmetic over a layout.
+    //
+    // The suffix is one token, written against its base, rather than the K65
+    // layer's `:` and a keyword. The ternary owns `:` here, and with two
+    // tokens `c ? a + T : x` would be decided at the colon — shift into a
+    // query on `T`, or reduce `a + T` for the ternary — with the keyword one
+    // token too far to see. As one token the lexer decides it: `:sizeof` is a
+    // query and `: x` is a ternary.
+    eval_metadata_query: $ =>
+      prec.left(
+        EVAL_PREC.suffix,
+        seq(field('base', $._eval_expression), field('query', $.metadata_suffix)),
+      ),
+
+    metadata_suffix: _ => token.immediate(seq(':', choice('sizeof', 'offsetof'))),
 
     // `x.f(a)` — sugar for `f(x, a)`. The dot must follow the base with no
     // space, which is the same rule `field_access` uses in the K65 layer.

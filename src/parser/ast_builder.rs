@@ -2353,6 +2353,32 @@ impl AstBuilder<'_> {
                     indices,
                 }
             }
+            "eval_metadata_query" => {
+                let Some(query_node) = node.child_by_field_name("query") else {
+                    self.unexpected(node, "a metadata query");
+                    return EvalExpr {
+                        kind: EvalExprKind::Error,
+                        span,
+                    };
+                };
+                // One token, `:sizeof` or `:offsetof`, colon and all.
+                let query = match self.text(query_node).trim_start_matches(':') {
+                    "sizeof" => MetadataQueryKind::SizeOf,
+                    "offsetof" => MetadataQueryKind::OffsetOf,
+                    _ => {
+                        self.unexpected(query_node, "a metadata query");
+                        return EvalExpr {
+                            kind: EvalExprKind::Error,
+                            span,
+                        };
+                    }
+                };
+                EvalExprKind::Metadata {
+                    base: Box::new(self.metadata_path(node.child_by_field_name("base"), node)),
+                    query,
+                    query_span: self.span(query_node),
+                }
+            }
             "eval_member" => EvalExprKind::Member {
                 base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
                 field: self.eval_method_name(node.child_by_field_name("field"), node),
@@ -2420,6 +2446,46 @@ impl AstBuilder<'_> {
     /// Both spellings are sugar for a call — `f(x)` and `f(x, a)` — so what
     /// the AST holds is the function's name. Everywhere else in K65 a `.name`
     /// selects a field and keeps its dot; here it never does.
+    /// The base of a metadata query inside a bracket: a name, `.field`
+    /// members, and one-index subscripts, as the evaluator's nodes.
+    ///
+    /// The one difference from [`Self::eval_expr`] is that a member keeps its
+    /// leading `.`: here it is a field of a layout, spelled as the K65
+    /// layer's `FieldAccess` spells it, and not the name of a function `x.f`
+    /// would call. Anything else is an ordinary evaluator expression, which
+    /// the interpreter refuses as naming no variable.
+    fn metadata_path(&mut self, node: Option<Node<'_>>, parent: Node<'_>) -> EvalExpr {
+        match node {
+            Some(member) if member.kind() == "eval_member" => EvalExpr {
+                kind: EvalExprKind::Member {
+                    base: Box::new(self.metadata_path(member.child_by_field_name("base"), member)),
+                    field: self.name(member.child_by_field_name("field"), member),
+                },
+                span: self.span(member),
+            },
+            Some(subscript) if subscript.kind() == "eval_subscript" => {
+                let mut cursor = subscript.walk();
+                let index_nodes: Vec<Node<'_>> = subscript
+                    .children_by_field_name("index", &mut cursor)
+                    .collect();
+                let indices = index_nodes
+                    .into_iter()
+                    .map(|index| self.eval_expr(Some(index), subscript))
+                    .collect();
+                EvalExpr {
+                    kind: EvalExprKind::Subscript {
+                        base: Box::new(
+                            self.metadata_path(subscript.child_by_field_name("base"), subscript),
+                        ),
+                        indices,
+                    },
+                    span: self.span(subscript),
+                }
+            }
+            _ => self.eval_expr(node, parent),
+        }
+    }
+
     fn eval_method_name(&mut self, node: Option<Node<'_>>, parent: Node<'_>) -> Name {
         let mut name = self.name(node, parent);
         if let Some(rest) = name.text.strip_prefix('.') {

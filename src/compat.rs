@@ -1643,6 +1643,10 @@ impl StrictWalk<'_> {
                 }
             }
             EvalExprKind::Member { base, .. } => self.eval(base),
+            EvalExprKind::Metadata { base, .. } => {
+                self.mark("k816-metadata-query", expr.span);
+                self.eval(base);
+            }
             EvalExprKind::MethodCall {
                 base, arguments, ..
             } => {
@@ -1709,7 +1713,9 @@ fn eval_assigns(expr: &EvalExpr) -> bool {
         EvalExprKind::Subscript { base, indices } => {
             eval_assigns(base) || indices.iter().any(eval_assigns)
         }
-        EvalExprKind::Member { base, .. } => eval_assigns(base),
+        EvalExprKind::Member { base, .. } | EvalExprKind::Metadata { base, .. } => {
+            eval_assigns(base)
+        }
         EvalExprKind::MethodCall {
             base, arguments, ..
         } => eval_assigns(base) || arguments.iter().any(eval_assigns),

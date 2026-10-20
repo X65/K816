@@ -59,14 +59,16 @@
 //!
 //! The circle is broken by giving this pass a compile-time environment of
 //! its own: it walks the file in source order, folds each `const` it passes
-//! with a throwaway [`SymbolTable`], and runs each evaluator bracket through
-//! a **silent** interpreter whose diagnostics, `print` notes and step budget
-//! are discarded. That evaluation exists only to decide conditions;
-//! `semantic.rs` runs every bracket again, for real, and it is that second
-//! run which reports. So a bracket in a program that uses the preprocessor
-//! is evaluated twice — and a program that contains no directive at all
-//! skips this pass entirely ([`apply`] returns the file it was given), which
-//! is every source in the corpus but two.
+//! with a throwaway [`SymbolTable`] — in which each `var` has the shape
+//! analysis will give it, computed by the same [`layout::var_shape`], so
+//! that `T:sizeof` is the layout's size here too — and runs each evaluator
+//! bracket through a **silent** interpreter whose diagnostics, `print` notes
+//! and step budget are discarded. That evaluation exists only to decide
+//! conditions; `semantic.rs` runs every bracket again, for real, and it is
+//! that second run which reports. So a bracket in a program that uses the
+//! preprocessor is evaluated twice — and a program that contains no
+//! directive at all skips this pass entirely ([`apply`] returns the file it
+//! was given), which is every source in the corpus but two.
 //!
 //! That environment is built *as the walk passes each declaration*, so it is
 //! not quite the one analysis builds: analysis declares every function and
@@ -75,6 +77,18 @@
 //! number, and none of the forward-declarable kinds is one, so the difference
 //! shows up as a diagnostic that says "no compile-time value" rather than
 //! "a data label" — never as a branch decided the wrong way.
+//!
+//! What it must never be is *different*: a name folded here to one number
+//! and by analysis to another is a unit built from one value and exporting
+//! the other. Every value this pass folds is handed on ([`Applied::folded`])
+//! and analysis refuses a unit where the two disagree ([`disagreements`]).
+//! A name this pass cannot fold truthfully — a `const` or a layout folded
+//! from a section's bytes — it leaves without a value, so a reader of it is
+//! refused and told why (`SymbolTable::unanswered`).
+//!
+//! What the units this one imports make available is available here too,
+//! seeded by the same [`crate::linkage::Linkage`] calls analysis makes: an
+//! `import` makes available what typing the imported declarations would.
 //!
 //! # Where K816 differs from the original, deliberately
 //!
@@ -102,6 +116,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::eval;
+use crate::layout;
 use crate::resolve::Resolver;
 use crate::source::{Provenance, Span};
 use crate::symbol::{SymbolKind, SymbolTable};
@@ -115,18 +130,34 @@ use crate::symbol::{SymbolKind, SymbolTable};
 ///
 /// A file with no directive anywhere is returned untouched and unevaluated,
 /// so the cost of the pass is paid only by sources that use it.
-pub fn apply(file: &AstFile) -> Applied<'_> {
+///
+/// `workspace` is the unit's place in a program, when there is one: what the
+/// units it imports make available at compile time is available to a
+/// condition, an `unroll` count and a bracket here, exactly as it is to
+/// analysis — an `import` makes available what typing the imported
+/// declarations here would.
+pub fn apply<'a>(
+    file: &'a AstFile,
+    workspace: Option<(&crate::linkage::Linkage, crate::source::FileId)>,
+) -> Applied<'a> {
     if !file.items.iter().any(item_has_directive) {
         return Applied {
             program: Cow::Borrowed(file),
             diagnostics: Vec::new(),
             effects: Vec::new(),
+            folded: Vec::new(),
         };
     }
     let mut pass = Preprocess {
         sections: eval::SectionTable::before_analysis(),
         ..Preprocess::default()
     };
+    if let Some((linkage, unit)) = workspace {
+        linkage.seed_sections(unit, &mut pass.sections);
+        linkage.seed_sections(unit, pass.outcome.sections_mut());
+        linkage.seed_functions(unit, &mut pass.functions);
+        linkage.seed_symbols(unit, &mut pass.symbols);
+    }
     let items = pass.items(&file.items, end_of(&file.items));
     let mut program = AstFile { items };
     // The statement identities the builder assigned are keyed by source
@@ -139,6 +170,7 @@ pub fn apply(file: &AstFile) -> Applied<'_> {
         program: Cow::Owned(program),
         diagnostics: pass.diagnostics,
         effects: pass.effects,
+        folded: pass.folded,
     }
 }
 
@@ -150,6 +182,13 @@ pub struct Applied<'a> {
     pub diagnostics: Vec<Diagnostic>,
     /// The names live `#if` conditions assigned, in source order.
     pub effects: Vec<Effect>,
+    /// Every name this pass gave a compile-time value, with that value.
+    ///
+    /// The directives it decided and the `unroll`s it expanded read these,
+    /// and nothing after this pass reads them again, so analysis checks that
+    /// it folds each to the same number: a name with two values in one unit
+    /// is a miscompile, and this is where one would be caught.
+    pub folded: Vec<Folded>,
 }
 
 /// A zero-width span just past the last item, for a top-level `#if` that the
@@ -313,13 +352,18 @@ struct Preprocess {
     /// The `evalfunc` definitions passed so far, so a condition may call one.
     functions: eval::Functions,
     /// The `const` values and data-section labels passed so far — the second
-    /// namespace a condition reads. Built here rather than borrowed because
-    /// the real one does not exist until liveness is already decided.
+    /// namespace a condition reads — and the layouts and pinned addresses of
+    /// the units this one imports, as foreign facts. Built here rather than
+    /// borrowed because the real one does not exist until liveness is
+    /// already decided.
     symbols: SymbolTable,
-    /// Empty, permanently, and it says so: a section's bytes are the product
-    /// of resolving it, and this pass runs before any section is resolved —
-    /// because a `data` block inside a region that is not taken must not be.
-    /// A condition that reads one is refused here rather than answered wrong.
+    /// Empty of this unit's sections, permanently, and it says so: a
+    /// section's bytes are the product of resolving it, and this pass runs
+    /// before any section is resolved — because a `data` block inside a
+    /// region that is not taken must not be. A condition that reads one is
+    /// refused here rather than answered wrong. What the units this one
+    /// imports assembled is here, with their `const` values, because those
+    /// were resolved where they were written.
     sections: eval::SectionTable,
     /// Where in the surviving item list a condition's effects belong, so
     /// that a name one assigns becomes visible to analysis at the point the
@@ -345,6 +389,8 @@ struct Preprocess {
     /// `const N = [2 * 3]` fold, and therefore what makes `#if N` below it
     /// decide anything. Analysis keeps its own, from its own run.
     outcome: eval::Outcome,
+    /// See [`Applied::folded`].
+    folded: Vec<Folded>,
 }
 
 impl Preprocess {
@@ -415,13 +461,12 @@ impl Preprocess {
                 );
                 item.kind.clone()
             }
-            // A `var` has no compile-time value, and declaring it is what
-            // makes the pass say so in the same words analysis would: without
-            // the name in the table a condition reading it is "undeclared",
-            // which is both wrong and less useful than "a variable".
+            // A `var` has no compile-time value, but its layout does: a
+            // condition reading `T:sizeof` reads a number. Its brackets run
+            // first, as analysis runs them, because a field count may be one.
             ItemKind::Var(var) => {
-                self.declare_var(&var.name);
                 self.brackets_of_item(item);
+                self.declare_var(var);
                 item.kind.clone()
             }
             // An `extern const` is declared, for the reason a `var` is
@@ -432,7 +477,7 @@ impl Preprocess {
             // kind, so declaring them would change nothing.
             ItemKind::Extern(declaration) => {
                 if let crate::ast::ExternKind::Const(constant) = &declaration.kind {
-                    let _ = self.symbols.declare(
+                    self.declare(
                         &constant.name.text,
                         // No size: a condition reads values, never sizes.
                         SymbolKind::Const {
@@ -886,6 +931,18 @@ impl Preprocess {
     // The namespace a condition reads
     // -----------------------------------------------------------------
 
+    /// Declares `name` as analysis would, and says whether it did.
+    ///
+    /// A register, flag or instruction spelling is refused there
+    /// ([`crate::compat::reserved_name`]) and an evaluator name taking one
+    /// stays a local of its bracket, so it is refused here too: declaring
+    /// it would give a condition or an `unroll` count a name analysis does
+    /// not have.
+    fn declare(&mut self, name: &str, kind: SymbolKind, span: Span) -> bool {
+        crate::compat::reserved_name_refusal(name).is_none()
+            && self.symbols.declare(name, kind, span).is_ok()
+    }
+
     /// Declares a code section, which has an address and no value: the pass
     /// has to know the name exists in order to say which kind it is.
     fn declare_section(
@@ -901,27 +958,56 @@ impl Preprocess {
             crate::ast::FunctionKind::Inline => SymbolKind::Inline,
             _ => SymbolKind::function(far),
         };
-        let _ = self.symbols.declare(&name.text, kind, name.span);
+        self.declare(&name.text, kind, name.span);
     }
 
-    /// Likewise a `var`: its address is the linker's, so it has no
-    /// compile-time value, and saying *that* is better than "undeclared".
-    fn declare_var(&mut self, name: &crate::ast::Name) {
-        if name.provenance == Provenance::Synthetic {
+    /// Declares a `var` or an `abstract var` with the shape analysis will
+    /// give it.
+    ///
+    /// Its address is the linker's, so it has no compile-time value, and
+    /// declaring it is what makes the pass say so rather than "undeclared".
+    /// Its *shape* is the source's, and `T:sizeof` and `T.f:offsetof` read
+    /// it, so the shape is [`layout::var_shape`] — the computation analysis
+    /// runs, and not a placeholder: a placeholder answers `:sizeof` with
+    /// its own size, which is a wrong number and not a missing one, and
+    /// nothing downstream re-checks an `#if` this pass decided or an
+    /// `unroll` it expanded.
+    ///
+    /// A shape that reads something this pass cannot fold — a section's
+    /// bytes, which are assembled after it — leaves the name without a
+    /// value, so a condition reading it is refused rather than given the
+    /// size of a guess.
+    fn declare_var(&mut self, var: &crate::ast::VarDeclaration) {
+        if var.name.provenance == Provenance::Synthetic {
             return;
         }
-        let _ = self.symbols.declare(
-            &name.text,
+        let mut shaping = Shaping {
+            symbols: &mut self.symbols,
+            outcome: &self.outcome,
+            exact: true,
+        };
+        let kind = if var.is_abstract {
+            let default = var.width.map(|width| layout::data_width(width.kind));
+            SymbolKind::AbstractVar {
+                layout: layout::build_layout(&mut shaping, &var.fields, default),
+            }
+        } else {
+            let shape = layout::var_shape(&mut shaping, var);
             SymbolKind::Var {
                 address: None,
                 size: crate::symbol::AddressSize::Absolute,
-                width: None,
-                layout: None,
-                element: 1,
-                repeat: None,
-            },
-            name.span,
-        );
+                width: shape.width,
+                layout: shape.layout,
+                element: shape.allocation.element,
+                repeat: shape.repeat,
+            }
+        };
+        if shaping.exact {
+            self.declare(&var.name.text, kind, var.name.span);
+        } else {
+            self.symbols
+                .record_unanswered(&var.name.text, var.name.span);
+        }
     }
 
     /// A data label is the section it names, which is what makes
@@ -930,7 +1016,7 @@ impl Preprocess {
         if name.provenance == Provenance::Synthetic {
             return;
         }
-        let _ = self.symbols.declare(
+        self.declare(
             &name.text,
             SymbolKind::DataLabel {
                 size: crate::symbol::AddressSize::Absolute,
@@ -1041,14 +1127,7 @@ impl Preprocess {
         // down, and a condition below it may read it by either route.
         for (name, assigned) in env.take_new_names() {
             if let Some(number) = assigned.number() {
-                let _ = self.symbols.declare(
-                    &name,
-                    SymbolKind::Const {
-                        value: Some(eval::to_integer(number) as u32),
-                        size: None,
-                    },
-                    body.span,
-                );
+                self.declare_value(&name, eval::to_integer(number) as u32, body.span);
             }
             self.assigned.push((name, assigned));
         }
@@ -1133,19 +1212,129 @@ impl Preprocess {
             if entry.name.provenance == Provenance::Synthetic {
                 continue;
             }
-            if let Some(value) = value {
-                let _ = self.symbols.declare(
-                    &entry.name.text,
-                    // No size, as above: analysis declares the real one.
-                    SymbolKind::Const {
-                        value: Some(value),
-                        size: None,
-                    },
-                    entry.name.span,
-                );
+            match value {
+                Some(value) => self.declare_value(&entry.name.text, value, entry.name.span),
+                // Folded from something this pass cannot read — or from a
+                // mistake analysis reports where it is written — so a
+                // condition reading it says it has no value *here*, not that
+                // it is undeclared.
+                None => self
+                    .symbols
+                    .record_unanswered(&entry.name.text, entry.name.span),
             }
         }
     }
+
+    /// Declares a name with a compile-time value, and remembers the value
+    /// for analysis to check (`Applied::folded`).
+    fn declare_value(&mut self, name: &str, value: u32, span: Span) {
+        let declared = self.declare(
+            name,
+            // No size: a condition reads values, and analysis declares the
+            // real one.
+            SymbolKind::Const {
+                value: Some(value),
+                size: None,
+            },
+            span,
+        );
+        if declared {
+            self.folded.push(Folded {
+                name: name.to_owned(),
+                value,
+                span,
+            });
+        }
+    }
+}
+
+/// A name this pass gave a compile-time value, and the value.
+#[derive(Clone, Debug)]
+pub struct Folded {
+    pub name: String,
+    pub value: u32,
+    pub span: Span,
+}
+
+/// Every name the preprocessor folded to another number than analysis did.
+///
+/// The preprocessor decides `#if`s and expands `unroll`s against values it
+/// folds itself, before analysis exists, and nothing re-checks what it
+/// decided. A name with two values is therefore code built from one and
+/// exported with the other — a miscompile no test of the output would
+/// notice. That is a compiler bug and not the author's, so it is internal;
+/// it is an error rather than an assertion because emitting the code is the
+/// one thing that must not happen.
+///
+/// A name analysis has no value for is not compared: it refused the
+/// declaration and said so, and the program does not compile.
+pub fn disagreements(folded: &[Folded], symbols: &SymbolTable) -> Vec<Diagnostic> {
+    folded
+        .iter()
+        .filter_map(|early| {
+            let id = symbols.lookup(&early.name)?;
+            let SymbolKind::Const {
+                value: Some(late), ..
+            } = symbols.kind(id)
+            else {
+                return None;
+            };
+            (late != early.value).then(|| {
+                Diagnostic::error(
+                    DiagnosticCode::INTERNAL,
+                    format!("internal: `{}` has two values in this unit", early.name),
+                    Label::new(
+                        early.span,
+                        format!("the preprocessor folded this to ${:X}", early.value),
+                    ),
+                )
+                .with_secondary(Label::new(
+                    symbols.symbol(id).declaration,
+                    format!("analysis folded it to ${late:X}"),
+                ))
+                .with_note(
+                    "an `#if`, an `unroll` count or an evaluator bracket was decided with the \
+                     first value, and the code would be built from it",
+                )
+            })
+        })
+        .collect()
+}
+
+/// A declaration's shape as this pass folds it: against the table built so
+/// far, silently, because analysis folds the same expressions again and that
+/// run is the one that reports.
+struct Shaping<'a> {
+    symbols: &'a mut SymbolTable,
+    outcome: &'a eval::Outcome,
+    /// Cleared by a count or extent that did not fold here. The shape then
+    /// differs from the one analysis computes, and the name is left without
+    /// a value.
+    exact: bool,
+}
+
+impl layout::Shaper for Shaping<'_> {
+    fn layouts(&self) -> &crate::symbol::Layouts {
+        self.symbols.layouts()
+    }
+
+    fn intern(&mut self, layout: crate::symbol::Layout) -> crate::symbol::LayoutId {
+        self.symbols.add_layout(layout)
+    }
+
+    fn constant(&mut self, expr: &crate::ast::Expr, position: &str) -> Option<u32> {
+        let mut resolver = Resolver::new(self.symbols, self.outcome);
+        let value = resolver.constant(expr, position);
+        let _ = resolver.finish();
+        self.exact &= value.is_some();
+        value
+    }
+
+    // Both shapes leave the zero count and the repeated field out, so they
+    // still agree; analysis is the one that reports them.
+    fn zero_count(&mut self, _: Span) {}
+
+    fn duplicate_field(&mut self, _: &crate::ast::FieldDeclaration, _: Span) {}
 }
 
 /// A name a live `#if` condition assigned, and where analysis should install
@@ -1188,7 +1377,7 @@ mod tests {
         let id = map.add_file("pp.k65", source);
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
-        let applied = apply(&parsed.file);
+        let applied = apply(&parsed.file, None);
         let codes = applied
             .diagnostics
             .iter()
@@ -1218,6 +1407,73 @@ mod tests {
         names
     }
 
+    /// The values this pass folded, by name.
+    fn folded(source: &str) -> Vec<(String, u32)> {
+        let mut map = SourceMap::new();
+        let id = map.add_file("pp.kk", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        apply(&parsed.file, None)
+            .folded
+            .into_iter()
+            .map(|folded| (folded.name, folded.value))
+            .collect()
+    }
+
+    /// A layout query folds to the layout's size and offset here, not to the
+    /// size of a placeholder `var`, and the names it reaches are recorded for
+    /// analysis to check.
+    #[test]
+    fn a_layout_query_folds_to_the_layout_and_is_recorded() {
+        let source = "abstract var T[ .a :word .b :byte [62] ]\n\
+                      const TSZ = T:sizeof, OFS = T.b:offsetof\n\
+                      [ SH = 0  while TSZ << SH < $100 { SH = SH + 1 } ]\n\
+                      #if 1\n#endif\n";
+        assert_eq!(
+            folded(source),
+            [
+                ("TSZ".to_owned(), 64),
+                ("OFS".to_owned(), 2),
+                ("SH".to_owned(), 2)
+            ]
+        );
+    }
+
+    /// A name folded to another number than analysis has is refused, and the
+    /// same number, or a name analysis gave no value, is not.
+    #[test]
+    fn a_name_with_two_values_is_an_internal_error() {
+        let mut map = SourceMap::new();
+        let file = map.add_file("pp.kk", "");
+        let span = Span::empty_at(file, 0);
+        let mut symbols = SymbolTable::default();
+        for (name, value) in [("SAME", Some(64)), ("OTHER", Some(64)), ("NONE", None)] {
+            symbols
+                .declare(name, SymbolKind::Const { value, size: None }, span)
+                .expect("declares");
+        }
+        let early = |name: &str, value| Folded {
+            name: name.to_owned(),
+            value,
+            span,
+        };
+        let found = disagreements(
+            &[
+                early("SAME", 64),
+                early("OTHER", 1),
+                early("NONE", 1),
+                early("ABSENT", 1),
+            ],
+            &symbols,
+        );
+        let titles: Vec<_> = found
+            .iter()
+            .map(|diagnostic| diagnostic.title.as_str())
+            .collect();
+        assert_eq!(titles, ["internal: `OTHER` has two values in this unit"]);
+        assert_eq!(found[0].code, DiagnosticCode::INTERNAL);
+    }
+
     /// A file with no directive is handed back untouched, and — the part that
     /// matters — *unevaluated*. The pass runs a second, silent copy of the
     /// evaluator, and this is what keeps every source that does not use the
@@ -1227,7 +1483,7 @@ mod tests {
         let mut map = SourceMap::new();
         let id = map.add_file("pp.k65", "[ N = 1 ]\nfunc main @a8 @i8 { return }\n");
         let parsed = parse_source(map.file(id), None);
-        let applied = apply(&parsed.file);
+        let applied = apply(&parsed.file, None);
         assert!(matches!(applied.program, Cow::Borrowed(_)));
         assert!(applied.diagnostics.is_empty());
         assert!(applied.effects.is_empty());
@@ -1357,7 +1613,7 @@ mod tests {
         );
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics, vec![]);
-        let applied = apply(&parsed.file);
+        let applied = apply(&parsed.file, None);
         let codes: Vec<&str> = applied
             .diagnostics
             .iter()

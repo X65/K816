@@ -137,11 +137,23 @@ pub struct Definition {
 struct ImportEdge {
     /// The string that named it, for the diagnostic when nothing is there.
     span: Span,
+    /// That string's path, as written, for the loader to resolve against
+    /// the importer's displayed name as well as its identity.
+    written: String,
     /// The path it names, relative to the importing file.
     resolved: std::path::PathBuf,
     /// The unit it reaches. `None` where no file of that identity is in the
     /// map, which the loader could not read and this reports.
     target: Option<FileId>,
+}
+
+/// One unit as a round of [`Linkage::resolve`]'s first pass analyzed it.
+struct CollectedUnit {
+    parse: parser::ParseResult,
+    model: semantic::SemanticModel,
+    /// Whether the analysis reported no error — a unit with nothing
+    /// unresolved reads nothing another round could change.
+    clean: bool,
 }
 
 /// One `abstract var` declaration, carried across a unit boundary.
@@ -230,6 +242,12 @@ pub struct Linkage {
     /// that expands it gets the branch that unit chose
     /// (`doc/syntax-reference.md`, "`inline` bodies").
     inlines: BTreeMap<String, BorrowedInline>,
+    /// The `evalfunc`s each unit declares, by unit.
+    ///
+    /// An evaluator function is a compile-time fact like a `const`: it has
+    /// no address, ld65 never sees it, and typing its declaration in the
+    /// importer would make it callable there — so an `import` does.
+    eval_functions: BTreeMap<FileId, Vec<(String, crate::eval::UserFunction)>>,
     /// Foreign names each unit refers to, keyed by the referring unit.
     references: BTreeMap<FileId, BTreeSet<String>>,
     /// Every complaint a unit makes about its *own* source, as a code and a
@@ -283,29 +301,40 @@ impl Linkage {
     /// Two passes, because the question is circular: a unit's references
     /// cannot resolve until the other units' definitions are known, and the
     /// export decision cannot be made until the references are. The first
-    /// pass analyzes each unit alone and keeps only what it *defines*; the
-    /// second re-analyzes each unit with those definitions visible and keeps
-    /// what it *uses*.
+    /// pass collects what each unit *defines*; the second re-analyzes each
+    /// unit with those definitions visible and keeps what it *uses*.
+    ///
+    /// The first pass is itself a fixpoint. A unit analyzed alone cannot fold
+    /// `const X = C + 1` over an imported `C`, and an `import` makes
+    /// available what typing the imported declarations would — so the unit
+    /// importing *this* one has to see `X`'s value, and not "not declared".
+    /// So the definitions are collected again with the previous round's
+    /// visible, until a round adds nothing: one more round per link of the
+    /// longest chain, and none at all once a round's units analyzed clean,
+    /// since a unit with nothing unresolved reads nothing a workspace could
+    /// change.
     pub fn resolve(map: &SourceMap, environment: abi::EntryEnvironment) -> Self {
-        let mut linkage = Self {
-            environment,
-            ..Self::default()
-        };
-        for source in map.files() {
-            let parse = parser::parse_source(source, None);
-            let (model, _) = semantic::analyze_named(&parse.file, source.name(), environment);
-            linkage.units.insert(source.id(), source.name().to_owned());
-            linkage.collect_imports(map, source, model.program(&parse.file));
-            linkage.collect_definitions(source.id(), &model);
-            // From the *first* pass, which analyzes each unit alone: a body
-            // copied out of a unit that had already copied bodies in would
-            // carry someone else's, and this pass is the one where no unit
-            // has.
-            linkage.collect_inlines(source.id(), model.program(&parse.file), &parse.diagnostics);
+        let (mut linkage, mut units) = Self::collect(map, environment, None, Vec::new());
+        // A round that changes nothing ends it, and so does one that repeats
+        // an earlier round: a program with no fixed point alternates rather
+        // than settling — two units defining one name, which is `K816-E0102`
+        // already, make each round's winner the other's loser — and no round
+        // of it is more right than another. The bound is the longest chain
+        // there can be.
+        let mut seen = vec![linkage.facts()];
+        for _ in 0..map.files().count() {
+            if units.iter().all(|unit| unit.clean) {
+                break;
+            }
+            let (next, next_units) = Self::collect(map, environment, Some(&linkage), units);
+            let facts = next.facts();
+            let settled = seen.contains(&facts);
+            (linkage, units) = (next, next_units);
+            if settled {
+                break;
+            }
+            seen.push(facts);
         }
-        // Before the second pass, because that pass is the first one that
-        // asks a unit what it may see.
-        linkage.compute_visibility(map);
         for source in map.files() {
             let parse = parser::parse_source(source, None);
             let (model, diagnostics) = semantic::analyze_unit(&parse.file, source, &linkage);
@@ -314,6 +343,126 @@ impl Linkage {
         }
         linkage.classify_exits(map);
         linkage
+    }
+
+    /// One round of the first pass: what every unit defines, analyzed alone
+    /// or against what `previous` collected.
+    ///
+    /// A unit that imports nothing is not analyzed again: it sees only
+    /// itself, so the workspace has nothing to give it, and its analysis
+    /// from the round before — `analyzed`, in file order — is the answer.
+    fn collect(
+        map: &SourceMap,
+        environment: abi::EntryEnvironment,
+        previous: Option<&Self>,
+        analyzed: Vec<CollectedUnit>,
+    ) -> (Self, Vec<CollectedUnit>) {
+        let mut linkage = Self {
+            environment,
+            ..Self::default()
+        };
+        let mut analyzed = analyzed.into_iter();
+        let mut units = Vec::new();
+        for source in map.files() {
+            let reused = analyzed.next();
+            let imports_nothing = previous.is_some_and(|previous| {
+                previous
+                    .imports
+                    .get(&source.id())
+                    .is_none_or(|edges| edges.is_empty())
+            });
+            let unit = match (reused, previous) {
+                (Some(reused), _) if imports_nothing => reused,
+                (_, previous) => {
+                    let parse = parser::parse_source(source, None);
+                    let (model, diagnostics) = match previous {
+                        None => semantic::analyze_named(&parse.file, source.name(), environment),
+                        Some(previous) => semantic::analyze_unit(&parse.file, source, previous),
+                    };
+                    let clean = !diagnostics.iter().any(|diagnostic| {
+                        diagnostic.severity == crate::diagnostic::Severity::Error
+                    });
+                    CollectedUnit {
+                        parse,
+                        model,
+                        clean,
+                    }
+                }
+            };
+            let (parse, model) = (&unit.parse, &unit.model);
+            linkage.units.insert(source.id(), source.name().to_owned());
+            linkage.collect_imports(map, source, model.program(&parse.file));
+            linkage.collect_definitions(source.id(), model);
+            // Only the unit's own items: a body a later round copied in from
+            // another unit is that unit's, and collecting it here would make
+            // one `inline` two units' definition.
+            linkage.collect_inlines(source.id(), model.program(&parse.file), &parse.diagnostics);
+            linkage.collect_eval_functions(source.id(), model.program(&parse.file));
+            units.push(unit);
+        }
+        // Before the next round and the second pass, because those are the
+        // ones that ask a unit what it may see.
+        linkage.compute_visibility(map);
+        (linkage, units)
+    }
+
+    /// Everything a round of the first pass collected, as one comparable
+    /// value — a later round that matches it has nothing left to add.
+    ///
+    /// Rendered rather than compared field by field: the parts are nested
+    /// maps of AST and symbol kinds, and what matters is only *whether* a
+    /// round changed anything.
+    ///
+    /// A `var`'s layout id is left out: it indexes the arena of the unit
+    /// that collected it, so it moves whenever a round interns a foreign
+    /// layout first, and the layout itself is in `var_layouts`.
+    fn facts(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let definitions: Vec<_> = self
+            .definitions
+            .iter()
+            .map(|(name, definition)| {
+                let kind = match definition.kind {
+                    SymbolKind::Var {
+                        address,
+                        size,
+                        width,
+                        element,
+                        repeat,
+                        ..
+                    } => SymbolKind::Var {
+                        address,
+                        size,
+                        width,
+                        element,
+                        repeat,
+                        layout: None,
+                    },
+                    kind => kind,
+                };
+                (
+                    name,
+                    definition.file,
+                    kind,
+                    definition.declaration,
+                    definition.origin,
+                )
+            })
+            .collect();
+        let rendered = format!(
+            "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}",
+            definitions,
+            self.layouts,
+            self.var_layouts,
+            self.declared_in,
+            self.imports,
+            self.sections,
+            self.inlines,
+            self.eval_functions,
+        );
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        rendered.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Records every `import` in `program`, and which unit each one reaches.
@@ -340,6 +489,7 @@ impl Linkage {
                 let resolved = crate::imports::resolve(&importer, &import.file.path);
                 ImportEdge {
                     span: import.file.span,
+                    written: import.file.path.clone(),
                     target: map.locate(&crate::imports::identity(&resolved)),
                     resolved,
                 }
@@ -548,6 +698,12 @@ impl Linkage {
 
     fn collect_definitions(&mut self, file: FileId, model: &semantic::SemanticModel) {
         for (id, symbol) in model.symbols.iter() {
+            // A name declared in another file is that file's: an import, or
+            // a borrowed `inline`, which a round after the first analyzes
+            // with the workspace visible. An `extern` is declared here.
+            if symbol.declaration.file != file {
+                continue;
+            }
             if let Some(bytes) = model.eval.sections().get(&symbol.name)
                 && symbol.is_unit_level()
                 && !symbol.imported
@@ -593,10 +749,10 @@ impl Linkage {
                     },
                 );
             }
-            // In this pass, `imported` can only mean one thing: the unit
-            // declared the name `extern`. `declare_imports` is the other way
-            // a symbol gets the flag and it runs in the *second* pass, with
-            // this table already built.
+            // Here, `imported` can only mean one thing: the unit declared the
+            // name `extern`. `declare_imports` is the other way a symbol gets
+            // the flag, and the names it declares were declared in another
+            // file and skipped above.
             let origin = if symbol.imported {
                 Origin::Declared
             } else {
@@ -713,7 +869,7 @@ impl Linkage {
         parse_diagnostics: &[Diagnostic],
     ) {
         let defaults = module_defaults(program);
-        for item in &program.items {
+        for item in program.items.iter().filter(|item| item.span.file == file) {
             let ItemKind::Func(func) = &item.kind else {
                 continue;
             };
@@ -766,6 +922,143 @@ impl Linkage {
                     item: copy,
                     usable,
                 },
+            );
+        }
+    }
+
+    /// Keeps the declaration of every `evalfunc` this unit's program holds.
+    ///
+    /// From the preprocessed program, so one inside a region the unit did
+    /// not take does not exist for an importer either.
+    fn collect_eval_functions(&mut self, file: FileId, program: &AstFile) {
+        let functions = program
+            .items
+            .iter()
+            .filter(|item| item.span.file == file)
+            .filter_map(|item| match &item.kind {
+                ItemKind::EvalFunc(function)
+                    if function.name.provenance != Provenance::Synthetic =>
+                {
+                    Some((
+                        function.name.text.clone(),
+                        crate::eval::UserFunction {
+                            parameters: function
+                                .parameters
+                                .iter()
+                                .map(|parameter| parameter.text.clone())
+                                .collect(),
+                            body: function.body.clone(),
+                            declaration: function.name.span,
+                        },
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        self.eval_functions.insert(file, functions);
+    }
+
+    /// Seeds `table` with what the units `unit` sees assembled, and with the
+    /// value of every `const` they define.
+    ///
+    /// Both are compile-time facts wherever they were written — a section's
+    /// bytes and a `const`'s value, unlike an address — and an `import`
+    /// makes available what typing the declarations here would. The table
+    /// answers either only after the unit's own symbol table has missed, so
+    /// a local declaration still wins its name; an `inline` parameter is
+    /// looked up before both.
+    ///
+    /// **This unit's own `const`s are not seeded**, and that is the rule
+    /// rather than an optimization. A declaration is answerable from the line
+    /// after it and not before, so a table holding this unit's own values
+    /// would let a `const` read one declared *below* it, and only when a
+    /// workspace was built at all.
+    pub fn seed_sections(&self, unit: FileId, table: &mut crate::eval::SectionTable) {
+        for (name, bytes) in self.sections(unit) {
+            table.record_foreign(name, bytes.clone());
+        }
+        for (name, definition) in self.visible_definitions(unit) {
+            if definition.file == unit {
+                continue;
+            }
+            if let SymbolKind::Const {
+                value: Some(value), ..
+            } = definition.kind
+            {
+                table.record_foreign_const(name, crate::eval::const_number(value));
+            }
+        }
+    }
+
+    /// Seeds `functions` with the `evalfunc`s of the units `unit` imports.
+    pub fn seed_functions(&self, unit: FileId, functions: &mut crate::eval::Functions) {
+        for (owner, declared) in &self.eval_functions {
+            if *owner == unit || !self.sees(unit, *owner) {
+                continue;
+            }
+            for (name, function) in declared {
+                functions.record_foreign(name, function.clone());
+            }
+        }
+    }
+
+    /// Records in `symbols` what every foreign layout and foreign variable
+    /// `unit` sees is, before the unit's own declarations run.
+    ///
+    /// A layout's offsets and a pinned address are facts the declaring unit
+    /// settled, so a declaration — `var bufs[TCB:sizeof * 4]`, `var chargen
+    /// = text + $0800` — may fold one before the name is in the table, which
+    /// is what lets analysis's import pass run last. Layouts are interned
+    /// once, here, and that pass reuses the ids. This unit's own
+    /// declarations are skipped: they are in the table by the time anything
+    /// asks.
+    pub fn seed_symbols(&self, unit: FileId, symbols: &mut crate::symbol::SymbolTable) {
+        let variables: Vec<_> = self
+            .visible_definitions(unit)
+            .filter(|(_, definition)| definition.file != unit)
+            .filter(|(_, definition)| matches!(definition.kind, SymbolKind::Var { .. }))
+            .map(|(name, definition)| {
+                (
+                    name.to_owned(),
+                    definition.kind.foreign(),
+                    definition.declaration,
+                    self.var_layout(name),
+                )
+            })
+            .collect();
+        for (name, kind, declaration, layout) in variables {
+            let kind = match (kind, layout) {
+                (
+                    SymbolKind::Var {
+                        address,
+                        size,
+                        width,
+                        element,
+                        repeat,
+                        ..
+                    },
+                    Some(layout),
+                ) => SymbolKind::Var {
+                    address,
+                    size,
+                    width,
+                    element,
+                    repeat,
+                    layout: Some(symbols.adopt_layout(&layout.arena, layout.root)),
+                },
+                (kind, _) => kind,
+            };
+            symbols.record_foreign_fact(&name, kind, declaration);
+        }
+        for (name, layout) in self
+            .visible_layouts(unit)
+            .filter(|(_, layout)| layout.declaration.file != unit)
+        {
+            let id = symbols.adopt_layout(&layout.arena, layout.root);
+            symbols.record_foreign_fact(
+                name,
+                SymbolKind::AbstractVar { layout: id },
+                layout.declaration,
             );
         }
     }
@@ -968,6 +1261,21 @@ impl Linkage {
                 .visible
                 .get(&unit)
                 .is_some_and(|files| files.contains(&owner))
+    }
+
+    /// Every `import` the units wrote in the regions they took, as the unit
+    /// that wrote it, the path as written, and the unit it reaches — `None`
+    /// for a file the map does not hold.
+    ///
+    /// For the loader: a region whose condition reads an imported value is
+    /// decided only here, with the workspace's values, so an `import` inside
+    /// one is known only here too (`crate::load_imports`).
+    pub fn import_edges(&self) -> impl Iterator<Item = (FileId, &str, Option<FileId>)> {
+        self.imports.iter().flat_map(|(file, edges)| {
+            edges
+                .iter()
+                .map(move |edge| (*file, edge.written.as_str(), edge.target))
+        })
     }
 
     /// The units `unit` may see, itself included.

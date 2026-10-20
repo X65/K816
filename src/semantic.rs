@@ -46,9 +46,7 @@ use crate::linkage::Linkage;
 use crate::op::{ExitContract, ModeState, WidthContract};
 use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
 use crate::source::{Provenance, Span};
-use crate::symbol::{
-    AddressSize, DataWidth, FieldShape, LabelScope, LayoutId, SymbolId, SymbolKind, SymbolTable,
-};
+use crate::symbol::{AddressSize, LabelScope, LayoutId, SymbolId, SymbolKind, SymbolTable};
 use crate::width::{self, Axis, WidthAnalysis};
 
 /// Where a `code { }` subblock sits: the item index of its data block, and
@@ -438,7 +436,7 @@ fn analyze(
     // inside a region that is not taken must not exist, or the ordinary
     // `#if / func f / #else / func f / #endif` is a duplicate definition
     // (`plans/06-compatibility.md` decision 9, `preprocess.rs`).
-    let applied = crate::preprocess::apply(file);
+    let applied = crate::preprocess::apply(file, workspace);
     let mut preprocessed = match applied.program {
         std::borrow::Cow::Borrowed(_) => None,
         std::borrow::Cow::Owned(program) => Some(program),
@@ -480,6 +478,7 @@ fn analyze(
     }
     let file = preprocessed.as_ref().unwrap_or(file);
     let effects = applied.effects;
+    let folded = applied.folded;
     let mut analysis = Analysis {
         model: SemanticModel::default(),
         diagnostics: applied.diagnostics,
@@ -507,57 +506,27 @@ fn analyze(
     // Module defaults are file-wide, so they are known before any function's
     // contract is folded.
     analysis.defaults = analysis.module_defaults(file);
-    // What the other units of the workspace assembled, before this unit's
-    // brackets run — because they run inside `declare_items`, and the import
-    // pass below is far too late for them. A foreign *symbol* still arrives
-    // there and still loses to a local declaration; what is seeded here is
-    // only the bytes, which a local `data` of the same name shadows anyway
-    // (a section value resolves through the symbol table first).
+    // What the units this one imports make available at compile time —
+    // section bytes, `const` values, layouts, pinned addresses and
+    // `evalfunc`s — before this unit's brackets run, because they run inside
+    // `declare_items` and the import pass below is far too late for them.
+    // Each is asked only after the local table misses, so a local
+    // declaration still wins its name (`Linkage::seed_sections`). The
+    // preprocessor is seeded by the same calls.
     if let Some((linkage, unit)) = workspace {
-        for (name, bytes) in linkage.sections(unit) {
-            analysis
-                .model
-                .eval
-                .record_foreign_section(name, bytes.clone());
-        }
-        // And the `const` values of the units this one *imports*, for the
-        // same reason and with the same rule: a `const` folds, so its value
-        // is a compile-time fact wherever it was written, and the symbol
-        // table is asked first so a local declaration — or an `inline`
-        // parameter, which is looked up before it — still wins the name. A
-        // *borrowed* `inline` body needs this: its brackets read the `const`s
-        // of the unit that declared it, which are foreign here, and
-        // `declare_imports` runs after the brackets have already run.
-        //
-        // **This unit's own are not seeded**, and that is the rule rather
-        // than an optimization. A declaration is answerable from the line
-        // after it and not before — the order `declare_items` walks in, and
-        // the order the evaluator answers about a section in — so a table
-        // holding this unit's own values lets a `const` read one declared
-        // *below* it, and only when a workspace was built at all. It did.
-        for (name, definition) in linkage.visible_definitions(unit) {
-            if definition.file == unit {
-                continue;
-            }
-            if let SymbolKind::Const {
-                value: Some(value), ..
-            } = definition.kind
-            {
-                analysis
-                    .model
-                    .eval
-                    .record_foreign_const(name, eval::const_number(value));
-            }
-        }
-        // And what each foreign layout and pinned variable is, so that a
-        // unit-level declaration — `var bufs[TCB:sizeof * 4]`, `var chargen =
-        // text + $0800` — can fold one before the import pass declares it.
-        analysis.seed_foreign_facts(linkage, unit);
+        linkage.seed_sections(unit, analysis.model.eval.sections_mut());
+        linkage.seed_functions(unit, analysis.model.eval.functions_mut());
+        linkage.seed_symbols(unit, &mut analysis.model.symbols);
         // And every foreign place, before the data blocks are resolved: a
         // dispatch table names the routines of other units.
         analysis.declare_foreign_places(linkage, unit, file);
     }
     analysis.declare_items(file);
+    // The `#if`s the preprocessor decided and the `unroll`s it expanded are
+    // never decided again, so a name it folded to another number than this
+    // pass did is a miscompile, and is refused here.
+    let disagreements = crate::preprocess::disagreements(&folded, &analysis.model.symbols);
+    analysis.diagnostics.extend(disagreements);
     analysis.place_direct_page();
     // Foreign names are declared *after* the unit's own, so a local
     // declaration always wins its name. A `const` or `var` initializer
@@ -1461,7 +1430,8 @@ impl Analysis {
                     Label::new(function.name.span, "this name is the library's"),
                 )
                 .with_note(
-                    "the argument count is part of an evaluator function's identity, so a                      library name is free at every other count",
+                    "the argument count is part of an evaluator function's identity, so a \
+                     library name is free at every other count",
                 )
                 .with_docs("doc/syntax-reference.md#functions"),
             );
@@ -2861,7 +2831,9 @@ impl Analysis {
                     self.report_reserved_in_eval(index);
                 }
             }
-            EvalExprKind::Member { base, .. } => self.report_reserved_in_eval(base),
+            EvalExprKind::Member { base, .. } | EvalExprKind::Metadata { base, .. } => {
+                self.report_reserved_in_eval(base)
+            }
             EvalExprKind::List(items) | EvalExprKind::Block(items) => {
                 for item in items {
                     self.report_reserved_in_eval(item);
@@ -2981,70 +2953,6 @@ impl Analysis {
             self.model
                 .symbols
                 .declare_imported(name, kind, definition.declaration);
-        }
-    }
-
-    /// Records what every foreign layout and foreign variable this unit sees
-    /// is, before the unit's own declarations run.
-    ///
-    /// The other half of [`Self::declare_imports`], and the reason that pass
-    /// can run last: a layout's offsets and a pinned address are facts the
-    /// declaring unit settled, so a declaration here may fold one without the
-    /// name being in the table yet. Layouts are interned once, here, and the
-    /// import pass reuses the ids. This unit's own declarations are skipped —
-    /// they are in the table by the time anything asks.
-    fn seed_foreign_facts(&mut self, linkage: &Linkage, unit: crate::source::FileId) {
-        let variables: Vec<_> = linkage
-            .visible_definitions(unit)
-            .filter(|(_, definition)| definition.file != unit)
-            .filter(|(_, definition)| matches!(definition.kind, SymbolKind::Var { .. }))
-            .map(|(name, definition)| {
-                (
-                    name.to_owned(),
-                    definition.kind.foreign(),
-                    definition.declaration,
-                    linkage.var_layout(name).cloned(),
-                )
-            })
-            .collect();
-        for (name, kind, declaration, layout) in variables {
-            let kind = match (kind, layout) {
-                (
-                    SymbolKind::Var {
-                        address,
-                        size,
-                        width,
-                        element,
-                        repeat,
-                        ..
-                    },
-                    Some(layout),
-                ) => SymbolKind::Var {
-                    address,
-                    size,
-                    width,
-                    element,
-                    repeat,
-                    layout: Some(self.model.symbols.adopt_layout(&layout.arena, layout.root)),
-                },
-                (kind, _) => kind,
-            };
-            self.model
-                .symbols
-                .record_foreign_fact(&name, kind, declaration);
-        }
-        let layouts: Vec<_> = linkage
-            .visible_layouts(unit)
-            .filter(|(_, layout)| layout.declaration.file != unit)
-            .map(|(name, layout)| (name.to_owned(), layout.clone()))
-            .collect();
-        for (name, layout) in layouts {
-            let id = self.model.symbols.adopt_layout(&layout.arena, layout.root);
-            self.model.symbols.record_foreign_fact(
-                &name,
-                SymbolKind::AbstractVar { layout: id },
-                layout.declaration,
-            );
         }
     }
 
@@ -3202,36 +3110,8 @@ impl Analysis {
             },
             None => None,
         };
-        // An extent that does not fold has already reported itself, and the
-        // declaration goes on without the multiplier — one bad count should
-        // not turn every use of the name into an undeclared-symbol error too.
-        let extent = var
-            .size
-            .as_ref()
-            .and_then(|expr| self.constant(expr, "array extents"));
-        let count = var
-            .count
-            .as_ref()
-            .and_then(|expr| self.constant(expr, "allocation counts"));
-        // The raw span is deliberately *not* checked for zero. `var X[0]`
-        // is a K65 declaration — the original accepts it, reserves nothing,
-        // and carries the allocator on (`tests/compat/k65/zero-element-span`)
-        // — so refusing it would be a narrowing decision 0 does not allow
-        // where compatibility is this cheap. The forms below have no K65
-        // spelling and keep the rule.
-        let count = self.checked_count(count, var.count.as_ref());
-        let declared = var.width.map(|width| layout::data_width(width.kind));
-        // On a declaration with fields the `:byte` suffix is the *default
-        // field width* and not a datum width of its own: the datum is the
-        // whole layout, and a struct has no register to disagree with
-        // (`doc/symbolic-subscripts.md`, "Default field width on the
-        // symbol"). One suffix, two meanings, decided by whether a field
-        // list follows.
-        let (width, layout) = if var.fields.is_empty() {
-            (declared, None)
-        } else {
-            (None, Some(self.build_layout(&var.fields, declared)))
-        };
+        let shape = layout::var_shape(self, var);
+        let allocation = shape.allocation;
         let storage = var.storage.map(|storage| storage.kind);
 
         // A declaration-position prefix sets the encoding plain references
@@ -3243,9 +3123,6 @@ impl Analysis {
             (None, Some(address)) => AddressSize::of_value(address),
             (None, None) => AddressSize::Absolute,
         };
-
-        let datum = layout::datum_size(width, layout, self.model.symbols.layouts());
-        let allocation = layout::allocation(datum, extent, count);
 
         // `far` is the storage class with no auto-allocator: nothing knows
         // which of the 256 banks an unaddressed 24-bit symbol belongs to.
@@ -3264,10 +3141,10 @@ impl Analysis {
             SymbolKind::Var {
                 address,
                 size,
-                width,
+                width: shape.width,
                 element: allocation.element,
-                repeat: count,
-                layout,
+                repeat: shape.repeat,
+                layout: shape.layout,
             },
             var.name.span,
         ) else {
@@ -3382,7 +3259,7 @@ impl Analysis {
         }
 
         let default = var.width.map(|width| layout::data_width(width.kind));
-        let layout = self.build_layout(&var.fields, default);
+        let layout = layout::build_layout(self, &var.fields, default);
         // Declared even when it was refused above: the fields are still what
         // the author wrote, and leaving the name undeclared would turn one
         // complaint into one more at every use of it.
@@ -3391,82 +3268,6 @@ impl Analysis {
             SymbolKind::AbstractVar { layout },
             var.name.span,
         );
-    }
-
-    /// Computes and interns the layout a field list declares.
-    ///
-    /// `default` is the width fields take when they name none — the
-    /// declaration's own `:byte` suffix, which on a declaration that has
-    /// fields means *default field width*. It carries into nested lists, and
-    /// a nested field's own suffix replaces it for its sub-list, so
-    /// `var v:word[ .a .b:byte[ .c .d ] ]` gives `.a` a word and `.c` a byte.
-    ///
-    /// Nested layouts are interned before the field that names them, which is
-    /// what keeps a [`FieldShape::Nested`] identifier resolvable.
-    fn build_layout(
-        &mut self,
-        fields: &[ast::FieldDeclaration],
-        default: Option<DataWidth>,
-    ) -> LayoutId {
-        let mut packing = layout::Packing::default();
-        for field in fields {
-            if field.name.provenance == Provenance::Synthetic {
-                continue; // Recovery invented the name; the syntax error stands.
-            }
-            let declared = field.width.map(|width| width.kind);
-            let shape = if field.fields.is_empty() {
-                FieldShape::Scalar(layout::field_width(declared, default))
-            } else {
-                let nested = declared.map(layout::data_width).or(default);
-                FieldShape::Nested(self.build_layout(&field.fields, nested))
-            };
-            // A field's bracket is a count and not a span: an indexed field
-            // element is `field_base + index * element_width`
-            // (`doc/symbolic-subscripts.md`, "Semantics"), where a
-            // declaration's `[N]` is a raw span the bracket steps in bytes.
-            let count = field
-                .size
-                .as_ref()
-                .and_then(|expr| self.constant(expr, "field element counts"));
-            let count = self.checked_count(count, field.size.as_ref()).unwrap_or(1);
-
-            let name = field.name.text.trim_start_matches('.');
-            if let Some(previous) = packing.declared(name).map(|field| field.declaration) {
-                self.diagnostics.push(duplicate_field(field, previous));
-                continue;
-            }
-            packing.push(
-                name,
-                shape,
-                count,
-                field.span,
-                field.name.span,
-                self.model.symbols.layouts(),
-            );
-        }
-        self.model.symbols.add_layout(packing.finish())
-    }
-
-    /// Rejects an element count of zero, and passes every other answer on.
-    ///
-    /// A count of zero describes storage with no elements: nothing is
-    /// reserved, and every index into it is out of range the moment it is
-    /// written. The declaration carries on without the multiplier, for the
-    /// same reason a count that did not fold does — one bad number should not
-    /// turn every use of the name into an undeclared-symbol error too.
-    ///
-    /// Asked of the `* count` allocation form and of a field's `[N]`, and
-    /// **not** of a declaration's raw span: `var X[0]` is a K65 declaration
-    /// and the original accepts it, where neither of these two has a K65
-    /// spelling to be compatible with (`postmortem.md` §G.3.2).
-    fn checked_count(&mut self, count: Option<u32>, expr: Option<&Expr>) -> Option<u32> {
-        match (count, expr) {
-            (Some(0), Some(expr)) => {
-                self.diagnostics.push(zero_element_count(expr.span));
-                None
-            }
-            _ => count,
-        }
     }
 
     /// Declares one `const` group, applying the enum-like auto-increment.
@@ -3867,6 +3668,30 @@ impl Analysis {
             .keys()
             .copied()
             .find(|&label| self.model.symbols.name(label) == name)
+    }
+}
+
+/// The shape of a declaration, folded and reported the way analysis folds
+/// and reports everything else.
+impl layout::Shaper for Analysis {
+    fn layouts(&self) -> &crate::symbol::Layouts {
+        self.model.symbols.layouts()
+    }
+
+    fn intern(&mut self, layout: crate::symbol::Layout) -> crate::symbol::LayoutId {
+        self.model.symbols.add_layout(layout)
+    }
+
+    fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32> {
+        Analysis::constant(self, expr, position)
+    }
+
+    fn zero_count(&mut self, span: Span) {
+        self.diagnostics.push(zero_element_count(span));
+    }
+
+    fn duplicate_field(&mut self, field: &ast::FieldDeclaration, previous: Span) {
+        self.diagnostics.push(duplicate_field(field, previous));
     }
 }
 

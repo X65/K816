@@ -4454,10 +4454,10 @@ fn a_unit_level_name_inside_an_inline_is_refused() {
 /// turned into cases, so that adding a fifth dependency means adding a row
 /// here rather than discovering it in review.
 ///
-/// The `evalfunc` row is a *limit*, pinned deliberately: the evaluator's
-/// functions live in its own table rather than in the symbol table, so they
-/// do not cross. It fails as an error rather than as a byte, and it is a
-/// decision rather than an accident because this asserts it.
+/// The `evalfunc` row was a *limit* once — the evaluator's functions live in
+/// a table of their own and did not cross. An `import` makes available what
+/// typing the imported declarations would, so it crosses now, with the
+/// unit's `const`s and sections.
 #[test]
 fn a_borrowed_declaration_carries_what_it_depends_on() {
     /// What the borrowing unit should see: a needle in its assembly, or the
@@ -4493,11 +4493,11 @@ fn a_borrowed_declaration_carries_what_it_depends_on() {
             "a = [ index(tab, 1) ]",
             Ok("lda     #$05"),
         ),
-        // The limit: an `evalfunc` does not cross, and says so as an error.
+        // An `evalfunc` of its own unit.
         (
             "@a8\n@i8\nevalfunc twice(n) [ n * 2 ]\n",
             "a = [ twice(4) ]",
-            Err(&["K816-E0101"]),
+            Ok("lda     #$08"),
         ),
     ];
     for (provides, body, expected) in cases {
